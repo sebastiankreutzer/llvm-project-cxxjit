@@ -751,7 +751,9 @@ public:
 //
 //    IRB.CreateCall(ReportFN, {});
 
-    if (!F->getReturnType()->isVoidTy()) {
+    if (F->getReturnType()->isVoidTy()) {
+      IRB.CreateRetVoid();
+    } else {
       IRB.CreateRet(FCall);
     }
 

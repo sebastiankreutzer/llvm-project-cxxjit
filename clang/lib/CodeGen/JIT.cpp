@@ -100,6 +100,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/IPO/Internalize.h"
+#include <llvm/Support/FormatVariadic.h>
+#include <llvm/Support/FormatAdapters.h>
 
 #include <cassert>
 #include <cstdlib> // ::getenv
@@ -110,9 +112,9 @@
 #include <system_error>
 #include <utility>
 #include <vector>
-#include <iostream> // TODO: Remove
 #include <iomanip>
 #include <unordered_map>
+
 using namespace clang;
 using namespace llvm;
 
@@ -505,10 +507,6 @@ public:
         fatal();
     }
 
-    EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
-                      LangOpts, C.getTargetInfo().getDataLayout(),
-                      getModule(), Action,
-                      llvm::make_unique<llvm::buffer_ostream>(*AsmOutStream));
   }
 
   void HandleTagDeclDefinition(TagDecl *D) override {
@@ -529,6 +527,13 @@ public:
 
   void HandleVTable(CXXRecordDecl *RD) override {
     Gen->HandleVTable(RD);
+  }
+
+  void EmitOptimized(ASTContext &C) {
+    EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
+                      LangOpts, C.getTargetInfo().getDataLayout(),
+                      getModule(), Action,
+                      llvm::make_unique<llvm::buffer_ostream>(*AsmOutStream));
   }
 };
 
@@ -608,16 +613,26 @@ class JITPerfMonitor {
 
   // TODO: Currently, none of this is thread safe (use atomics?)
 
-  struct InstrGlobals {
+  struct GlobalNames {
     std::string TotalCyclesGlobal{""};
+    std::string MeanCyclesGlobal{""};
     std::string CallCountGlobal{""};
+    std::string VarNGlobal{""};
   };
 
-  // TODO: For autotuning purposes all instantiation info must be available, not just the name
-  llvm::DenseMap<StringRef, InstrGlobals> InstrGlobalMap;
+  // Saves global names to look up addresses after compilation
+  /*llvm::DenseMap<SmallString<16>, InstrGlobals>*/ llvm::StringMap<GlobalNames> InstrGlobalMap;
+
+public:
+
+  struct PerfGlobals {
+    double* VarN{nullptr};
+    int64_t* Cycles{nullptr};
+    int64_t* CallCount{nullptr};
+    double* MeanCycles{nullptr};
+  };
 
 private:
-
 
 
   Value* insertRDTSCP(IRBuilder<>& IRB) {
@@ -627,47 +642,116 @@ private:
     return IRB.CreateExtractValue(Call, {0}); // 64 bit value
   }
 
-  void insertIncCallCount(IRBuilder<>& IRB, GlobalVariable* CallCount) {
-    auto* Count = IRB.CreateLoad(CallCount);
-    auto* Incd = IRB.CreateAdd(Count, IRB.getInt64(1));
-    IRB.CreateStore(Incd, CallCount);
-  }
-
-  Value* insertStartMeasureCycles(IRBuilder<>& IRB) {
+  Value* instrumentPreCall(IRBuilder<>& IRB) {
     return insertRDTSCP(IRB);
   }
 
-  void insertStopMeasureCycles(IRBuilder<>& IRB, Value* StartCount, GlobalVariable* CycleCount) {
-    auto* StopCount = insertRDTSCP(IRB);
+  void instrumentPostCall(IRBuilder<>& IRB, GlobalVariable* CallCount, GlobalVariable* CycleCount, GlobalVariable* MeanCycles, GlobalVariable* VarN, Value* StartCycles, Function* ReportFn) {
+
+    auto* StopCycles = insertRDTSCP(IRB);
+
+    // Update cycles
     // RDTSCP should be 64bit, so we can probably ignore overflows
-    auto* CycleDif = IRB.CreateSub(StopCount, StartCount, "cycles");
     auto* CurrentTotal = IRB.CreateLoad(CycleCount);
-    auto* NewTotal = IRB.CreateAdd(CurrentTotal, CycleDif);
+    auto* Elapsed = IRB.CreateSub(StopCycles, StartCycles);
+    auto* ElapsedFloat = IRB.CreateSIToFP(Elapsed, IRB.getDoubleTy());
+    auto* NewTotal = IRB.CreateAdd(CurrentTotal, Elapsed);
     IRB.CreateStore(NewTotal, CycleCount);
+
+    // Update call count
+    auto* OldCount = IRB.CreateLoad(CallCount);
+    auto* Incd = IRB.CreateAdd(OldCount, IRB.getInt64(1));
+    IRB.CreateStore(Incd, CallCount);
+
+    auto* F = IRB.GetInsertBlock()->getParent();
+
+    auto* IfBB = BasicBlock::Create(IRB.getContext(), "not_called_before", F);
+    auto* ElseBB = BasicBlock::Create(IRB.getContext(), "called_before", F);
+    auto* RetBB = BasicBlock::Create(IRB.getContext(), "return", F);
+
+    // TODO: Debug only
+    IRB.CreateCall(ReportFn, {Elapsed});
+
+    // Branch
+    IRB.CreateCondBr(IRB.CreateICmpEQ(OldCount, IRB.getInt64(0)), IfBB, ElseBB);
+
+    // Call count is zero
+    IRB.SetInsertPoint(IfBB);
+    IRB.CreateStore(ElapsedFloat, MeanCycles);
+    IRB.CreateBr(RetBB);
+
+    // Call count is not zero
+    IRB.SetInsertPoint(ElseBB);
+    // Update mean
+    auto* OldMean = IRB.CreateLoad(MeanCycles);
+    auto* T1 = IRB.CreateFSub(ElapsedFloat, OldMean);
+    auto* NewMean = IRB.CreateFAdd(OldMean, IRB.CreateFDiv(T1, IRB.CreateSIToFP(Incd, IRB.getDoubleTy())));
+    IRB.CreateStore(NewMean, MeanCycles);
+
+    // Update variance
+    auto* OldVarN = IRB.CreateLoad(VarN);
+    auto* VarNInc = IRB.CreateFMul(T1, IRB.CreateFSub(ElapsedFloat, NewMean));
+    auto* NewVarN = IRB.CreateFAdd(OldVarN, VarNInc);
+    IRB.CreateStore(NewVarN, VarN);
+    IRB.CreateBr(RetBB);
+
+    IRB.SetInsertPoint(RetBB);
   }
 
   template<typename T>
-  T fetchGlobal(const std::string& Name) {
+  T* fetchGlobal(const std::string& Name) {
     auto Sym = CJ->findSymbol(Name);
     auto addr = Sym.getAddress();
     if (!addr) {
       outs() << "Unable to find address of global " << Name << "\n";
-      return -1;
+      return nullptr;
     }
-    return *reinterpret_cast<T*>(addr.get());
+    return reinterpret_cast<T*>(addr.get());
   }
 
-  void printReport() {
-    // TODO: Using std::cout here because llvm::outs() causes pure virtual function call when invoked in destructor
-    std::cout << "JIT Timing Report\n";
-    std::cout << "Name   #Called   Total Cycles   Avg Cycles\n";
-    std::cout << "==========================================\n";
-    for (auto&& [FName, Globals] : InstrGlobalMap) {
-      auto Cycles = fetchGlobal<int64_t>(Globals.TotalCyclesGlobal);
-      auto CallCount = fetchGlobal<int64_t>(Globals.CallCountGlobal);
-      auto Avg = Cycles / static_cast<double>(CallCount);
-      std::cout << FName.str() << " " << CallCount << " " << Cycles << " " << Avg << "\n";
+public:
+  static void printReport(StringRef FName, const PerfGlobals& PG) {
+    printReport(FName, SmallVector<PerfGlobals, 1>{PG});
+  }
+
+  static void printReport(StringRef FName, ArrayRef<PerfGlobals> PGArray) {
+    outs() << "JIT Timing Report:\n";
+    auto Header = formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "#Called", "Cycles", "Mean", "RSD").str();
+    outs() << Header << "\n";
+    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+    for (auto& PG : PGArray) {
+      if (!(PG.Cycles && PG.CallCount && PG.MeanCycles && PG.VarN)) {
+        errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
+        continue;
+      }
+      auto Cycles = *PG.Cycles;
+      auto CallCount = *PG.CallCount;
+      if (!CallCount) {
+        outs() << FName.str() << " No data collected\n";
+        return;
+      }
+      auto VarN = *PG.VarN;
+      auto Mean = *PG.MeanCycles;
+      auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
+      auto RSD = SD / Mean;
+      outs() << formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}\n", FName, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
     }
+    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+//    for (auto& It : InstrGlobalMap) {
+//      auto FName = It.first();
+//      auto& Globals = It.second;
+//      auto Cycles = *fetchGlobal<int64_t>(Globals.TotalCyclesGlobal);
+//      auto CallCount = *fetchGlobal<int64_t>(Globals.CallCountGlobal);
+//      if (!CallCount) {
+//        continue;
+//      }
+//      auto VarN = *fetchGlobal<double>(Globals.VarNGlobal);
+//      auto Mean = Cycles / static_cast<double>(CallCount);
+//      Mean = *fetchGlobal<double>(Globals.MeanCyclesGlobal);
+//      auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
+//      auto RSD = (SD / Mean) * 100.0;
+//      outs() << FName.str() << " " << CallCount << " " << Cycles << " " << Mean << " " << RSD << "%\n";
+//    }
   }
 
 public:
@@ -678,36 +762,63 @@ public:
   JITPerfMonitor(const JITPerfMonitor&) = delete;
   JITPerfMonitor& operator=(const JITPerfMonitor&) = delete;
 
-  ~JITPerfMonitor() {
-    printReport();
+//  ~JITPerfMonitor() {
+//    printReport();
+//  }
+
+  PerfGlobals lookupGlobals(StringRef FName) {
+    auto It = InstrGlobalMap.find(FName);
+    if (It == InstrGlobalMap.end()) {
+      return PerfGlobals();
+    }
+    auto& GlobalNames = It->second;
+
+    PerfGlobals PG;
+    PG.CallCount = fetchGlobal<int64_t>(GlobalNames.CallCountGlobal);
+    PG.Cycles = fetchGlobal<int64_t>(GlobalNames.TotalCyclesGlobal);
+    PG.MeanCycles = fetchGlobal<double>(GlobalNames.MeanCyclesGlobal);
+    PG.VarN = fetchGlobal<double>(GlobalNames.VarNGlobal);
+    return PG;
   }
 
-  Function* createInstrumentedWrapper(Function* F) {
+  Function* createInstrumentedWrapper(Function* F, Function* ReportFn) {
     const auto& FName = F->getName();
     auto* M = F->getParent();
 
     auto& C = M->getContext();
 
-    auto make_int64_global = [&](const char* Suffix) -> llvm::GlobalVariable* {
+    auto make_global = [&](llvm::Type* GType, Constant* Init, const char* Suffix) -> llvm::GlobalVariable* {
       const char* Prefix = "__clangjit_";
       std::stringstream ss;
       ss << Prefix << FName.str() << "_" << Suffix; // TODO: Probably not the fastest way to do this
       auto Name = ss.str();
-      auto* GType = llvm::Type::getInt64Ty(C);
       M->getOrInsertGlobal(Name, GType);
       auto* Global = M->getGlobalVariable(Name);
-      Global->setInitializer(ConstantInt::get(GType, 0, false));
-      Global->setLinkage(GlobalVariable::CommonLinkage);
-
+      Global->setInitializer(Init);
+      Global->setLinkage(GlobalVariable::InternalLinkage); // TODO: Correct linkage type?
       return Global;
     };
 
-    auto* CyclesGlobal = make_int64_global("cycles");
-    auto* CallCountGlobal = make_int64_global("count");
+    auto make_global_int64 = [&](const char* Suffix) -> llvm::GlobalVariable* {
+      auto* GType = llvm::Type::getInt64Ty(C);
+      return make_global(GType, ConstantInt::get(GType, 0, false), Suffix);
+    };
 
-    auto& FGlobals = InstrGlobalMap[FName];
+    auto make_global_double = [&](const char* Suffix) -> llvm::GlobalVariable* {
+      auto* GType = llvm::Type::getDoubleTy(C);
+      return make_global(GType, ConstantFP::get(GType, 0.0), Suffix);
+    };
+
+    auto* CyclesGlobal = make_global_int64("cycles");
+    auto* MeanCyclesGlobal = make_global_double("mean_cycles");
+    auto* CallCountGlobal = make_global_int64("count");
+    auto* VarNGlobal = make_global_double("var_n");
+
+    auto& FGlobals = InstrGlobalMap[FName.str()];
     FGlobals.TotalCyclesGlobal = CyclesGlobal->getName();
+    FGlobals.MeanCyclesGlobal = MeanCyclesGlobal->getName();
     FGlobals.CallCountGlobal = CallCountGlobal->getName();
+    FGlobals.VarNGlobal = VarNGlobal->getName();
 
 //    InstrGlobals Globals;
 //    Globals.TotalCyclesGlobal = CyclesGlobal;
@@ -723,8 +834,7 @@ public:
     auto* EB = BasicBlock::Create(C, "", Wrapper);
     IRBuilder<> IRB(EB);
 
-    Value* CyclesStart = insertStartMeasureCycles(IRB);
-
+    Value* CyclesStart = instrumentPreCall(IRB);
 
     // TODO: Not sure what's the best way to get the argument list here
     llvm::SmallVector<Value*, 8> ArgList;
@@ -734,22 +844,7 @@ public:
 
     auto* FCall = IRB.CreateCall(F, ArgList, "ImplCall");
 
-    insertStopMeasureCycles(IRB, CyclesStart, CyclesGlobal);
-    insertIncCallCount(IRB, CallCountGlobal);
-
-//    auto* Gen = Consumer->getCodeGenerator();
-//
-//    //    llvm::Type *TypeParams[] =
-////        {/*Gen->CGM().VoidPtrTy*/};
-//
-//    auto *FnTy =
-//        llvm::FunctionType::get(Gen->CGM().VoidTy, {}/*TypeParams*/,
-//            /*isVarArg*/ false);
-//
-//    // TODO: Create RT function to report JIT timing for testing purposes
-//    auto ReportFN = Gen->CGM().CreateRuntimeFunction(FnTy, "__clang_jit_report_timing");
-//
-//    IRB.CreateCall(ReportFN, {});
+    instrumentPostCall(IRB, CallCountGlobal, CyclesGlobal, MeanCyclesGlobal, VarNGlobal, CyclesStart, ReportFn);
 
     if (F->getReturnType()->isVoidTy()) {
       IRB.CreateRetVoid();
@@ -764,6 +859,36 @@ private:
 
 
 };
+
+struct JITContext {
+
+  JITContext() = default;
+
+  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  std::string DeclName, SmallVector<StringRef, 16> EmittedSyms)
+    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName), EmittedSyms(EmittedSyms)
+    {}
+
+  bool Emitted{false};
+  std::unique_ptr<llvm::Module> Mod;
+  std::string DeclName{""};
+  SmallVector<StringRef, 16> EmittedSyms; // TODO: Might need a SmallString/std::string here
+
+};
+
+struct JITInstantiation {
+
+  JITInstantiation() = default;
+
+  JITInstantiation(orc::VModuleKey ModKey, void* FPtr, JITPerfMonitor::PerfGlobals Globals)
+      : ModKey(ModKey), FPtr(FPtr), Globals(Globals)
+  {}
+
+  orc::VModuleKey ModKey{0};
+  void* FPtr{nullptr};
+  JITPerfMonitor::PerfGlobals Globals;
+  // TODO: Place info about instantiation specific optimization here
+};
+
 
 struct CompilerData {
   std::unique_ptr<CompilerInvocation>     Invocation;
@@ -805,6 +930,10 @@ struct CompilerData {
   std::vector<std::unique_ptr<llvm::Module>> DevLinkMods;
 
   std::unique_ptr<JITPerfMonitor>         PerfMonitor;
+
+
+ // DenseMap<InstInfo, InstContext, InstMapInfo>          InstContextMap;
+
 
   CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
                const void *ASTBuffer, size_t ASTBufferSize,
@@ -1456,16 +1585,189 @@ struct CompilerData {
   }
 
 
-
-
-
   Function* instrumentFunction(Function* F)
   {
-    return PerfMonitor->createInstrumentedWrapper(F);
+    // TODO: Debugging only
+    auto* Gen = Consumer->getCodeGenerator();
+
+    //    llvm::Type *TypeParams[] =
+//        {/*Gen->CGM().VoidPtrTy*/};
+
+    auto *FnTy =
+        llvm::FunctionType::get(Gen->CGM().VoidTy, {Gen->CGM().Int64Ty}/*TypeParams*/,
+            /*isVarArg*/ false);
+
+    auto ReportFn = Gen->CGM().CreateRuntimeFunction(FnTy, "__clang_jit_print_cycles");
+    return PerfMonitor->createInstrumentedWrapper(F, dyn_cast<Function>(ReportFn.getCallee()));
   }
 
-  void *resolveFunction(const void *NTTPValues, const char **TypeStrings,
-                        unsigned Idx) {
+  JITInstantiation recompileFunction(const void *NTTPValues, const char **TypeStrings,
+                          unsigned Idx, const JITContext& JITCtx) {
+    assert(JITCtx.Emitted && "Instantiation has not been emitted yet");
+    assert(!DevCD && "Recompilation is currently not supported for device code");
+    auto& SMName = JITCtx.DeclName;
+
+    if (auto SpecSymbol = CJ->findSymbol(SMName); !SpecSymbol) {
+      fatal(); // TODO: Remove this after debugging
+    }
+
+    auto BaseMod = llvm::CloneModule(*JITCtx.Mod);
+
+    if (Linker::linkModules(*Consumer->getModule(), std::move(BaseMod)))
+      fatal();
+
+
+    // All the following is copied from resolveModule.
+    // TODO: Outline into separate function that handles optimizing and linking
+    // TODO: Remove symbols from RunningMod that have been added by previous compilation
+
+    Consumer->EmitOptimized(*Ctx);
+
+    // First, mark everything we've newly generated with external linkage. When
+    // we generate additional modules, we'll mark these functions as available
+    // externally, and so we're likely to inline them, but if not, we'll need
+    // to link with the ones generated here.
+
+    for (auto &F : Consumer->getModule()->functions()) {
+      F.setLinkage(llvm::GlobalValue::ExternalLinkage);
+      F.setComdat(nullptr);
+    }
+
+    auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
+      if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
+        return false;
+
+      auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
+      if (!GVar || !GVar->isConstant())
+        return false;
+
+      return true;
+    };
+
+    for (auto &GV : Consumer->getModule()->global_values()) {
+      if (IsLocalUnnamedConst(GV) || GV.hasAppendingLinkage())
+        continue;
+
+      GV.setLinkage(llvm::GlobalValue::ExternalLinkage);
+      if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
+        GO->setComdat(nullptr);
+    }
+
+    std::unique_ptr<llvm::Module> ToRunMod =
+        llvm::CloneModule(*Consumer->getModule());
+
+    auto SMF = ToRunMod->getFunction(SMName);
+    auto* Wrapper = instrumentFunction(SMF);
+
+    // Here we link our previous cache of definitions, etc. into this module.
+    // This includes all of our previously-generated functions (marked as
+    // available externally). We prefer our previously-generated versions to
+    // our current versions should both modules contain the same entities (as
+    // the previously-generated versions have already been optimized).
+
+    // We need to be specifically careful about constants in our module,
+    // however. Clang will generate all string literals as .str (plus a
+    // number), and these from previously-generated code will conflict with the
+    // names chosen for string literals in this module.
+
+    for (auto &GV : ToRunMod->global_values()) {
+      if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
+        continue;
+
+      if (!RunningMod->getNamedValue(GV.getName()))
+        continue;
+
+      llvm::SmallString<16> UniqueName(GV.getName());
+      unsigned BaseSize = UniqueName.size();
+      do {
+        // Trim any suffix off and append the next number.
+        UniqueName.resize(BaseSize);
+        llvm::raw_svector_ostream S(UniqueName);
+        S << "." << ++LastUnique;
+      } while (RunningMod->getNamedValue(UniqueName));
+
+      GV.setName(UniqueName);
+    }
+
+    // Clang will generate local init/deinit functions for variable
+    // initialization, CUDA registration, etc. and these can't be shared with
+    // the base part of the module (as they specifically initialize variables,
+    // etc. that we just generated).
+
+    for (auto &F : ToRunMod->functions()) {
+      // FIXME: This likely covers the set of TU-local init/deinit functions
+      // that can't be shared with the base module. There should be a better
+      // way to do this (e.g., we could record all functions that
+      // CreateGlobalInitOrDestructFunction creates? - ___cuda_ would still be
+      // a special case).
+      if (!F.getName().startswith("__cuda_") &&
+          !F.getName().startswith("_GLOBAL_") &&
+          !F.getName().startswith("__GLOBAL_") &&
+          !F.getName().startswith("__cxx_"))
+        continue;
+
+      if (!RunningMod->getFunction(F.getName()))
+        continue;
+
+      llvm::SmallString<16> UniqueName(F.getName());
+      unsigned BaseSize = UniqueName.size();
+      do {
+        // Trim any suffix off and append the next number.
+        UniqueName.resize(BaseSize);
+        llvm::raw_svector_ostream S(UniqueName);
+        S << "." << ++LastUnique;
+      } while (RunningMod->getFunction(UniqueName));
+
+      F.setName(UniqueName);
+    }
+
+    if (Linker::linkModules(*ToRunMod, llvm::CloneModule(*RunningMod),
+                            Linker::Flags::OverrideFromSrc))
+      fatal();
+
+    auto ModKey = CJ->addModule(std::move(ToRunMod));
+
+    // Now that we've generated code for this module, take them optimized code
+    // and mark the definitions as available externally. We'll link them into
+    // future modules this way so that they can be inlined.
+
+    for (auto &F : Consumer->getModule()->functions())
+      if (!F.isDeclaration())
+        F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+
+    for (auto &GV : Consumer->getModule()->global_values())
+      if (!GV.isDeclaration()) {
+        if (GV.hasAppendingLinkage())
+          cast<GlobalVariable>(GV).setInitializer(nullptr);
+        else if (isa<GlobalAlias>(GV))
+          // Aliases cannot have externally-available linkage, so give them
+          // private linkage.
+          GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
+        else
+          GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+      }
+
+    if (Linker::linkModules(*RunningMod, Consumer->takeModule(),
+                            Linker::Flags::None))
+      fatal();
+
+    Consumer->Initialize(*Ctx);
+
+    auto SpecSymbol = CJ->findSymbol(SMName);
+    assert(SpecSymbol && "Can't find the specialization just generated?");
+
+    if (!SpecSymbol.getAddress())
+      fatal();
+
+    auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
+
+    auto Globals = PerfMonitor->lookupGlobals(SMName);
+
+    return {ModKey, FPtr, Globals};
+  }
+
+   JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
+                        unsigned Idx, JITContext& JITCtx) {
     std::string SMName = instantiateTemplate(NTTPValues, TypeStrings, Idx);
 
     auto* FDecl = Consumer->getCodeGenerator()->GetDeclForMangledName(SMName);
@@ -1473,7 +1775,10 @@ struct CompilerData {
     // Now we know the name of the symbol, check to see if we already have it.
     if (auto SpecSymbol = CJ->findSymbol(SMName))
       if (SpecSymbol.getAddress())
-        return (void *) llvm::cantFail(SpecSymbol.getAddress());
+        // FIXME: Figure out how to handle this.
+        return JITInstantiation(0, (void *) llvm::cantFail(SpecSymbol.getAddress()), {});
+//        return InstContext(true, llvm::CloneModule(*OldCtx.Mod.get()), OldCtx.ModKey, OldCtx.DeclName, OldCtx.EmittedSyms, OldCtx.Inst);
+        //return (void *) llvm::cantFail(SpecSymbol.getAddress());
 
     if (DevCD)
       DevCD->instantiateTemplate(NTTPValues, TypeStrings, Idx);
@@ -1497,6 +1802,7 @@ struct CompilerData {
 
     if (DevCD) {
       DevCD->Consumer->HandleTranslationUnit(*DevCD->Ctx);
+      DevCD->Consumer->EmitOptimized(*DevCD->Ctx);
 
       // We have now created the PTX output, but what we really need as a
       // fatbin that the CUDA runtime will recognize.
@@ -1620,6 +1926,10 @@ struct CompilerData {
 
     Consumer->HandleTranslationUnit(*Ctx);
 
+    // To be used for recompilation
+    auto ModNoOpt = llvm::CloneModule(*Consumer->getModule());
+
+
     // First, mark everything we've newly generated with external linkage. When
     // we generate additional modules, we'll mark these functions as available
     // externally, and so we're likely to inline them, but if not, we'll need
@@ -1726,7 +2036,22 @@ struct CompilerData {
                             Linker::Flags::OverrideFromSrc))
       fatal();
 
-    CJ->addModule(std::move(ToRunMod));
+    outs() << "*****************************\n";
+    outs() << "After linking with RunningMod\n";
+    outs() << "*****************************\n";
+
+    ToRunMod->dump();
+    auto ModPtr = ToRunMod.get();
+     outs().flush();
+
+    auto ModKey = CJ->addModule(std::move(ToRunMod));
+
+     outs() << "*****************************\n";
+     outs() << "After compilation\n";
+     outs() << "*****************************\n";
+
+   ModPtr->dump();
+     outs().flush();
 
     // Now that we've generated code for this module, take them optimized code
     // and mark the definitions as available externally. We'll link them into
@@ -1752,6 +2077,13 @@ struct CompilerData {
                             Linker::Flags::None))
       fatal();
 
+     outs() << "*****************************\n";
+     outs() << "RunningMod:\n";
+     outs() << "*****************************\n";
+
+     RunningMod->dump();
+     outs().flush();
+
     Consumer->Initialize(*Ctx);
 
     auto SpecSymbol = CJ->findSymbol(SMName);
@@ -1760,9 +2092,18 @@ struct CompilerData {
     if (!SpecSymbol.getAddress())
       fatal();
 
-    return (void *) llvm::cantFail(SpecSymbol.getAddress());
+    auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
+
+    auto Globals = PerfMonitor->lookupGlobals(SMName);
+
+    JITCtx.Emitted = true;
+    JITCtx.DeclName = SMName;
+    JITCtx.Mod = std::move(ModNoOpt);
+
+    return {ModKey, FPtr, Globals};
   }
 };
+
 
 llvm::sys::SmartMutex<false> Mutex;
 bool InitializedTarget = false;
@@ -1829,7 +2170,7 @@ struct InstMapInfo {
 
     return (unsigned) h;
   }
-  
+
   static unsigned getHashValue(const ThisInstInfo &TII) {
     using llvm::hash_code;
     using llvm::hash_combine;
@@ -1871,12 +2212,39 @@ struct InstMapInfo {
       if (II.TArgs[i] != StringRef(TII.TypeStrings[i]))
         return false;
 
-    return true; 
+    return true;
   }
 };
 
+
+struct JITFunctionData {
+
+  JITFunctionData() = default;
+
+  JITFunctionData(JITContext&& Context, JITInstantiation Inst) :
+    Context(std::move(Context))
+  {
+    Instantiations.push_back(Inst);
+  }
+
+  // Holds information that is needed for recompilation/reoptimization
+  JITContext Context;
+  // Holds a list of instantiations
+  llvm::SmallVector<JITInstantiation, 8> Instantiations;
+};
+
+//class InstCache {
+//
+//public:
+//  void* lookup(ThisInstInfo info)
+//
+//private:
+//
+//
+//};
+
 llvm::sys::SmartMutex<false> IMutex;
-llvm::DenseMap<InstInfo, void *, InstMapInfo> Instantiations;
+llvm::DenseMap<InstInfo, JITFunctionData, InstMapInfo> Instantiations;
 
 
 
@@ -1895,13 +2263,116 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
                   const void *NTTPValues, unsigned NTTPValuesSize,
                   const char **TypeStrings, unsigned TypeStringsCnt,
                   const char *InstKey, unsigned Idx) {
+
+  // Unfortunately, because we need to check if we need to recompile each time a JIT function is requested,
+  // we probably can't use a separate mutex just for instantiation lookup.
+  // TODO: Find out how to make this faster in multithreaded environments
+
+  llvm::MutexGuard Guard(Mutex);
+
+  auto II =
+      Instantiations.find_as(ThisInstInfo(InstKey, NTTPValues, NTTPValuesSize,
+                                          TypeStrings, TypeStringsCnt));
+  if (II == Instantiations.end()) {
+    // First time compiling this template instantiation.
+    // Make sure the target is initialized and a CompilerData instance for the translation unit exists.
+
+    if (!InitializedTarget) {
+      llvm::InitializeNativeTarget();
+      llvm::InitializeNativeTargetAsmPrinter();
+      llvm::InitializeNativeTargetAsmParser();
+
+      LCtx.reset(new LLVMContext);
+
+      InitializedTarget = true;
+    }
+
+    CompilerData *CD;
+    auto TUCDI = TUCompilerData.find(ASTBuffer);
+    if (TUCDI == TUCompilerData.end()) {
+      CD = new CompilerData(CmdArgs, CmdArgsLen, ASTBuffer, ASTBufferSize,
+                            IRBuffer, IRBufferSize, LocalPtrs, LocalPtrsCnt,
+                            LocalDbgPtrs, LocalDbgPtrsCnt, DeviceData, DevCnt);
+      TUCompilerData[ASTBuffer].reset(CD);
+    } else {
+      CD = TUCDI->second.get();
+    }
+
+    // Compile and populate the JITContext
+    JITContext NewCtx;
+    auto Inst = CD->resolveFunction(NTTPValues, TypeStrings, Idx, NewCtx);
+
+
+    Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings, TypeStringsCnt)] = JITFunctionData(std::move(NewCtx), Inst);
+
+    return Inst.FPtr;
+
+  }
+
+  // The template has been instantiated before. Recompile if necessary.
+
+  auto& FData = II->second;
+  if (!FData.Context.Emitted && !FData.Instantiations.empty()) {
+    // We assume that if the function can be found in our map, it has been compiled before.
+    // TODO: Make this an assertion in the future
+    fatal();
+  }
+
+  // TODO: Let optimizer make recompilation decision
+  bool Recompile = true;
+
+  // For testing purposes
+  const unsigned RecompileThreshold = 10;
+  Recompile = *FData.Instantiations.back().Globals.CallCount >= RecompileThreshold;
+
+  if (!Recompile)
+    return FData.Instantiations.back().FPtr;
+
+  outs() << "Recompiling " << FData.Context.DeclName << "\n";
+  outs() << "Performance of previous configurations:\n";
+  SmallVector<JITPerfMonitor::PerfGlobals, 32> CollectedGlobals;
+  for (auto& PG : FData.Instantiations)
+    CollectedGlobals.push_back(PG.Globals);
+  JITPerfMonitor::printReport(FData.Context.DeclName, CollectedGlobals);
+
+  // We assume that the target is initialized and a CompilerData instance exists for the current TU
+  assert(InitializedTarget && "Target is not initialized");
+  auto TUCDI = TUCompilerData.find(ASTBuffer);
+  assert(TUCDI != TUCompilerData.end() && "No CompilerData for TU found");
+  auto CD = TUCDI->second.get();
+
+  auto Inst = CD->recompileFunction(NTTPValues, TypeStrings, Idx, FData.Context);
+
+  FData.Instantiations.push_back(Inst);
+
+  return Inst.FPtr;
+
+  /*
   {
     llvm::MutexGuard Guard(IMutex);
     auto II =
       Instantiations.find_as(ThisInstInfo(InstKey, NTTPValues, NTTPValuesSize,
                                           TypeStrings, TypeStringsCnt));
-    if (II != Instantiations.end())
-      return II->second;
+    if (II != Instantiations.end()) {
+
+
+
+      // TODO: This is a test, need to figure out how to handle the decision when to recompile
+      llvm::MutexGuard Guard(Mutex);
+
+      // We assume that the target is initialized and a CompilerData instance exists for the current TU
+      auto CD = TUCompilerData.find(ASTBuffer)->second.get();
+
+      InstContext NewCtx = CD->recompileFunction(NTTPValues, TypeStrings, Idx, InstCtx);
+
+      void *FPtr = NewCtx.Inst;
+
+      Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize,
+                              TypeStrings, TypeStringsCnt)] = std::move(NewCtx);
+
+      return FPtr;
+    }
+
   }
 
   llvm::MutexGuard Guard(Mutex);
@@ -1927,20 +2398,21 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
     CD = TUCDI->second.get();
   }
 
-  void *FPtr = CD->resolveFunction(NTTPValues, TypeStrings, Idx);
+  InstContext InstCtx; // New empty context
+
+  InstContext NewCtx = CD->resolveFunction(NTTPValues, TypeStrings, Idx, InstCtx);
+
+  void *FPtr = NewCtx.Inst;
 
   {
     llvm::MutexGuard Guard(IMutex);
     Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize,
-                            TypeStrings, TypeStringsCnt)] = FPtr;
+                            TypeStrings, TypeStringsCnt)] = std::move(NewCtx);
   }
   outs() << "Fetched JIT instatiation successfully\n";
-  return FPtr;
+  return FPtr;*/
 }
 
-extern "C"
-void __clang_jit_report_timing(const char* FName)
-{
-  printf("Timing data for JIT function %s", FName);
+extern "C" void __clang_jit_print_cycles(int64_t cycles) {
+  printf("Cycles: %lu \n", cycles);
 }
-

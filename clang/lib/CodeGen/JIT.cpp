@@ -1698,154 +1698,17 @@ struct CompilerData {
     if (Linker::linkModules(*Consumer->getModule(), std::move(BaseMod)))
       fatal();
 
-
-    // All the following is copied from resolveModule.
-    // TODO: Outline into separate function that handles optimizing and linking
     // TODO: Remove symbols from RunningMod that have been added by previous compilation
+    // Remove previously symbols from the running module which have been emitted as part of a previous compilation
+    // of the same function.
 
-    Consumer->EmitOptimized();
-
-    // First, mark everything we've newly generated with external linkage. When
-    // we generate additional modules, we'll mark these functions as available
-    // externally, and so we're likely to inline them, but if not, we'll need
-    // to link with the ones generated here.
-
-    for (auto &F : Consumer->getModule()->functions()) {
-      F.setLinkage(llvm::GlobalValue::ExternalLinkage);
-      F.setComdat(nullptr);
+    auto FOld = RunningMod->getFunction(SMName);
+    if (FOld) {
+      FOld->removeFromParent();
+      // TODO: Make sure that are no remaining dependencies
     }
 
-    auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
-      if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
-        return false;
-
-      auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
-      if (!GVar || !GVar->isConstant())
-        return false;
-
-      return true;
-    };
-
-    for (auto &GV : Consumer->getModule()->global_values()) {
-      if (IsLocalUnnamedConst(GV) || GV.hasAppendingLinkage())
-        continue;
-
-      GV.setLinkage(llvm::GlobalValue::ExternalLinkage);
-      if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
-        GO->setComdat(nullptr);
-    }
-
-    std::unique_ptr<llvm::Module> ToRunMod =
-        llvm::CloneModule(*Consumer->getModule());
-
-    auto SMF = ToRunMod->getFunction(SMName);
-    auto* Wrapper = instrumentFunction(SMF);
-
-    // Here we link our previous cache of definitions, etc. into this module.
-    // This includes all of our previously-generated functions (marked as
-    // available externally). We prefer our previously-generated versions to
-    // our current versions should both modules contain the same entities (as
-    // the previously-generated versions have already been optimized).
-
-    // We need to be specifically careful about constants in our module,
-    // however. Clang will generate all string literals as .str (plus a
-    // number), and these from previously-generated code will conflict with the
-    // names chosen for string literals in this module.
-
-    for (auto &GV : ToRunMod->global_values()) {
-      if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
-        continue;
-
-      if (!RunningMod->getNamedValue(GV.getName()))
-        continue;
-
-      llvm::SmallString<16> UniqueName(GV.getName());
-      unsigned BaseSize = UniqueName.size();
-      do {
-        // Trim any suffix off and append the next number.
-        UniqueName.resize(BaseSize);
-        llvm::raw_svector_ostream S(UniqueName);
-        S << "." << ++LastUnique;
-      } while (RunningMod->getNamedValue(UniqueName));
-
-      GV.setName(UniqueName);
-    }
-
-    // Clang will generate local init/deinit functions for variable
-    // initialization, CUDA registration, etc. and these can't be shared with
-    // the base part of the module (as they specifically initialize variables,
-    // etc. that we just generated).
-
-    for (auto &F : ToRunMod->functions()) {
-      // FIXME: This likely covers the set of TU-local init/deinit functions
-      // that can't be shared with the base module. There should be a better
-      // way to do this (e.g., we could record all functions that
-      // CreateGlobalInitOrDestructFunction creates? - ___cuda_ would still be
-      // a special case).
-      if (!F.getName().startswith("__cuda_") &&
-          !F.getName().startswith("_GLOBAL_") &&
-          !F.getName().startswith("__GLOBAL_") &&
-          !F.getName().startswith("__cxx_"))
-        continue;
-
-      if (!RunningMod->getFunction(F.getName()))
-        continue;
-
-      llvm::SmallString<16> UniqueName(F.getName());
-      unsigned BaseSize = UniqueName.size();
-      do {
-        // Trim any suffix off and append the next number.
-        UniqueName.resize(BaseSize);
-        llvm::raw_svector_ostream S(UniqueName);
-        S << "." << ++LastUnique;
-      } while (RunningMod->getFunction(UniqueName));
-
-      F.setName(UniqueName);
-    }
-
-    if (Linker::linkModules(*ToRunMod, llvm::CloneModule(*RunningMod),
-                            Linker::Flags::OverrideFromSrc))
-      fatal();
-
-    auto ModKey = CJ->addModule(std::move(ToRunMod));
-
-    // Now that we've generated code for this module, take them optimized code
-    // and mark the definitions as available externally. We'll link them into
-    // future modules this way so that they can be inlined.
-
-    for (auto &F : Consumer->getModule()->functions())
-      if (!F.isDeclaration())
-        F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-
-    for (auto &GV : Consumer->getModule()->global_values())
-      if (!GV.isDeclaration()) {
-        if (GV.hasAppendingLinkage())
-          cast<GlobalVariable>(GV).setInitializer(nullptr);
-        else if (isa<GlobalAlias>(GV))
-          // Aliases cannot have externally-available linkage, so give them
-          // private linkage.
-          GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
-        else
-          GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-      }
-
-    if (Linker::linkModules(*RunningMod, Consumer->takeModule(),
-                            Linker::Flags::None))
-      fatal();
-
-    Consumer->Initialize(*Ctx);
-
-    auto SpecSymbol = CJ->findSymbol(SMName);
-    assert(SpecSymbol && "Can't find the specialization just generated?");
-
-    if (!SpecSymbol.getAddress())
-      fatal();
-
-    auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
-
-    auto Globals = PerfMonitor->lookupGlobals(SMName);
-
-    return {ModKey, FPtr, Globals};
+    return finalizeConsumerModule(SMName);
   }
 
    JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
@@ -2039,71 +1902,14 @@ struct CompilerData {
         GO->setComdat(nullptr);
     }
 
-     // To be used for recompilation
-     auto ModNoOpt = llvm::CloneModule(*Consumer->getModule());
+    // To be used for recompilation
+    auto ModNoOpt = llvm::CloneModule(*Consumer->getModule());
 
-    // Here we link our previous cache of definitions, etc. into this module.
-    // This includes all of our previously-generated functions (marked as
-    // available externally). We prefer our previously-generated versions to
-    // our current versions should both modules contain the same entities (as
-    // the previously-generated versions have already been optimized).
+    outs() << "Module saved for recompilation:\n";
+    ModNoOpt->dump();
+    errs().flush();
 
-    // We need to be specifically careful about constants in our module,
-    // however. Clang will generate all string literals as .str (plus a
-    // number), and these from previously-generated code will conflict with the
-    // names chosen for string literals in this module.
-
-    for (auto &GV : Consumer->getModule()->global_values()) {
-      if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
-        continue;
-
-      if (!RunningMod->getNamedValue(GV.getName()))
-        continue;
-
-      llvm::SmallString<16> UniqueName(GV.getName());
-      unsigned BaseSize = UniqueName.size();
-      do {
-        // Trim any suffix off and append the next number.
-        UniqueName.resize(BaseSize);
-        llvm::raw_svector_ostream S(UniqueName);
-        S << "." << ++LastUnique;
-      } while (RunningMod->getNamedValue(UniqueName));
-
-      GV.setName(UniqueName);
-    }
-
-    // Clang will generate local init/deinit functions for variable
-    // initialization, CUDA registration, etc. and these can't be shared with
-    // the base part of the module (as they specifically initialize variables,
-    // etc. that we just generated).
-
-    for (auto &F : Consumer->getModule()->functions()) {
-      // FIXME: This likely covers the set of TU-local init/deinit functions
-      // that can't be shared with the base module. There should be a better
-      // way to do this (e.g., we could record all functions that
-      // CreateGlobalInitOrDestructFunction creates? - ___cuda_ would still be
-      // a special case).
-      if (!F.getName().startswith("__cuda_") &&
-          !F.getName().startswith("_GLOBAL_") &&
-          !F.getName().startswith("__GLOBAL_") &&
-          !F.getName().startswith("__cxx_"))
-        continue;
-
-      if (!RunningMod->getFunction(F.getName()))
-        continue;
-
-      llvm::SmallString<16> UniqueName(F.getName());
-      unsigned BaseSize = UniqueName.size();
-      do {
-        // Trim any suffix off and append the next number.
-        UniqueName.resize(BaseSize);
-        llvm::raw_svector_ostream S(UniqueName);
-        S << "." << ++LastUnique;
-      } while (RunningMod->getFunction(UniqueName));
-
-      F.setName(UniqueName);
-    }
-
+#if 0
     if (Linker::linkModules(*Consumer->getModule(), llvm::CloneModule(*RunningMod),
                             Linker::Flags::OverrideFromSrc))
       fatal();
@@ -2188,10 +1994,182 @@ struct CompilerData {
     auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
 
     auto Globals = PerfMonitor->lookupGlobals(SMName);
+#endif
 
     JITCtx.Emitted = true;
     JITCtx.DeclName = SMName;
     JITCtx.Mod = std::move(ModNoOpt);
+
+    return finalizeConsumerModule(SMName);
+  }
+
+private:
+  JITInstantiation finalizeConsumerModule(StringRef SMName) {
+
+    auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
+      if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
+        return false;
+
+      auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
+      if (!GVar || !GVar->isConstant())
+        return false;
+
+      return true;
+    };
+
+    // Here we link our previous cache of definitions, etc. into this module.
+    // This includes all of our previously-generated functions (marked as
+    // available externally). We prefer our previously-generated versions to
+    // our current versions should both modules contain the same entities (as
+    // the previously-generated versions have already been optimized).
+
+    // We need to be specifically careful about constants in our module,
+    // however. Clang will generate all string literals as .str (plus a
+    // number), and these from previously-generated code will conflict with the
+    // names chosen for string literals in this module.
+
+    for (auto &GV : Consumer->getModule()->global_values()) {
+      if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
+        continue;
+
+      if (!RunningMod->getNamedValue(GV.getName()))
+        continue;
+
+      llvm::SmallString<16> UniqueName(GV.getName());
+      unsigned BaseSize = UniqueName.size();
+      do {
+        // Trim any suffix off and append the next number.
+        UniqueName.resize(BaseSize);
+        llvm::raw_svector_ostream S(UniqueName);
+        S << "." << ++LastUnique;
+      } while (RunningMod->getNamedValue(UniqueName));
+
+      GV.setName(UniqueName);
+    }
+
+    // Clang will generate local init/deinit functions for variable
+    // initialization, CUDA registration, etc. and these can't be shared with
+    // the base part of the module (as they specifically initialize variables,
+    // etc. that we just generated).
+
+    for (auto &F : Consumer->getModule()->functions()) {
+      // FIXME: This likely covers the set of TU-local init/deinit functions
+      // that can't be shared with the base module. There should be a better
+      // way to do this (e.g., we could record all functions that
+      // CreateGlobalInitOrDestructFunction creates? - ___cuda_ would still be
+      // a special case).
+      if (!F.getName().startswith("__cuda_") &&
+          !F.getName().startswith("_GLOBAL_") &&
+          !F.getName().startswith("__GLOBAL_") &&
+          !F.getName().startswith("__cxx_"))
+        continue;
+
+      if (!RunningMod->getFunction(F.getName()))
+        continue;
+
+      llvm::SmallString<16> UniqueName(F.getName());
+      unsigned BaseSize = UniqueName.size();
+      do {
+        // Trim any suffix off and append the next number.
+        UniqueName.resize(BaseSize);
+        llvm::raw_svector_ostream S(UniqueName);
+        S << "." << ++LastUnique;
+      } while (RunningMod->getFunction(UniqueName));
+
+      F.setName(UniqueName);
+    }
+
+    if (Linker::linkModules(*Consumer->getModule(), llvm::CloneModule(*RunningMod),
+                            Linker::Flags::OverrideFromSrc))
+      fatal();
+
+    outs() << "*****************************\n";
+    outs() << "After linking with RunningMod, before optimizing\n";
+    outs() << "*****************************\n";
+    Consumer->getModule()->dump();
+    errs().flush();
+
+    // Optimize the merged module, containing both the newly generated IR as well as
+    // previously emitted code marked available_externally.
+    Consumer->EmitOptimized();
+
+    outs() << "*****************************\n";
+    outs() << "After optimization\n";
+    outs() << "*****************************\n";
+
+    std::unique_ptr<llvm::Module> ToRunMod =
+        llvm::CloneModule(*Consumer->getModule());
+
+    ToRunMod->dump();
+    errs().flush();
+
+    // Instrument optimized function for tuning
+    auto SMF = ToRunMod->getFunction(SMName);
+    auto* Wrapper = instrumentFunction(SMF);
+
+
+
+    auto ModKey = CJ->addModule(std::move(ToRunMod));
+
+    // Now that we've generated code for this module, take them optimized code
+    // and mark the definitions as available externally. We'll link them into
+    // future modules this way so that they can be inlined.
+
+    // Linker does not link definitions marked as available_exernally!
+    // See the following code:
+    //     if (!DGV && !shouldOverrideFromSrc() &&
+//         (GV.hasLocalLinkage() || GV.hasLinkOnceLinkage() ||
+//          GV.hasAvailableExternallyLinkage()))
+//       return false;
+
+
+    for (auto &F : Consumer->getModule()->functions())
+      if (!F.isDeclaration())
+        F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+
+    for (auto &GV : Consumer->getModule()->global_values())
+      if (!GV.isDeclaration()) {
+        if (GV.hasAppendingLinkage())
+          cast<GlobalVariable>(GV).setInitializer(nullptr);
+        else if (isa<GlobalAlias>(GV))
+          // Aliases cannot have externally-available linkage, so give them
+          // private linkage.
+          GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
+        else
+          GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+      }
+
+//    outs() << "*****************************\n";
+//    outs() << "To be merged into RunningMod:\n";
+//    outs() << "*****************************\n";
+//    outs().flush();
+//    Consumer->getModule()->dump();
+//    errs().flush();
+
+    if (Linker::linkModules(*RunningMod, Consumer->takeModule(),
+                            Linker::Flags::OverrideFromSrc))
+      fatal();
+
+    outs() << "*****************************\n";
+    outs() << "RunningMod:\n";
+    outs() << "*****************************\n";
+
+    outs().flush();
+    RunningMod->dump();
+    errs().flush();
+
+    Consumer->Initialize(*Ctx);
+
+    auto SpecSymbol = CJ->findSymbol(SMName);
+    assert(SpecSymbol && "Can't find the specialization just generated?");
+
+    if (!SpecSymbol.getAddress())
+      fatal();
+
+    auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
+
+    auto Globals = PerfMonitor->lookupGlobals(SMName);
+
 
     return {ModKey, FPtr, Globals};
   }
@@ -2414,8 +2392,10 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
   bool Recompile = true;
 
   // For testing purposes
-  const unsigned RecompileThreshold = 10;
+  const unsigned RecompileThreshold = 3;
   Recompile = *FData.Instantiations.back().Globals.CallCount >= RecompileThreshold;
+
+  outs() << "#Recompilations: " << *FData.Instantiations.back().Globals.CallCount << "\n";
 
   if (!Recompile)
     return FData.Instantiations.back().FPtr;

@@ -864,14 +864,15 @@ struct JITContext {
 
   JITContext() = default;
 
-  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  std::string DeclName, SmallVector<StringRef, 16> EmittedSyms)
-    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName), EmittedSyms(EmittedSyms)
-    {}
+  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  StringRef DeclName)
+    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName)
+    {
+    }
 
   bool Emitted{false};
   std::unique_ptr<llvm::Module> Mod;
-  std::string DeclName{""};
-  SmallVector<StringRef, 16> EmittedSyms; // TODO: Might need a SmallString/std::string here
+  SmallString<32> DeclName{""};
+  SmallVector<SmallString<16>, 16> EmittedSyms;
 
 };
 
@@ -1687,7 +1688,7 @@ struct CompilerData {
                           unsigned Idx, const JITContext& JITCtx) {
     assert(JITCtx.Emitted && "Instantiation has not been emitted yet");
     assert(!DevCD && "Recompilation is currently not supported for device code");
-    auto& SMName = JITCtx.DeclName;
+    StringRef SMName = JITCtx.DeclName;
 
     if (auto SpecSymbol = CJ->findSymbol(SMName); !SpecSymbol) {
       fatal(); // TODO: Remove this after debugging
@@ -1698,15 +1699,23 @@ struct CompilerData {
     if (Linker::linkModules(*Consumer->getModule(), std::move(BaseMod)))
       fatal();
 
-    // TODO: Remove symbols from RunningMod that have been added by previous compilation
     // Remove previously symbols from the running module which have been emitted as part of a previous compilation
     // of the same function.
 
-    auto FOld = RunningMod->getFunction(SMName);
-    if (FOld) {
-      FOld->removeFromParent();
-      // TODO: Make sure that are no remaining dependencies
+    for (auto& ValueName : JITCtx.EmittedSyms) {
+      auto GV = RunningMod->getNamedValue(ValueName);
+      if (GV) {
+        outs() << "Removing global: " << ValueName << "\n";
+        GV->removeFromParent();
+        // TODO: Make sure that there are no remaining dependencies
+        // TODO: A function marked as emitted may possibly be removed during optimization and therefore not reintroduced
+        //       into the running module. Find out if that can happen and is problematic.
+      }/* else {
+        outs() << "Global not found: " << ValueName << "\n";
+      }*/
+
     }
+
 
     return finalizeConsumerModule(SMName);
   }
@@ -1900,6 +1909,9 @@ struct CompilerData {
       GV.setLinkage(llvm::GlobalValue::ExternalLinkage);
       if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
         GO->setComdat(nullptr);
+
+      if (!GV.isDeclaration())
+        JITCtx.EmittedSyms.push_back(GV.getName());
     }
 
     // To be used for recompilation
@@ -1908,93 +1920,6 @@ struct CompilerData {
     outs() << "Module saved for recompilation:\n";
     ModNoOpt->dump();
     errs().flush();
-
-#if 0
-    if (Linker::linkModules(*Consumer->getModule(), llvm::CloneModule(*RunningMod),
-                            Linker::Flags::OverrideFromSrc))
-      fatal();
-
-    // Optimize the merged module, containing both the newly generated IR as well as
-    // previously emitted code marked available_externally.
-    Consumer->EmitOptimized();
-
-    outs() << "*****************************\n";
-    outs() << "After linking with RunningMod\n";
-    outs() << "*****************************\n";
-
-    std::unique_ptr<llvm::Module> ToRunMod =
-        llvm::CloneModule(*Consumer->getModule());
-
-    ToRunMod->dump();
-    errs().flush();
-
-    // Instrument optimized function for tuning
-    auto SMF = ToRunMod->getFunction(SMName);
-    auto* Wrapper = instrumentFunction(SMF);
-
-
-
-    auto ModKey = CJ->addModule(std::move(ToRunMod));
-
-    // Now that we've generated code for this module, take them optimized code
-    // and mark the definitions as available externally. We'll link them into
-    // future modules this way so that they can be inlined.
-
-    // Linker does not link definitions marked as available_exernally!
-    // See the following code:
-    //     if (!DGV && !shouldOverrideFromSrc() &&
-//         (GV.hasLocalLinkage() || GV.hasLinkOnceLinkage() ||
-//          GV.hasAvailableExternallyLinkage()))
-//       return false;
-
-
-     for (auto &F : Consumer->getModule()->functions())
-      if (!F.isDeclaration())
-        F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-
-    for (auto &GV : Consumer->getModule()->global_values())
-      if (!GV.isDeclaration()) {
-        if (GV.hasAppendingLinkage())
-          cast<GlobalVariable>(GV).setInitializer(nullptr);
-        else if (isa<GlobalAlias>(GV))
-          // Aliases cannot have externally-available linkage, so give them
-          // private linkage.
-          GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
-        else
-          GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-      }
-
-     outs() << "*****************************\n";
-     outs() << "To be merged into RunningMod:\n";
-     outs() << "*****************************\n";
-     outs().flush();
-     Consumer->getModule()->dump();
-     errs().flush();
-
-    if (Linker::linkModules(*RunningMod, Consumer->takeModule(),
-                            Linker::Flags::OverrideFromSrc))
-      fatal();
-
-    outs() << "*****************************\n";
-    outs() << "RunningMod:\n";
-    outs() << "*****************************\n";
-
-    outs().flush();
-    RunningMod->dump();
-    errs().flush();
-
-    Consumer->Initialize(*Ctx);
-
-    auto SpecSymbol = CJ->findSymbol(SMName);
-    assert(SpecSymbol && "Can't find the specialization just generated?");
-
-    if (!SpecSymbol.getAddress())
-      fatal();
-
-    auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
-
-    auto Globals = PerfMonitor->lookupGlobals(SMName);
-#endif
 
     JITCtx.Emitted = true;
     JITCtx.DeclName = SMName;
@@ -2138,6 +2063,7 @@ private:
         else
           GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
       }
+
 
 //    outs() << "*****************************\n";
 //    outs() << "To be merged into RunningMod:\n";

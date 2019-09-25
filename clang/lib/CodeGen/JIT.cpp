@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Tuner/Optimizer.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "CodeGenModule.h"
 #include "CoverageMappingGen.h"
@@ -100,8 +101,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/IPO/Internalize.h"
-#include <llvm/Support/FormatVariadic.h>
-#include <llvm/Support/FormatAdapters.h>
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/FormatAdapters.h"
 
 #include <cassert>
 #include <cstdlib> // ::getenv
@@ -338,7 +339,8 @@ public:
     llvm::orc::LegacyCtorDtorRunner<CompileLayerT>
       CtorRunner(std::move(CtorNames), K);
     if (auto Err = CtorRunner.runViaLayer(CompileLayer)) {
-      llvm::errs() << Err << "\n";
+      llvm::errs() << "Error while running static constructors: " << Err << "\n";
+      errs().flush();
       fatal();
     }
 
@@ -637,7 +639,8 @@ private:
 
   Value* insertRDTSCP(IRBuilder<>& IRB) {
     llvm::Module* M = IRB.GetInsertBlock()->getModule();
-    auto* RDTSCP = Intrinsic::getDeclaration(M, Intrinsic::x86_rdtscp); // TODO: Limited to x86 for now
+    // TODO: Limited to x86 for now. Replace with llvm.readcyclecounter intrinsic?
+    auto* RDTSCP = Intrinsic::getDeclaration(M, Intrinsic::x86_rdtscp);
     auto* Call = IRB.CreateCall(RDTSCP);
     return IRB.CreateExtractValue(Call, {0}); // 64 bit value
   }
@@ -830,6 +833,7 @@ public:
     F->setName(FImplName);
 
     Function* Wrapper = Function::Create(F->getFunctionType(), Function::ExternalLinkage, FName, M);
+    //Wrapper->stealArgumentListFrom(*F);
 
     auto* EB = BasicBlock::Create(C, "", Wrapper);
     IRBuilder<> IRB(EB);
@@ -838,8 +842,8 @@ public:
 
     // TODO: Not sure what's the best way to get the argument list here
     llvm::SmallVector<Value*, 8> ArgList;
-    for (auto&& arg : Wrapper->operand_values()) {
-      ArgList.emplace_back(arg);
+    for (auto&& arg : Wrapper->args()) {
+      ArgList.emplace_back(&arg);
     }
 
     auto* FCall = IRB.CreateCall(F, ArgList, "ImplCall");
@@ -873,6 +877,7 @@ struct JITContext {
   std::unique_ptr<llvm::Module> Mod;
   SmallString<32> DeclName{""};
   SmallVector<SmallString<16>, 16> EmittedSyms;
+  std::unique_ptr<tuner::Optimizer> Opt;
 
 };
 
@@ -1685,7 +1690,7 @@ struct CompilerData {
   }
 
   JITInstantiation recompileFunction(const void *NTTPValues, const char **TypeStrings,
-                          unsigned Idx, const JITContext& JITCtx) {
+                          unsigned Idx, JITContext& JITCtx) {
     assert(JITCtx.Emitted && "Instantiation has not been emitted yet");
     assert(!DevCD && "Recompilation is currently not supported for device code");
     StringRef SMName = JITCtx.DeclName;
@@ -1695,9 +1700,6 @@ struct CompilerData {
     }
 
     auto BaseMod = llvm::CloneModule(*JITCtx.Mod);
-
-    if (Linker::linkModules(*Consumer->getModule(), std::move(BaseMod)))
-      fatal();
 
     // Remove previously symbols from the running module which have been emitted as part of a previous compilation
     // of the same function.
@@ -1716,9 +1718,11 @@ struct CompilerData {
 
     }
 
-
-    return finalizeConsumerModule(SMName);
+    return finalizeModule(std::move(BaseMod), JITCtx);
   }
+
+#define DUMP_MOD
+#define DUMP_MOD_INSTRUMENTED
 
    JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
                         unsigned Idx, JITContext& JITCtx) {
@@ -1914,22 +1918,53 @@ struct CompilerData {
         JITCtx.EmittedSyms.push_back(GV.getName());
     }
 
-    // To be used for recompilation
-    auto ModNoOpt = llvm::CloneModule(*Consumer->getModule());
 
+    auto GenMod = Consumer->takeModule();
+
+    // To be used for recompilation
+    auto ModNoOpt = llvm::CloneModule(*GenMod);
+
+    // Reset for next instantiation
+    Consumer->Initialize(*Ctx);
+
+#ifdef DUMP_MOD
+     outs() << "*****************************\n";
+     outs() << "Initial Running Module:\n";
+     outs() << "*****************************\n";
+
+     outs().flush();
+     RunningMod->dump();
+     errs().flush();
+#endif
+
+
+#ifdef DUMP_MOD
+    outs() << "*****************************\n";
     outs() << "Module saved for recompilation:\n";
+    outs() << "*****************************\n";
+
+    outs().flush();
     ModNoOpt->dump();
     errs().flush();
+#endif
 
     JITCtx.Emitted = true;
     JITCtx.DeclName = SMName;
     JITCtx.Mod = std::move(ModNoOpt);
+    JITCtx.Opt = llvm::make_unique<tuner::Optimizer>(*Diagnostics,
+                                                     *HSOpts,
+                                                     Invocation->getCodeGenOpts(),
+                                                     *TargetOpts,
+                                                     *Invocation->getLangOpts(),
+                                                     CJ->getTargetMachine());
 
-    return finalizeConsumerModule(SMName);
+    return finalizeModule(std::move(GenMod), JITCtx);
   }
 
 private:
-  JITInstantiation finalizeConsumerModule(StringRef SMName) {
+  JITInstantiation finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx) {
+
+    StringRef SMName = JITCtx.DeclName;
 
     auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
       if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
@@ -1953,7 +1988,7 @@ private:
     // number), and these from previously-generated code will conflict with the
     // names chosen for string literals in this module.
 
-    for (auto &GV : Consumer->getModule()->global_values()) {
+    for (auto &GV : Mod->global_values()) {
       if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
         continue;
 
@@ -1977,7 +2012,7 @@ private:
     // the base part of the module (as they specifically initialize variables,
     // etc. that we just generated).
 
-    for (auto &F : Consumer->getModule()->functions()) {
+    for (auto &F : Mod->functions()) {
       // FIXME: This likely covers the set of TU-local init/deinit functions
       // that can't be shared with the base module. There should be a better
       // way to do this (e.g., we could record all functions that
@@ -2004,34 +2039,49 @@ private:
       F.setName(UniqueName);
     }
 
-    if (Linker::linkModules(*Consumer->getModule(), llvm::CloneModule(*RunningMod),
+    if (Linker::linkModules(*Mod, llvm::CloneModule(*RunningMod),
                             Linker::Flags::OverrideFromSrc))
       fatal();
 
-    outs() << "*****************************\n";
-    outs() << "After linking with RunningMod, before optimizing\n";
-    outs() << "*****************************\n";
-    Consumer->getModule()->dump();
-    errs().flush();
+//    outs() << "*****************************\n";
+//    outs() << "After linking with RunningMod, before optimizing\n";
+//    outs() << "*****************************\n";
+//    Consumer->getModule()->dump();
+//    errs().flush();
 
     // Optimize the merged module, containing both the newly generated IR as well as
     // previously emitted code marked available_externally.
-    Consumer->EmitOptimized();
+    // NOTE: Nothing to do here for device, since tuning is currently only implemented for host code.
+    // CUDA code is optimized/emitted during the initial function resolution.
 
+    auto& Opt = JITCtx.Opt;
+    Opt->optimize(Mod.get());
+    //Consumer->EmitOptimized();
+
+    std::unique_ptr<llvm::Module> ToRunMod =
+        llvm::CloneModule(*Mod);
+
+#ifdef DUMP_MOD
     outs() << "*****************************\n";
     outs() << "After optimization\n";
     outs() << "*****************************\n";
-
-    std::unique_ptr<llvm::Module> ToRunMod =
-        llvm::CloneModule(*Consumer->getModule());
-
+    outs().flush();
     ToRunMod->dump();
     errs().flush();
+#endif
 
     // Instrument optimized function for tuning
     auto SMF = ToRunMod->getFunction(SMName);
     auto* Wrapper = instrumentFunction(SMF);
 
+#ifdef DUMP_MOD_INSTRUMENTED
+    outs() << "*****************************\n";
+    outs() << "After instrumentation\n";
+    outs() << "*****************************\n";
+    outs().flush();
+    ToRunMod->dump();
+    errs().flush();
+#endif
 
 
     auto ModKey = CJ->addModule(std::move(ToRunMod));
@@ -2040,19 +2090,15 @@ private:
     // and mark the definitions as available externally. We'll link them into
     // future modules this way so that they can be inlined.
 
-    // Linker does not link definitions marked as available_exernally!
-    // See the following code:
-    //     if (!DGV && !shouldOverrideFromSrc() &&
-//         (GV.hasLocalLinkage() || GV.hasLinkOnceLinkage() ||
-//          GV.hasAvailableExternallyLinkage()))
-//       return false;
+    // Linker does not link definitions marked as available_externally by default,
+    // that's why we need to specify OverrideFromSource.
 
 
-    for (auto &F : Consumer->getModule()->functions())
+    for (auto &F : Mod->functions())
       if (!F.isDeclaration())
         F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
 
-    for (auto &GV : Consumer->getModule()->global_values())
+    for (auto &GV : Mod->global_values())
       if (!GV.isDeclaration()) {
         if (GV.hasAppendingLinkage())
           cast<GlobalVariable>(GV).setInitializer(nullptr);
@@ -2064,30 +2110,27 @@ private:
           GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
       }
 
-
-//    outs() << "*****************************\n";
-//    outs() << "To be merged into RunningMod:\n";
-//    outs() << "*****************************\n";
-//    outs().flush();
-//    Consumer->getModule()->dump();
-//    errs().flush();
-
-    if (Linker::linkModules(*RunningMod, Consumer->takeModule(),
+    if (Linker::linkModules(*RunningMod, std::move(Mod),
                             Linker::Flags::OverrideFromSrc))
       fatal();
 
+#ifdef DUMP_MOD
     outs() << "*****************************\n";
-    outs() << "RunningMod:\n";
+    outs() << "New Running Module\n";
     outs() << "*****************************\n";
-
     outs().flush();
     RunningMod->dump();
     errs().flush();
+#endif
 
-    Consumer->Initialize(*Ctx);
 
     auto SpecSymbol = CJ->findSymbol(SMName);
     assert(SpecSymbol && "Can't find the specialization just generated?");
+
+    if (auto Err = SpecSymbol.takeError()) {
+      errs() << "JIT Error: " << Err << "\n";
+      fatal();
+    }
 
     if (!SpecSymbol.getAddress())
       fatal();
@@ -2321,7 +2364,7 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
   const unsigned RecompileThreshold = 3;
   Recompile = *FData.Instantiations.back().Globals.CallCount >= RecompileThreshold;
 
-  outs() << "#Recompilations: " << *FData.Instantiations.back().Globals.CallCount << "\n";
+  outs() << "#Calls: " << *FData.Instantiations.back().Globals.CallCount << "\n";
 
   if (!Recompile)
     return FData.Instantiations.back().FPtr;

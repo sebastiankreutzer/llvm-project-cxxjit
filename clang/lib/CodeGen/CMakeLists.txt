@@ -103,6 +103,9 @@ add_clang_library(clangCodeGen
   TargetInfo.cpp
   VarBypassDetector.cpp
   JIT.cpp
+  Tuner/Optimizer.cpp
+  Tuner/Tuner.cpp
+
 
   DEPENDS
   ${codegen_deps}

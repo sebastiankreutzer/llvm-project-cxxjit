@@ -771,7 +771,7 @@ public:
   }
 
   Function* createInstrumentedWrapper(Function* F, Function* ReportFn) {
-    const auto& FName = F->getName();
+    std::string FName = F->getName().str();
     auto* M = F->getParent();
 
     auto& C = M->getContext();
@@ -779,7 +779,7 @@ public:
     auto make_global = [&](llvm::Type* GType, Constant* Init, const char* Suffix) -> llvm::GlobalVariable* {
       const char* Prefix = "__clangjit_";
       std::stringstream ss;
-      ss << Prefix << FName.str() << "_" << Suffix; // TODO: Probably not the fastest way to do this
+      ss << Prefix << FName << "_" << Suffix; // TODO: Probably not the fastest way to do this
       auto Name = ss.str();
       M->getOrInsertGlobal(Name, GType);
       auto* Global = M->getGlobalVariable(Name);
@@ -803,7 +803,7 @@ public:
     auto* CallCountGlobal = make_global_int64("count");
     auto* VarNGlobal = make_global_double("var_n");
 
-    auto& FGlobals = InstrGlobalMap[FName.str()];
+    auto& FGlobals = InstrGlobalMap[FName];
     FGlobals.TotalCyclesGlobal = CyclesGlobal->getName();
     FGlobals.MeanCyclesGlobal = MeanCyclesGlobal->getName();
     FGlobals.CallCountGlobal = CallCountGlobal->getName();
@@ -815,7 +815,7 @@ public:
 //    InstrGlobalMap[FName] = Globals;
 
 
-    std::string FImplName = "__clangjit_impl_" + FName.str();
+    std::string FImplName = "__clangjit_impl_" + FName;
     F->setName(FImplName);
 
     Function* Wrapper = Function::Create(F->getFunctionType(), Function::ExternalLinkage, FName, M);

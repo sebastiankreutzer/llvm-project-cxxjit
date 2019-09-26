@@ -706,56 +706,42 @@ private:
     auto Sym = CJ->findSymbol(Name);
     auto addr = Sym.getAddress();
     if (!addr) {
-      outs() << "Unable to find address of global " << Name << "\n";
+      errs() << "Unable to find address of global " << Name << "\n";
       return nullptr;
     }
     return reinterpret_cast<T*>(addr.get());
   }
 
 public:
-  static void printReport(StringRef FName, const PerfGlobals& PG) {
-    printReport(FName, SmallVector<PerfGlobals, 1>{PG});
-  }
-
-  static void printReport(StringRef FName, ArrayRef<PerfGlobals> PGArray) {
-    outs() << "JIT Timing Report:\n";
-    auto Header = formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "#Called", "Cycles", "Mean", "RSD").str();
-    outs() << Header << "\n";
-    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-    for (auto& PG : PGArray) {
-      if (!(PG.Cycles && PG.CallCount && PG.MeanCycles && PG.VarN)) {
-        errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
-        continue;
-      }
-      auto Cycles = *PG.Cycles;
-      auto CallCount = *PG.CallCount;
-      if (!CallCount) {
-        outs() << FName.str() << " No data collected\n";
-        return;
-      }
-      auto VarN = *PG.VarN;
-      auto Mean = *PG.MeanCycles;
-      auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
-      auto RSD = SD / Mean;
-      outs() << formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}\n", FName, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
-    }
-    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-//    for (auto& It : InstrGlobalMap) {
-//      auto FName = It.first();
-//      auto& Globals = It.second;
-//      auto Cycles = *fetchGlobal<int64_t>(Globals.TotalCyclesGlobal);
-//      auto CallCount = *fetchGlobal<int64_t>(Globals.CallCountGlobal);
-//      if (!CallCount) {
+  // TODO: Remove this, reporting is now done outside of class
+//  static void printReport(StringRef FName, const PerfGlobals& PG) {
+//    printReport(FName, SmallVector<PerfGlobals, 1>{PG});
+//  }
+//
+//  static void printReport(JITFun) {
+//    outs() << "JIT Timing Report:\n";
+//    auto Header = formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "#Called", "Cycles", "Mean", "RSD").str();
+//    outs() << Header << "\n";
+//    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+//    for (auto& PG : PGArray) {
+//      if (!(PG.Cycles && PG.CallCount && PG.MeanCycles && PG.VarN)) {
+//        errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
 //        continue;
 //      }
-//      auto VarN = *fetchGlobal<double>(Globals.VarNGlobal);
-//      auto Mean = Cycles / static_cast<double>(CallCount);
-//      Mean = *fetchGlobal<double>(Globals.MeanCyclesGlobal);
+//      auto Cycles = *PG.Cycles;
+//      auto CallCount = *PG.CallCount;
+//      if (!CallCount) {
+//        outs() << FName.str() << " No data collected\n";
+//        return;
+//      }
+//      auto VarN = *PG.VarN;
+//      auto Mean = *PG.MeanCycles;
 //      auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
-//      auto RSD = (SD / Mean) * 100.0;
-//      outs() << FName.str() << " " << CallCount << " " << Cycles << " " << Mean << " " << RSD << "%\n";
+//      auto RSD = SD / Mean;
+//      outs() << formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}\n", FName, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
 //    }
-  }
+//    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+//  }
 
 public:
 
@@ -846,7 +832,7 @@ public:
       ArgList.emplace_back(&arg);
     }
 
-    auto* FCall = IRB.CreateCall(F, ArgList, "ImplCall");
+    auto* FCall = IRB.CreateCall(F, ArgList);
 
     instrumentPostCall(IRB, CallCountGlobal, CyclesGlobal, MeanCyclesGlobal, VarNGlobal, CyclesStart, ReportFn);
 
@@ -1721,8 +1707,8 @@ struct CompilerData {
     return finalizeModule(std::move(BaseMod), JITCtx);
   }
 
-#define DUMP_MOD
-#define DUMP_MOD_INSTRUMENTED
+//#define DUMP_MOD
+//#define DUMP_MOD_INSTRUMENTED
 
    JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
                         unsigned Idx, JITContext& JITCtx) {
@@ -2272,6 +2258,34 @@ struct JITFunctionData {
   llvm::SmallVector<JITInstantiation, 8> Instantiations;
 };
 
+void printReport(JITFunctionData& FData) {
+  auto& FName = FData.Context.DeclName;
+
+  outs() << "JIT Timing Report:\n";
+  auto Header = formatv("{0} {1,4} {2,10}  {3,10}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Cycles", "Mean", "RSD").str();
+  outs() << Header << "\n";
+  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  for (auto& Inst : FData.Instantiations) {
+    auto& PG = Inst.Globals;
+    if (!(PG.Cycles && PG.CallCount && PG.MeanCycles && PG.VarN)) {
+      errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
+      continue;
+    }
+    auto Cycles = *PG.Cycles;
+    auto CallCount = *PG.CallCount;
+    if (!CallCount) {
+      outs() << FName.str() << " No data collected\n";
+      return;
+    }
+    auto VarN = *PG.VarN;
+    auto Mean = *PG.MeanCycles;
+    auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
+    auto RSD = SD / Mean;
+    outs() << formatv("{0} {1,4} {2,10}  {3,10}  {4,10}  {5,10}\n", FName, Inst.ModKey, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
+  }
+  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+}
+
 //class InstCache {
 //
 //public:
@@ -2371,10 +2385,11 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
 
   outs() << "Recompiling " << FData.Context.DeclName << "\n";
   outs() << "Performance of previous configurations:\n";
-  SmallVector<JITPerfMonitor::PerfGlobals, 32> CollectedGlobals;
-  for (auto& PG : FData.Instantiations)
-    CollectedGlobals.push_back(PG.Globals);
-  JITPerfMonitor::printReport(FData.Context.DeclName, CollectedGlobals);
+//  SmallVector<JITPerfMonitor::PerfGlobals, 32> CollectedGlobals;
+//  for (auto& PG : FData.Instantiations)
+//    CollectedGlobals.push_back(PG.Globals);
+//  JITPerfMonitor::printReport(FData.Context.DeclName, CollectedGlobals);
+  printReport(FData);
 
   // We assume that the target is initialized and a CompilerData instance exists for the current TU
   assert(InitializedTarget && "Target is not initialized");

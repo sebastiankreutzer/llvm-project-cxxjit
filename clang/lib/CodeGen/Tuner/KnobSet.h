@@ -8,45 +8,63 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "Knobs.h"
+#include "KnobDataTypes.h"
+#include "Knob.h"
 
 using namespace llvm;
 
 namespace tuner {
 
+class IntKnob;
+class LoopKnob;
+
+// A KnobSet is a collection of tuning knobs.
 class KnobSet {
 public:
 
-  void add(IntKnob* K) {
-    IntKnobs[K->getID()] = K;
-  }
+  // NOTE: Cannot be inlined because of circular dependency issues
+  void add(IntKnob* K);
 
-  void remove(KnobID ID) {
+  void removeIntKnob(KnobID ID) {
     IntKnobs.erase(ID);
   }
 
+  void add(LoopKnob* K);
+
+  void removeLoopKnob(KnobID ID) {
+    LoopKnobs.erase(ID);
+  }
+
   llvm::DenseMap<KnobID, IntKnob*> IntKnobs;
+  llvm::DenseMap<KnobID, LoopKnob*> LoopKnobs;
 };
 
+// A Knob holds the data corresponding to a KnobSet.
+struct KnobConfig {
+//  Knob(KnobSet* KS) : Knobs(KS) {}
+//
+//  KnobSet* Knobs;
+
+  llvm::DenseMap<KnobID, int> IntCfg;
+  llvm::DenseMap <KnobID, LoopTransformConfig> LoopCfg;
+
+};
+
+// Encapsulates the configuration of a given KnobSet.
 class KnobState {
 public:
-  KnobState(KnobSet& KS, KnobConfig Cfg) :
+  KnobState(KnobSet& KS, KnobConfig& Cfg) :
     KS(KS), Config(Cfg) {}
 
   void dump() {
     dump(outs());
   }
 
-  void dump(raw_ostream& OS) {
-    for (auto& IK : KS.IntKnobs) {
-      OS << IK.second->getName() << ": " << IK.second->getVal(Config) << "\n";
-    }
-  }
+  void dump(raw_ostream& OS);
 
   KnobSet& KS;
   KnobConfig& Config;
 };
-
 
 
 struct KnobSetFn {

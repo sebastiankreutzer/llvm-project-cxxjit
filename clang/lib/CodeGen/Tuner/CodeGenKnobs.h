@@ -2,7 +2,7 @@
 // Created by sebastian on 24.09.19.
 //
 
-#include "Knobs.h"
+#include "SimpleKnobs.h"
 
 #ifndef CLANG_CODEGENKNOBS_H
 #define CLANG_CODEGENKNOBS_H

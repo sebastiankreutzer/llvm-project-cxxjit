@@ -7,7 +7,7 @@
 
 #include <random>
 
-#include "Knobs.h"
+#include "SimpleKnobs.h"
 #include "KnobSet.h"
 #include "Util.h"
 

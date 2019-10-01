@@ -35,7 +35,10 @@ class Optimizer {
   OptLvlKnob OptLvl;
   OptSizeKnob OptSizeLvl;
 
+
   KnobSet Knobs;
+
+  Module* ModToOptimize;
 
 public:
   Optimizer(clang::DiagnosticsEngine &Diags,
@@ -44,13 +47,17 @@ public:
             const clang::TargetOptions &TOpts,
             const clang::LangOptions &LOpts,
             llvm::TargetMachine& TM)
-            : Diags(Diags), HSOpts(HeaderOpts), CodeGenOpts(CGOpts), TargetOpts(TOpts), LangOpts(LOpts), TM(TM) {
+            : Diags(Diags), HSOpts(HeaderOpts), CodeGenOpts(CGOpts), TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr) {
     Knobs.add(&OptLvl);
     Knobs.add(&OptSizeLvl);
     OptTuner = llvm::make_unique<RandomTuner>(Knobs);
   }
 
-  void optimize(llvm::Module* M);
+  void init(llvm::Module* M);
+
+  // Optimize the given module.
+  // It is assumed that the module is a (slightly modified) clone of the module that init() was called with.
+  bool reoptimize(llvm::Module* M);
 
 
 private:

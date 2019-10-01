@@ -7,69 +7,10 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Twine.h"
+#include "Knob.h"
+#include "KnobSet.h"
 
 namespace tuner {
-
-template<typename ValT>
-class Knob;
-
-class KnobRegistry;
-
-using KnobID = unsigned;
-
-struct KnobConfig {
-//  KnobConfig(KnobSet* KS) : Knobs(KS) {}
-//
-//  KnobSet* Knobs;
-
-  llvm::DenseMap<KnobID, int> IntCfg;
-
-};
-
-class KnobBase {
-public:
-  inline KnobBase();
-  virtual ~KnobBase() {};
-
-  KnobID getID() const {
-    return ID;
-  }
-
-  friend struct KnobRegistry;
-
-private:
-  KnobID ID;
-};
-
-struct KnobRegistry {
-  static void registerKnob(KnobBase* K) {
-    static KnobID Counter = 1;
-    K->ID = Counter++;
-  }
-};
-
-KnobBase::KnobBase() {
-  ID = 0;
-  KnobRegistry::registerKnob(this);
-}
-
-template<typename ValT>
-class Knob: public KnobBase {
-public:
-
-  using ValTy = ValT;
-
-  //virtual void applyConfig(const KnobConfig&) = 0;
-
-  virtual ValTy getDefault() const = 0;
-  virtual ValTy getVal(const KnobConfig& Cfg) const = 0;
-  virtual void setVal(KnobConfig& Cfg, ValTy) = 0;
-
-  virtual std::string getName() {
-    return "Knob (id=" + std::to_string(getID()) + ")";
-  }
-
-};
 
 
 template<typename T>

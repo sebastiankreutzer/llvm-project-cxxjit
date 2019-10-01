@@ -854,16 +854,22 @@ struct JITContext {
 
   JITContext() = default;
 
-  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  StringRef DeclName)
-    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName)
-    {
-    }
+//  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  StringRef DeclName)
+//    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName)
+//    {
+//
+//    }
 
+  // Whether the function currently available in the JIT engine
   bool Emitted{false};
-  std::unique_ptr<llvm::Module> Mod;
+  // The unoptimized module
+  std::unique_ptr<llvm::Module> Mod{nullptr};
+  // Mangled function name
   SmallString<32> DeclName{""};
-  SmallVector<SmallString<16>, 16> EmittedSyms;
-  std::unique_ptr<tuner::Optimizer> Opt;
+  // Symbols emitted during instantiation (also mangled)
+  SmallVector<SmallString<16>, 16> EmittedSyms{};
+  // Optimizer instance for this module
+  std::unique_ptr<tuner::Optimizer> Opt{nullptr};
 
 };
 
@@ -1689,12 +1695,12 @@ struct CompilerData {
 
     // Remove previously symbols from the running module which have been emitted as part of a previous compilation
     // of the same function.
-
+    int NumRemoved = 0;
     for (auto& ValueName : JITCtx.EmittedSyms) {
       auto GV = RunningMod->getNamedValue(ValueName);
       if (GV) {
-        outs() << "Removing global: " << ValueName << "\n";
         GV->removeFromParent();
+        NumRemoved++;
         // TODO: Make sure that there are no remaining dependencies
         // TODO: A function marked as emitted may possibly be removed during optimization and therefore not reintroduced
         //       into the running module. Find out if that can happen and is problematic.
@@ -1703,11 +1709,13 @@ struct CompilerData {
       }*/
 
     }
+    outs() << "Removed " << NumRemoved << " globals" << "\n";
 
     return finalizeModule(std::move(BaseMod), JITCtx);
   }
 
 //#define DUMP_MOD
+#define DUMP_MOD_ONCE
 //#define DUMP_MOD_INSTRUMENTED
 
    JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
@@ -1924,7 +1932,7 @@ struct CompilerData {
 #endif
 
 
-#ifdef DUMP_MOD
+#if defined(DUMP_MOD) || defined(DUMP_MOD_ONCE)
     outs() << "*****************************\n";
     outs() << "Module saved for recompilation:\n";
     outs() << "*****************************\n";
@@ -1943,6 +1951,7 @@ struct CompilerData {
                                                      *TargetOpts,
                                                      *Invocation->getLangOpts(),
                                                      CJ->getTargetMachine());
+    JITCtx.Opt->init(JITCtx.Mod.get());
 
     return finalizeModule(std::move(GenMod), JITCtx);
   }
@@ -2041,7 +2050,7 @@ private:
     // CUDA code is optimized/emitted during the initial function resolution.
 
     auto& Opt = JITCtx.Opt;
-    Opt->optimize(Mod.get());
+    Opt->reoptimize(Mod.get());
     //Consumer->EmitOptimized();
 
     std::unique_ptr<llvm::Module> ToRunMod =

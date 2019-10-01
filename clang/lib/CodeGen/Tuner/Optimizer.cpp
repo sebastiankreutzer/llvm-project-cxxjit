@@ -2,6 +2,7 @@
 // Created by sebastian on 20.09.19.
 //
 
+#include <llvm/Transforms/Utils/Cloning.h>
 #include "Optimizer.h"
 
 #include "clang/Basic/CodeGenOptions.h"
@@ -11,6 +12,8 @@
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO.h"
+
+#include "Passes.h"
 
 
 using namespace clang;
@@ -94,7 +97,6 @@ void Optimizer::createPasses(const llvm::Module& M, legacy::PassManager &PM, leg
       (!CodeGenOpts.SampleProfileFile.empty() &&
        CodeGenOpts.PrepareForThinLTO));
 
-
   PMB.OptLevel = OptLevel;
   PMB.SizeLevel = OptSizeLevel;
   PMB.SLPVectorize = CodeGenOpts.VectorizeSLP;
@@ -116,7 +118,22 @@ void Optimizer::createPasses(const llvm::Module& M, legacy::PassManager &PM, leg
 
 }
 
-void Optimizer::optimize(Module* M) {
+void Optimizer::init(Module* M) {
+  this->ModToOptimize = M;
+
+  // Create loop knobs
+  initializeLoopInfoWrapperPassPass(*PassRegistry::getPassRegistry());
+  legacy::PassManager PM;
+  PM.add(createLoopKnobCreatorPass(Knobs));
+  PM.run(*M);
+}
+
+bool Optimizer::reoptimize(Module* M) {
+  if (!ModToOptimize) {
+    errs() << "Optimizer is not initialized!" << "\n";
+    return false;
+  }
+
   setCommandLineOpts(CodeGenOpts);
 
   legacy::PassManager PerModulePasses;
@@ -157,6 +174,7 @@ void Optimizer::optimize(Module* M) {
     PerModulePasses.run(*M);
   }
 
+  return M;
 }
 
 }

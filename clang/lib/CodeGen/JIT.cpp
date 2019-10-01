@@ -672,8 +672,8 @@ private:
     auto* ElseBB = BasicBlock::Create(IRB.getContext(), "called_before", F);
     auto* RetBB = BasicBlock::Create(IRB.getContext(), "return", F);
 
-    // TODO: Debug only
-    IRB.CreateCall(ReportFn, {Elapsed});
+    // TODO: Remove this eventually, for debugging only
+    //IRB.CreateCall(ReportFn, {Elapsed});
 
     // Branch
     IRB.CreateCondBr(IRB.CreateICmpEQ(OldCount, IRB.getInt64(0)), IfBB, ElseBB);
@@ -1668,6 +1668,7 @@ struct CompilerData {
   }
 
 
+
   Function* instrumentFunction(Function* F) {
     // TODO: Debugging only
     auto* Gen = Consumer->getCodeGenerator();
@@ -1720,9 +1721,10 @@ struct CompilerData {
     return finalizeModule(std::move(BaseMod), JITCtx);
   }
 
-#define DUMP_MOD
-#define DUMP_MOD_ONCE
+//#define DUMP_MOD
+//#define DUMP_MOD_ONCE
 //#define DUMP_MOD_INSTRUMENTED
+#define PRINT_MOD_STATS
 
    JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
                         unsigned Idx, JITContext& JITCtx) {
@@ -1966,6 +1968,26 @@ struct CompilerData {
   }
 
 private:
+
+  void prepareForLinking(llvm::Module* DstMod, const llvm::Module* SrcMod) {
+
+    // During linking, all named metadata (except llvm.module.flags) from the source module will be appended to the
+    // existing MD in the destination module (see IRLinker::linkNamedMDNodes).
+    // This causes llvm.ident to double in size every time its recompiled.
+    // To prevent this, we just clear all named metadata of the destination module that already exists in the source module.
+    // TODO: Will this possibly destroy important information? If yes, fall back to clearing llvm.ident directly.
+
+    const NamedMDNode *ModFlags = DstMod->getModuleFlagsMetadata();
+    for (NamedMDNode &NMD : DstMod->named_metadata()) {
+      // Ignore module flags
+      if (&NMD == ModFlags)
+        continue;
+      if (SrcMod->getNamedMetadata(NMD.getName())) {
+        NMD.clearOperands();
+      }
+    }
+  }
+
   JITInstantiation finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx) {
 
     StringRef SMName = JITCtx.DeclName;
@@ -2068,6 +2090,7 @@ private:
       F.setName(UniqueName);
     }
 
+    prepareForLinking(Mod.get(), RunningMod.get());
     if (Linker::linkModules(*Mod, llvm::CloneModule(*RunningMod),
                             Linker::Flags::OverrideFromSrc))
       fatal();
@@ -2097,6 +2120,17 @@ private:
     outs().flush();
     ToRunMod->dump();
     errs().flush();
+#endif
+
+#ifdef PRINT_MOD_STATS
+// TODO
+    unsigned InstCount = 0;
+    for (auto& F : *ToRunMod) {
+      InstCount += F.getInstructionCount();
+    }
+    unsigned GlobalCount = ToRunMod->getGlobalList().size();
+
+    outs() << "Optimized module stats: " << InstCount << " instructions, " << GlobalCount << " globals\n";
 #endif
 
     // Instrument optimized function for tuning
@@ -2138,6 +2172,9 @@ private:
         else
           GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
       }
+
+
+    prepareForLinking(RunningMod.get(), Mod.get());
 
     if (Linker::linkModules(*RunningMod, std::move(Mod),
                             Linker::Flags::OverrideFromSrc))
@@ -2305,7 +2342,7 @@ void printReport(JITFunctionData& FData) {
   auto& FName = FData.Context.DeclName;
 
   outs() << "JIT Timing Report:\n";
-  auto Header = formatv("{0} {1,4} {2,10}  {3,10}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Cycles", "Mean", "RSD").str();
+  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,12}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Cycles", "Mean", "RSD").str();
   outs() << Header << "\n";
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
   for (auto& Inst : FData.Instantiations) {
@@ -2324,7 +2361,7 @@ void printReport(JITFunctionData& FData) {
     auto Mean = *PG.MeanCycles;
     auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
     auto RSD = SD / Mean;
-    outs() << formatv("{0} {1,4} {2,10}  {3,10}  {4,10}  {5,10}\n", FName, Inst.ModKey, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
+    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,12}  {5,10}\n", FName, Inst.ModKey, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
   }
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
@@ -2421,7 +2458,7 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
   const unsigned RecompileThreshold = 3;
   Recompile = *FData.Instantiations.back().Globals.CallCount >= RecompileThreshold;
 
-  outs() << "#Calls: " << *FData.Instantiations.back().Globals.CallCount << "\n";
+  //outs() << "#Calls: " << *FData.Instantiations.back().Globals.CallCount << "\n";
 
   if (!Recompile)
     return FData.Instantiations.back().FPtr;

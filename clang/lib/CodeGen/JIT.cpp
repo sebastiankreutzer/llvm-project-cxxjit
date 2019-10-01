@@ -866,8 +866,11 @@ struct JITContext {
   std::unique_ptr<llvm::Module> Mod{nullptr};
   // Mangled function name
   SmallString<32> DeclName{""};
-  // Symbols emitted during instantiation (also mangled)
-  SmallVector<SmallString<16>, 16> EmittedSyms{};
+  // Symbols emitted during instantiation (also mangled) that need to be replaced in the running module on recompilation.
+  SmallVector<SmallString<16>, 16> ReplaceOnRecompilation{};
+  // Module key of the initial compilation. This module must not be deleted since it contains the global definitions which
+  // all subsequent recompilations depend on.
+  orc::VModuleKey PrimaryModKey{0};
   // Optimizer instance for this module
   std::unique_ptr<tuner::Optimizer> Opt{nullptr};
 
@@ -1665,8 +1668,7 @@ struct CompilerData {
   }
 
 
-  Function* instrumentFunction(Function* F)
-  {
+  Function* instrumentFunction(Function* F) {
     // TODO: Debugging only
     auto* Gen = Consumer->getCodeGenerator();
 
@@ -1693,10 +1695,14 @@ struct CompilerData {
 
     auto BaseMod = llvm::CloneModule(*JITCtx.Mod);
 
-    // Remove previously symbols from the running module which have been emitted as part of a previous compilation
+    // Remove symbols from the running module which have been emitted as part of a previous compilation
     // of the same function.
+    // This is done to ensure that the newly optimized IR will be used for inlining in the future.
+    // TODO: When tuning, does this make sense? The newest module might not have the best code.
+    //       Maybe we should use a baseline version (from the first compilation) and stick with that.
+    //       Alternatively, we could try to update the code with the current best version.
     int NumRemoved = 0;
-    for (auto& ValueName : JITCtx.EmittedSyms) {
+    for (auto& ValueName : JITCtx.ReplaceOnRecompilation) {
       auto GV = RunningMod->getNamedValue(ValueName);
       if (GV) {
         GV->removeFromParent();
@@ -1714,7 +1720,7 @@ struct CompilerData {
     return finalizeModule(std::move(BaseMod), JITCtx);
   }
 
-//#define DUMP_MOD
+#define DUMP_MOD
 #define DUMP_MOD_ONCE
 //#define DUMP_MOD_INSTRUMENTED
 
@@ -1887,6 +1893,9 @@ struct CompilerData {
     for (auto &F : Consumer->getModule()->functions()) {
       F.setLinkage(llvm::GlobalValue::ExternalLinkage);
       F.setComdat(nullptr);
+
+      if (!F.isDeclaration())
+        JITCtx.ReplaceOnRecompilation.push_back(F.getName());
     }
 
     auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
@@ -1908,8 +1917,6 @@ struct CompilerData {
       if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
         GO->setComdat(nullptr);
 
-      if (!GV.isDeclaration())
-        JITCtx.EmittedSyms.push_back(GV.getName());
     }
 
 
@@ -1953,7 +1960,9 @@ struct CompilerData {
                                                      CJ->getTargetMachine());
     JITCtx.Opt->init(JITCtx.Mod.get());
 
-    return finalizeModule(std::move(GenMod), JITCtx);
+    auto Inst = finalizeModule(std::move(GenMod), JITCtx);
+    JITCtx.PrimaryModKey = Inst.ModKey;
+    return Inst;
   }
 
 private:
@@ -1971,6 +1980,31 @@ private:
 
       return true;
     };
+
+    // Global variables that have been emitted during a previous compilation run must not be re-emitted.
+    // We therefore need to change the linkage of all globals to common linkage for every recompilation.
+    // TODO: Probably more efficient to this once after the initial compilation
+    if (JITCtx.Emitted) {
+      for (auto &GV : Mod->global_values()) {
+
+        if (isa<Function>(GV))
+          continue;
+        if (GV.hasLocalLinkage())
+          continue;
+
+        GV.setLinkage(GlobalValue::CommonLinkage); // TODO: Is this the correct linkage type?
+      }
+
+#ifdef DUMP_MOD
+      outs() << "*****************************\n";
+      outs() << "After adjusting linkage\n";
+      outs() << "*****************************\n";
+      outs().flush();
+      Mod->dump();
+      errs().flush();
+#endif
+
+    }
 
     // Here we link our previous cache of definitions, etc. into this module.
     // This includes all of our previously-generated functions (marked as

@@ -9,6 +9,8 @@ namespace tuner {
 
 using KnobID = unsigned;
 
+constexpr KnobID InvalidKnobID = 0;
+
 template<typename ValT>
 class Knob;
 class KnobRegistry;

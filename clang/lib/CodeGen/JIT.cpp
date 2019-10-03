@@ -1923,12 +1923,16 @@ struct CompilerData {
 
 
     auto GenMod = Consumer->takeModule();
-
-    // To be used for recompilation
-    auto ModNoOpt = llvm::CloneModule(*GenMod);
-
     // Reset for next instantiation
     Consumer->Initialize(*Ctx);
+
+    auto Opt = llvm::make_unique<tuner::Optimizer>(*Diagnostics,
+                                                   *HSOpts,
+                                                   Invocation->getCodeGenOpts(),
+                                                   *TargetOpts,
+                                                   *Invocation->getLangOpts(),
+                                                   CJ->getTargetMachine());
+    Opt->init(GenMod.get());
 
 #ifdef DUMP_MOD
      outs() << "*****************************\n";
@@ -1947,20 +1951,14 @@ struct CompilerData {
     outs() << "*****************************\n";
 
     outs().flush();
-    ModNoOpt->dump();
+    GenMod->dump();
     errs().flush();
 #endif
 
     JITCtx.Emitted = true;
     JITCtx.DeclName = SMName;
-    JITCtx.Mod = std::move(ModNoOpt);
-    JITCtx.Opt = llvm::make_unique<tuner::Optimizer>(*Diagnostics,
-                                                     *HSOpts,
-                                                     Invocation->getCodeGenOpts(),
-                                                     *TargetOpts,
-                                                     *Invocation->getLangOpts(),
-                                                     CJ->getTargetMachine());
-    JITCtx.Opt->init(JITCtx.Mod.get());
+    JITCtx.Mod = llvm::CloneModule(*GenMod);
+    JITCtx.Opt = std::move(Opt);
 
     auto Inst = finalizeModule(std::move(GenMod), JITCtx);
     JITCtx.PrimaryModKey = Inst.ModKey;

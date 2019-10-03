@@ -5,31 +5,11 @@
 #include "llvm/Analysis/LoopPass.h"
 #include "KnobSet.h"
 #include "LoopKnob.h"
+#include "LoopMD.h"
 
 using namespace llvm;
 
 namespace tuner {
-
-MDNode* getLoopID(Loop* Loop) {
-  LLVMContext& Ctx = Loop->getHeader()->getContext();
-  auto LoopID = Loop->getLoopID();
-  if (!LoopID) {
-    auto Dummy = MDNode::get(Ctx, {});
-    LoopID = MDNode::get(Ctx, {Dummy});
-    LoopID->replaceOperandWith(0, LoopID);
-    Loop->setLoopID(LoopID);
-  }
-  return LoopID;
-}
-
-MDNode* createLoopName(Loop* Loop, unsigned Name) {
-  LLVMContext& Ctx = Loop->getHeader()->getContext();
-  auto LoopID = getLoopID(Loop);
-  auto NameStr = MDString::get(Ctx, std::to_string(Name));
-  auto LoopMD = MDNode::get(Ctx, {NameStr});
-  MDNode::concatenate(LoopID, LoopMD);
-  return LoopMD;
-}
 
 class LoopKnobCreator : public llvm::LoopPass {
 
@@ -57,14 +37,14 @@ public:
       return false;
     }
 
-    auto Name = LoopIDs++;
-    auto LMD = createLoopName(Loop, Name);
-
-    // TODO: Hello memory leak! Figure out how should own the knob.
+    // TODO: Hello memory leak! Figure out who should own the knob.
     //       For now it's not a big deal since loop knobs should probably not be deleted before termination.
-    LoopKnob* LK = new LoopKnob(Name);
-
+    LoopKnob* LK = new LoopKnob;
     Knobs->add(LK);
+
+    //auto Name = LoopIDs++;
+    auto LMD = assignLoopName(Loop, LK->getID());
+    outs() << "Loop knob created with ID=" << LK->getID() << ":\n";
 
     return true;
   }

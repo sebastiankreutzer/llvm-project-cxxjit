@@ -2,7 +2,6 @@
 // Created by sebastian on 20.09.19.
 //
 
-#include <llvm/Transforms/Utils/Cloning.h>
 #include "Optimizer.h"
 
 #include "clang/Basic/CodeGenOptions.h"
@@ -12,6 +11,7 @@
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 #include "Passes.h"
 
@@ -136,6 +136,18 @@ bool Optimizer::reoptimize(Module* M) {
 
   setCommandLineOpts(CodeGenOpts);
 
+  // TODO: For now, generate new config everytime optimize() is called. Figure out where that decision is to be made.
+  KnobConfig Cfg = OptTuner->generateNextConfig();
+
+  KnobState KS(Knobs, Cfg);
+  outs() << "Tuner Configuration: " << "\n";
+  outs() << "-------------------- " << "\n";
+  KS.dump();
+  outs() << "-------------------- " << "\n";
+
+  legacy::PassManager KnobPasses;
+  KnobPasses.add(createApplyLoopKnobPass(Cfg));
+
   legacy::PassManager PerModulePasses;
   PerModulePasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
@@ -144,12 +156,6 @@ bool Optimizer::reoptimize(Module* M) {
   PerFunctionPasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
 
-  // TODO: For now, generate new config everytime optimize() is called. Figure out where that decision is to be made.
-  KnobConfig Cfg = OptTuner->generateNextConfig();
-
-  KnobState KS(Knobs, Cfg);
-  outs() << "Tuner Configuration: " << "\n";
-  KS.dump();
 
   createPasses(*M, PerModulePasses, PerFunctionPasses, Cfg);
 
@@ -158,6 +164,11 @@ bool Optimizer::reoptimize(Module* M) {
 
   // Run passes. For now we do all passes at once, but eventually we
   // would like to have the option of streaming code generation.
+
+  {
+    PrettyStackTraceString CrashInfo("Apply knobs to module");
+    KnobPasses.run(*M);
+  }
 
   {
     PrettyStackTraceString CrashInfo("Per-function optimization");

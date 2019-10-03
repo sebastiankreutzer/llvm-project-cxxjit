@@ -68,11 +68,15 @@ public:
 
 
 struct KnobSetFn {
-  virtual void operator()(IntKnob& knob) = 0;
+  virtual void operator()(IntKnob&) = 0;
+  virtual void operator()(LoopKnob&) = 0;
 };
 
 inline void apply(KnobSetFn& Fn, KnobSet& Set) {
   for (auto& K : Set.IntKnobs) {
+    Fn(*K.second);
+  }
+  for (auto& K : Set.LoopKnobs) {
     Fn(*K.second);
   }
 }

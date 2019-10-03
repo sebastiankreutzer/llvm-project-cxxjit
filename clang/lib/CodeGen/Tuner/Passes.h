@@ -12,6 +12,7 @@ namespace llvm {
 namespace tuner {
 
   Pass* createLoopKnobCreatorPass(KnobSet& KS);
+  Pass* createApplyLoopKnobPass(KnobConfig& KnobCfg);
 
 }
 

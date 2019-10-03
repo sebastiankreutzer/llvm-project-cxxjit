@@ -22,8 +22,8 @@ void KnobState::dump(raw_ostream& OS) {
     OS << IK.second->getName() << ": " << IK.second->getVal(Config) << "\n";
   }
   for (auto &LK : KS.LoopKnobs) {
-// TODO: Print loop knobs
-//OS << LK.second->getName() << ": " << LK.second->getVal(Config) << "\n";
+    OS << LK.second->getName() << ":\n";
+    LK.second->getVal(Config).dump(OS, 3);
   }
 }
 

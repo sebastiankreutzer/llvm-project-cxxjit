@@ -8,6 +8,7 @@
 #include <random>
 
 #include "SimpleKnobs.h"
+#include "LoopKnob.h"
 #include "KnobSet.h"
 #include "Util.h"
 
@@ -28,8 +29,13 @@ struct GenRandomConfigFn: public KnobSetFn {
 
   void operator()(IntKnob& K) override {
     std::uniform_int_distribution<int> dist(K.min(), K.max());
-    auto val = dist(RNE);
-    Cfg.IntCfg[K.getID()] = val;
+    auto Val = dist(RNE);
+    K.setVal(Cfg, Val);
+  }
+
+  void operator()(LoopKnob& K) override {
+    auto LCfg = createRandomLoopConfig(RNE);
+    K.setVal(Cfg, LCfg);
   }
 
   RNETy& RNE;

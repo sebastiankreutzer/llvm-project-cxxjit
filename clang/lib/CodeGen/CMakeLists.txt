@@ -108,6 +108,7 @@ add_clang_library(clangCodeGen
   Tuner/Tuner.cpp
   Tuner/LoopKnobCreator.cpp
   Tuner/KnobSet.cpp
+  Tuner/LoopKnob.cpp
 
   DEPENDS
   ${codegen_deps}

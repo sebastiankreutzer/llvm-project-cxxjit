@@ -25,14 +25,14 @@ struct LoopTransformConfig {
 
   // For members with the suffix "Exp", the value is logarithmic
 
-  unsigned InterleaveCountExp{4};
+  unsigned InterleaveCountExp{3};
   bool VectorizePredicateEnable{true};
-  unsigned VectorizeWidthExp{4};
+  unsigned VectorizeWidthExp{3};
   bool DisableLICM{false};
   bool DisableLICMVersioning{false};
   bool Distribute{true};
 
-  unsigned UnrollCountExp{8};
+  unsigned UnrollCountExp{4};
 
   // NOTE: Instead of setting llvm.unroll.full it's almost certainly better to just work with high unroll counts.
   //       This prevents big jumps when generating neighboring configs.

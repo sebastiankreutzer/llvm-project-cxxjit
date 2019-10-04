@@ -22,6 +22,19 @@ public:
   virtual KnobConfig generateNextConfig() = 0;
 };
 
+struct GenDefaultConfigFn: public KnobSetFn {
+
+  void operator()(IntKnob& K) override {
+    K.setVal(Cfg, K.getDefault());
+  }
+
+  void operator()(LoopKnob& K) override {
+    K.setVal(Cfg, K.getDefault());
+  }
+
+  KnobConfig Cfg;
+};
+
 template<typename RNETy>
 struct GenRandomConfigFn: public KnobSetFn {
 
@@ -49,16 +62,27 @@ KnobConfig createRandomConfig(RNETy& RNE, KnobSet& Set) {
   return Fn.Cfg;
 }
 
+inline KnobConfig createDefaultConfig(KnobSet& Set) {
+  GenDefaultConfigFn Fn;
+  apply(Fn, Set);
+  return Fn.Cfg;
+}
+
 class RandomTuner: public Tuner {
 public:
   explicit RandomTuner(KnobSet& Knobs):
-    Knobs(Knobs) {
+    Knobs(Knobs), FirstIteration(true) {
     RNE = TunerRNE(util::genSeed());
   }
 
 
   KnobConfig generateNextConfig() override {
-    CurrentConfig = createRandomConfig(RNE, Knobs);
+    if (FirstIteration) {
+      CurrentConfig = createDefaultConfig(Knobs);
+      FirstIteration = false;
+    } else {
+      CurrentConfig = createRandomConfig(RNE, Knobs);
+    }
     return CurrentConfig;
   }
 
@@ -66,6 +90,7 @@ private:
   KnobSet& Knobs;
   TunerRNE RNE;
   KnobConfig CurrentConfig;
+  bool FirstIteration;
 
 };
 

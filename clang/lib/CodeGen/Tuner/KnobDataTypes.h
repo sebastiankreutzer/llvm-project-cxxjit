@@ -23,8 +23,9 @@ struct LoopTransformConfig {
   static constexpr unsigned UNROLL_COUNT_MIN = 0;
   static constexpr unsigned UNROLL_COUNT_MAX = 6;
 
-  // For members with the suffix "Exp", the value is logarithmic
+  bool DisableLoopTransform{true};
 
+  // For members with the suffix "Exp", the value is logarithmic
   unsigned InterleaveCountExp{3};
   bool VectorizePredicateEnable{true};
   unsigned VectorizeWidthExp{3};

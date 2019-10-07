@@ -609,6 +609,65 @@ struct DevData {
   size_t FileDataCnt;
 };
 
+
+struct TimingStats {
+  unsigned N;
+  double Mean;
+  double Variance;
+  double SD;
+
+  TimingStats() = default;
+
+  TimingStats(unsigned N, double Mean, double Variance) :
+      N(N), Mean(Mean), Variance(Variance) {
+    SD = std::sqrt(Variance);
+  }
+
+  bool Valid() const {
+    return N > 0 && Mean > 0 && Variance >= 0;
+  }
+
+  bool betterThan(const TimingStats& Other) {
+    // TODO: Do t-test instead
+    if (!Valid())
+      return false;
+    if (!Other.Valid())
+      return true;
+    return Mean < Other.Mean;
+  }
+
+  double getTotal() {
+    return N * Mean;
+  }
+
+  double getRSD() {
+    return SD / Mean;
+  }
+
+  double getStdErrOfMean() {
+    return SD / std::sqrt(N);
+  }
+
+  double getRelativeStdErr() {
+    return getStdErrOfMean() / Mean;
+  }
+};
+
+struct StatsTracker {
+  bool HasBest{false};
+  unsigned BestVersion;
+  TimingStats BestStats;
+
+  void update(unsigned ID, TimingStats Stats) {
+    if (!HasBest || Stats.betterThan(BestStats)) {
+      BestVersion = ID;
+      BestStats = Stats;
+      HasBest = true;
+    }
+  }
+
+};
+
 class JITPerfMonitor {
 
   ClangJIT* CJ;
@@ -632,6 +691,10 @@ public:
     int64_t* Cycles{nullptr};
     int64_t* CallCount{nullptr};
     double* MeanCycles{nullptr};
+
+    bool Valid() {
+      return VarN && Cycles && CallCount && MeanCycles;
+    }
   };
 
 private:
@@ -649,7 +712,7 @@ private:
     return insertRDTSCP(IRB);
   }
 
-  void instrumentPostCall(IRBuilder<>& IRB, GlobalVariable* CallCount, GlobalVariable* CycleCount, GlobalVariable* MeanCycles, GlobalVariable* VarN, Value* StartCycles, Function* ReportFn) {
+  void instrumentPostCall(IRBuilder<>& IRB, GlobalVariable* CallCount, GlobalVariable* CycleCount, GlobalVariable* MeanCycles, GlobalVariable* VarN, Value* StartCycles) {
 
     auto* StopCycles = insertRDTSCP(IRB);
 
@@ -699,6 +762,11 @@ private:
     IRB.CreateBr(RetBB);
 
     IRB.SetInsertPoint(RetBB);
+
+//    auto TrackerPtrInt = IRB.getInt64(reinterpret_cast<int64_t>(&Tracker));
+//    auto TrackerPtr = IRB.CreateIntToPtr(TrackerPtrInt, IRB.getInt8PtrTy());
+//    auto IDConst = IRB.getInt32(ID);
+//    IRB.CreateCall(CallbackFn, {TrackerPtr, IDConst, Incd, NewMean, NewVarN});
   }
 
   template<typename T>
@@ -712,36 +780,6 @@ private:
     return reinterpret_cast<T*>(addr.get());
   }
 
-public:
-  // TODO: Remove this, reporting is now done outside of class
-//  static void printReport(StringRef FName, const PerfGlobals& PG) {
-//    printReport(FName, SmallVector<PerfGlobals, 1>{PG});
-//  }
-//
-//  static void printReport(JITFun) {
-//    outs() << "JIT Timing Report:\n";
-//    auto Header = formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "#Called", "Cycles", "Mean", "RSD").str();
-//    outs() << Header << "\n";
-//    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-//    for (auto& PG : PGArray) {
-//      if (!(PG.Cycles && PG.CallCount && PG.MeanCycles && PG.VarN)) {
-//        errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
-//        continue;
-//      }
-//      auto Cycles = *PG.Cycles;
-//      auto CallCount = *PG.CallCount;
-//      if (!CallCount) {
-//        outs() << FName.str() << " No data collected\n";
-//        return;
-//      }
-//      auto VarN = *PG.VarN;
-//      auto Mean = *PG.MeanCycles;
-//      auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
-//      auto RSD = SD / Mean;
-//      outs() << formatv("{0}  {1,10}  {2,10}  {3,10}  {4,10}\n", FName, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
-//    }
-//    outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-//  }
 
 public:
 
@@ -770,7 +808,7 @@ public:
     return PG;
   }
 
-  Function* createInstrumentedWrapper(Function* F, Function* ReportFn) {
+  Function* createInstrumentedWrapper(Function* F/*, Function* CallbackFn, StatsTracker& Tracker, unsigned ID*/) {
     std::string FName = F->getName().str();
     auto* M = F->getParent();
 
@@ -834,7 +872,7 @@ public:
 
     auto* FCall = IRB.CreateCall(F, ArgList);
 
-    instrumentPostCall(IRB, CallCountGlobal, CyclesGlobal, MeanCyclesGlobal, VarNGlobal, CyclesStart, ReportFn);
+    instrumentPostCall(IRB, CallCountGlobal, CyclesGlobal, MeanCyclesGlobal, VarNGlobal, CyclesStart);
 
     if (F->getReturnType()->isVoidTy()) {
       IRB.CreateRetVoid();
@@ -850,7 +888,11 @@ private:
 
 };
 
+
+
 struct JITContext {
+
+  using VersionID = unsigned;
 
   JITContext() = default;
 
@@ -860,6 +902,7 @@ struct JITContext {
 //
 //    }
 
+
   // Whether the function currently available in the JIT engine
   bool Emitted{false};
   // The unoptimized module
@@ -868,9 +911,9 @@ struct JITContext {
   SmallString<32> DeclName{""};
   // Symbols emitted during instantiation (also mangled) that need to be replaced in the running module on recompilation.
   SmallVector<SmallString<16>, 16> ReplaceOnRecompilation{};
-  // Module key of the initial compilation. This module must not be deleted since it contains the global definitions which
+  // Version ID of the initial compilation. This module must not be deleted since it contains the global definitions which
   // all subsequent recompilations depend on.
-  orc::VModuleKey PrimaryModKey{0};
+  VersionID PrimaryVersion{0};
   // Optimizer instance for this module
   std::unique_ptr<tuner::Optimizer> Opt{nullptr};
 
@@ -880,13 +923,25 @@ struct JITInstantiation {
 
   JITInstantiation() = default;
 
-  JITInstantiation(orc::VModuleKey ModKey, void* FPtr, JITPerfMonitor::PerfGlobals Globals)
-      : ModKey(ModKey), FPtr(FPtr), Globals(Globals)
+  JITInstantiation(JITContext::VersionID ID, orc::VModuleKey ModKey, void* FPtr, JITPerfMonitor::PerfGlobals Globals)
+      : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals)
   {}
 
+  TimingStats getTimingStats() {
+    if (!Globals.Valid()) {
+      return TimingStats();
+    }
+    auto CallCount = *Globals.CallCount;
+    auto Mean = *Globals.MeanCycles;
+    auto Var = *Globals.VarN / CallCount;
+    return TimingStats(CallCount, Mean, Var);
+  }
+
+  JITContext::VersionID ID{0};
   orc::VModuleKey ModKey{0};
   void* FPtr{nullptr};
   JITPerfMonitor::PerfGlobals Globals;
+  //TimingStats Stats;
   // TODO: Place info about instantiation specific optimization here
 };
 
@@ -1669,23 +1724,19 @@ struct CompilerData {
 
 
 
-  Function* instrumentFunction(Function* F) {
-    // TODO: Debugging only
-    auto* Gen = Consumer->getCodeGenerator();
-
-    //    llvm::Type *TypeParams[] =
-//        {/*Gen->CGM().VoidPtrTy*/};
-
-    auto *FnTy =
-        llvm::FunctionType::get(Gen->CGM().VoidTy, {Gen->CGM().Int64Ty}/*TypeParams*/,
-            /*isVarArg*/ false);
-
-    auto ReportFn = Gen->CGM().CreateRuntimeFunction(FnTy, "__clang_jit_print_cycles");
-    return PerfMonitor->createInstrumentedWrapper(F, dyn_cast<Function>(ReportFn.getCallee()));
+  Function* instrumentFunction(Function* F/*, StatsTracker& Tracker, JITContext::VersionID ID*/) {
+//    auto* Gen = Consumer->getCodeGenerator();
+//
+//    auto *FnTy =
+//        llvm::FunctionType::get(Gen->CGM().VoidTy, {Gen->CGM().VoidPtrTy, Gen->CGM().Int32Ty, Gen->CGM().Int32Ty, Gen->CGM().DoubleTy, Gen->CGM().DoubleTy, Gen->CGM().Int64Ty}/*TypeParams*/,
+//            /*isVarArg*/ false);
+//
+//    auto CBFn = Gen->CGM().CreateRuntimeFunction(FnTy, "__clang_jit_update_stats");
+    return PerfMonitor->createInstrumentedWrapper(F/*, dyn_cast<Function>(CBFn.getCallee()), Tracker, ID*/);
   }
 
   JITInstantiation recompileFunction(const void *NTTPValues, const char **TypeStrings,
-                          unsigned Idx, JITContext& JITCtx) {
+                          unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID) {
     assert(JITCtx.Emitted && "Instantiation has not been emitted yet");
     assert(!DevCD && "Recompilation is currently not supported for device code");
     StringRef SMName = JITCtx.DeclName;
@@ -1718,7 +1769,7 @@ struct CompilerData {
     }
     outs() << "Removed " << NumRemoved << " globals" << "\n";
 
-    return finalizeModule(std::move(BaseMod), JITCtx);
+    return finalizeModule(std::move(BaseMod), JITCtx, ID);
   }
 
 //#define DUMP_MOD
@@ -1727,7 +1778,7 @@ struct CompilerData {
 #define PRINT_MOD_STATS
 
    JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
-                        unsigned Idx, JITContext& JITCtx) {
+                        unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID) {
     std::string SMName = instantiateTemplate(NTTPValues, TypeStrings, Idx);
 
     auto* FDecl = Consumer->getCodeGenerator()->GetDeclForMangledName(SMName);
@@ -1736,8 +1787,7 @@ struct CompilerData {
     if (auto SpecSymbol = CJ->findSymbol(SMName))
       if (SpecSymbol.getAddress())
         // FIXME: Figure out how to handle this.
-        return JITInstantiation(0, (void *) llvm::cantFail(SpecSymbol.getAddress()), {});
-//        return InstContext(true, llvm::CloneModule(*OldCtx.Mod.get()), OldCtx.ModKey, OldCtx.DeclName, OldCtx.EmittedSyms, OldCtx.Inst);
+        return JITInstantiation(0, 0, (void *) llvm::cantFail(SpecSymbol.getAddress()), {});
         //return (void *) llvm::cantFail(SpecSymbol.getAddress());
 
     if (DevCD)
@@ -1960,8 +2010,8 @@ struct CompilerData {
     JITCtx.Mod = llvm::CloneModule(*GenMod);
     JITCtx.Opt = std::move(Opt);
 
-    auto Inst = finalizeModule(std::move(GenMod), JITCtx);
-    JITCtx.PrimaryModKey = Inst.ModKey;
+    auto Inst = finalizeModule(std::move(GenMod), JITCtx, ID);
+    JITCtx.PrimaryVersion = Inst.ID;
     return Inst;
   }
 
@@ -1986,7 +2036,7 @@ private:
     }
   }
 
-  JITInstantiation finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx) {
+  JITInstantiation finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx, JITContext::VersionID ID) {
 
     StringRef SMName = JITCtx.DeclName;
 
@@ -2204,7 +2254,7 @@ private:
     auto Globals = PerfMonitor->lookupGlobals(SMName);
 
 
-    return {ModKey, FPtr, Globals};
+    return {ID, ModKey, FPtr, Globals};
   }
 };
 
@@ -2319,48 +2369,104 @@ struct InstMapInfo {
   }
 };
 
-
 struct JITFunctionData {
+
+  using VersionID = JITContext::VersionID;
+
+  static const VersionID InvalidID = 0;
 
   JITFunctionData() = default;
 
   JITFunctionData(JITContext&& Context, JITInstantiation Inst) :
     Context(std::move(Context))
   {
-    Instantiations.push_back(Inst);
+    auto It = Instantiations.find(Inst.ID);
+    assert(It == Instantiations.end() && "Instantiation with same ID already exists!");
+    Instantiations[Inst.ID] = Inst;
+  }
+
+  void add(JITInstantiation Inst) {
+    if (Inst.ID == InvalidID) {
+      errs() << "Invalid instantiation!\n";
+      return;
+    }
+    Instantiations[Inst.ID] = Inst;
+    ActiveVersionID = Inst.ID;
+  }
+
+  JITInstantiation* getCurrentBest() {
+    if (STracker.HasBest) {
+      auto It = Instantiations.find(STracker.BestVersion);
+      if (It != Instantiations.end())
+        return &It->second;
+    }
+    return nullptr;
+  }
+
+  JITInstantiation* getActiveVersion() {
+    if (ActiveVersionID == InvalidID)
+      return nullptr;
+    auto It = Instantiations.find(ActiveVersionID);
+    if (It == Instantiations.end())
+      return nullptr;
+    return &It->second;
+  }
+
+  void updateStats() {
+    auto Active = getActiveVersion();
+    if (!Active)
+      return;
+    STracker.update(Active->ID, Active->getTimingStats());
   }
 
   // Holds information that is needed for recompilation/reoptimization
   JITContext Context;
   // Holds a list of instantiations
-  llvm::SmallVector<JITInstantiation, 8> Instantiations;
+  // TODO: Probably needs a mutex
+  llvm::DenseMap<VersionID, JITInstantiation> Instantiations;
+  // Used to determine the best version
+  StatsTracker STracker;
+  // Holds the last compiled version ID
+  VersionID ActiveVersionID{InvalidID};
+
+  VersionID nextVersionID() {
+    return VersionCounter++;
+  }
+private:
+  VersionID VersionCounter{InvalidID + 1};
 };
 
 void printReport(JITFunctionData& FData) {
   auto& FName = FData.Context.DeclName;
 
   outs() << "JIT Timing Report:\n";
-  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,12}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Cycles", "Mean", "RSD").str();
+  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Mean", "RSD", "RSE").str();
   outs() << Header << "\n";
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-  for (auto& Inst : FData.Instantiations) {
+  // Iterate over IDs to display in order. Not very robust, but works for debugging.
+  for (int i = 1; i <= FData.Instantiations.size(); i++) {
+    auto It = FData.Instantiations.find(i);
+    if (It == FData.Instantiations.end())
+      continue;
+    auto& Inst = It->second;
     auto& PG = Inst.Globals;
-    if (!(PG.Cycles && PG.CallCount && PG.MeanCycles && PG.VarN)) {
+    if (!PG.Valid()) {
       errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
       continue;
     }
-    auto Cycles = *PG.Cycles;
-    auto CallCount = *PG.CallCount;
-    if (!CallCount) {
+    auto Stats = Inst.getTimingStats();
+    if (!Stats.Valid()) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
-    auto VarN = *PG.VarN;
-    auto Mean = *PG.MeanCycles;
-    auto SD = std::sqrt(VarN / static_cast<double>(CallCount));
-    auto RSD = SD / Mean;
-    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,12}  {5,10}\n", FName, Inst.ModKey, CallCount, Cycles, formatv("{0:f1}", Mean), formatv("{0:p}", RSD));
+    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", FName, Inst.ID, Stats.N, formatv("{0:f1}", Stats.Mean), formatv("{0:p}", Stats.getRSD()), formatv("{0:p}", Stats.getRelativeStdErr()));
   }
+  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  auto BestID = FData.getCurrentBest()->ID;
+  auto Best = FData.Instantiations[BestID];
+  // TODO: We assume here that the first version is the baseline, make this explicit
+  auto BaseLine = FData.Instantiations[1];
+  outs() << formatv("Best version: {0} ({1:p} speedup)\n", BestID, BaseLine.getTimingStats().Mean / Best.getTimingStats().Mean - 1.0);
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
@@ -2429,12 +2535,15 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
       CD = TUCDI->second.get();
     }
 
+    JITFunctionData FData;
+
     // Compile and populate the JITContext
-    JITContext NewCtx;
-    auto Inst = CD->resolveFunction(NTTPValues, TypeStrings, Idx, NewCtx);
+    auto Inst = CD->resolveFunction(NTTPValues, TypeStrings, Idx, FData.Context, FData.nextVersionID());
+
+    FData.add(Inst);
 
 
-    Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings, TypeStringsCnt)] = JITFunctionData(std::move(NewCtx), Inst);
+    Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings, TypeStringsCnt)] = std::move(FData);
 
     return Inst.FPtr;
 
@@ -2449,24 +2558,29 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
     fatal();
   }
 
-  // TODO: Let optimizer make recompilation decision
-  bool Recompile = true;
+  // Update timing statistics
+  FData.updateStats();
 
-  // For testing purposes
-  const unsigned RecompileThreshold = 3;
-  Recompile = *FData.Instantiations.back().Globals.CallCount >= RecompileThreshold;
+  auto Current = FData.getActiveVersion();
+  assert(Current && "No active compiled version found!");
 
-  //outs() << "#Calls: " << *FData.Instantiations.back().Globals.CallCount << "\n";
+  auto Stats = Current->getTimingStats();
+
+  const unsigned MinSamples = 3;
+  const double MaxRelStdErr = 0.05;
+
+  bool Recompile = false;
+  if (Stats.Valid()) {
+    // Recompile if the function has been called enough times and the relative standard error of mean is below a certain threshold.
+    Recompile = Stats.N >= MinSamples && Stats.getRelativeStdErr() < MaxRelStdErr;
+  }
 
   if (!Recompile)
-    return FData.Instantiations.back().FPtr;
+    return Current->FPtr;
 
   outs() << "Recompiling " << FData.Context.DeclName << "\n";
   outs() << "Performance of previous configurations:\n";
-//  SmallVector<JITPerfMonitor::PerfGlobals, 32> CollectedGlobals;
-//  for (auto& PG : FData.Instantiations)
-//    CollectedGlobals.push_back(PG.Globals);
-//  JITPerfMonitor::printReport(FData.Context.DeclName, CollectedGlobals);
+
   printReport(FData);
 
   // We assume that the target is initialized and a CompilerData instance exists for the current TU
@@ -2475,79 +2589,18 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
   assert(TUCDI != TUCompilerData.end() && "No CompilerData for TU found");
   auto CD = TUCDI->second.get();
 
-  auto Inst = CD->recompileFunction(NTTPValues, TypeStrings, Idx, FData.Context);
-
-  FData.Instantiations.push_back(Inst);
+  auto Inst = CD->recompileFunction(NTTPValues, TypeStrings, Idx, FData.Context, FData.nextVersionID());
+  FData.add(Inst);
 
   return Inst.FPtr;
-
-  /*
-  {
-    llvm::MutexGuard Guard(IMutex);
-    auto II =
-      Instantiations.find_as(ThisInstInfo(InstKey, NTTPValues, NTTPValuesSize,
-                                          TypeStrings, TypeStringsCnt));
-    if (II != Instantiations.end()) {
-
-
-
-      // TODO: This is a test, need to figure out how to handle the decision when to recompile
-      llvm::MutexGuard Guard(Mutex);
-
-      // We assume that the target is initialized and a CompilerData instance exists for the current TU
-      auto CD = TUCompilerData.find(ASTBuffer)->second.get();
-
-      InstContext NewCtx = CD->recompileFunction(NTTPValues, TypeStrings, Idx, InstCtx);
-
-      void *FPtr = NewCtx.Inst;
-
-      Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize,
-                              TypeStrings, TypeStringsCnt)] = std::move(NewCtx);
-
-      return FPtr;
-    }
-
-  }
-
-  llvm::MutexGuard Guard(Mutex);
-
-  if (!InitializedTarget) {
-    llvm::InitializeNativeTarget();
-    llvm::InitializeNativeTargetAsmPrinter();
-    llvm::InitializeNativeTargetAsmParser();
-
-    LCtx.reset(new LLVMContext);
-
-    InitializedTarget = true;
-  }
-
-  CompilerData *CD;
-  auto TUCDI = TUCompilerData.find(ASTBuffer);
-  if (TUCDI == TUCompilerData.end()) {
-    CD = new CompilerData(CmdArgs, CmdArgsLen, ASTBuffer, ASTBufferSize,
-                          IRBuffer, IRBufferSize, LocalPtrs, LocalPtrsCnt,
-                          LocalDbgPtrs, LocalDbgPtrsCnt, DeviceData, DevCnt);
-    TUCompilerData[ASTBuffer].reset(CD);
-  } else {
-    CD = TUCDI->second.get();
-  }
-
-  InstContext InstCtx; // New empty context
-
-  InstContext NewCtx = CD->resolveFunction(NTTPValues, TypeStrings, Idx, InstCtx);
-
-  void *FPtr = NewCtx.Inst;
-
-  {
-    llvm::MutexGuard Guard(IMutex);
-    Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize,
-                            TypeStrings, TypeStringsCnt)] = std::move(NewCtx);
-  }
-  outs() << "Fetched JIT instatiation successfully\n";
-  return FPtr;*/
 }
 
 extern "C" void __clang_jit_print_cycles(int64_t cycles) {
   printf("Cycles: %lu \n", cycles);
 }
 
+//extern "C" void __clang_jit_update_stats(void* TrackerPtr, unsigned VersionID, unsigned CallCount, double MeanCycles, double VarN) {
+//  auto& Tracker = *static_cast<StatsTracker*>(TrackerPtr);
+//  auto Stats = TimingStats(CallCount, MeanCycles, VarN * CallCount);
+//  Tracker.update(VersionID, Stats);
+//}

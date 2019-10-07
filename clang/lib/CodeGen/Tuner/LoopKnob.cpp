@@ -53,6 +53,7 @@ public:
 
     KnobID ID = getLoopName(Loop);
     if (ID == InvalidKnobID) {
+      // TODO: Disable error message for loops in aot-compiled functions
       errs() << "Loop name not found: can't apply attributes (in function " << Loop->getHeader()->getParent()->getName() << ")\n";
       return false;
     }
@@ -65,6 +66,8 @@ public:
     }
 
     auto& Cfg = It->second;
+    if (Cfg.DisableLoopTransform)
+      return false;
     return applyConfig(Loop, Cfg);
   }
 private:
@@ -140,6 +143,10 @@ llvm::Pass *createApplyLoopKnobPass(KnobConfig& KnobCfg) {
 
 void LoopTransformConfig::dump(llvm::raw_ostream& OS, unsigned Indent) const {
   auto I = llvm::formatv("{0}", llvm::fmt_repeat(" ", Indent));
+  if (DisableLoopTransform) {
+    OS << I << "Explicit loop transform disabled" << "\n";
+    return;
+  }
   OS << I << DISABLE_NON_FORCED_TAG << ": " << DisableNonForced << "\n";
   OS << I << DISTRIBUTE_ENABLE_TAG << ": " << Distribute << "\n";
   OS << I << VECTORIZE_WIDTH_TAG << ": " << getVectorizeWidth() << "\n";

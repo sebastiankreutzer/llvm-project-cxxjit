@@ -25,6 +25,9 @@ LoopTransformConfig createRandomLoopConfig(RNETy& RNE) {
   // TODO: Review biases for boolean values
   LoopTransformConfig Cfg;
 
+  // Enables attributes actually being applied
+  Cfg.DisableLoopTransform = false;
+
   std::uniform_int_distribution<unsigned> VecWidthDist(LoopTransformConfig::VECTORIZE_WIDTH_MIN, LoopTransformConfig::VECTORIZE_WIDTH_MAX);
   Cfg.VectorizeWidthExp = VecWidthDist(RNE);
 

@@ -44,7 +44,7 @@ inline MDNode* addTaggedConstantMD(MDNode* LoopMD, StringRef Tag, Constant* C) {
 }
 
 inline MDNode* addTaggedBool(MDNode* LoopMD, StringRef Tag, bool Val) {
-  auto C = ConstantInt::get(Type::getInt1Ty(LoopMD->getContext()), Val);
+  auto C = ConstantInt::get(Type::getInt1Ty(LoopMD->getContext()), Val ? 1 : 0);
   return addTaggedConstantMD(LoopMD, Tag, C);
 }
 
@@ -64,8 +64,7 @@ inline MDNode* assignLoopName(Loop *Loop, unsigned Name) {
 }
 
 inline unsigned getLoopName(Loop* Loop) {
-  LLVMContext& Ctx = Loop->getHeader()->getContext();
-  auto LoopID = getOrCreateLoopID(Loop);
+  auto LoopID = Loop->getLoopID();
   if (!LoopID || LoopID->getNumOperands() < 2) {
     return InvalidKnobID;
   }

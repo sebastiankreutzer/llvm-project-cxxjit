@@ -9,13 +9,7 @@
 #include "LoopMD.h"
 #include "Passes.h"
 
-unsigned InterleaveCount;
-bool VectorizeEnable;
-bool VectorizePredicateEnable;
-unsigned VectorizeWidth;
-bool DisableLICM;
-bool DisableLICMVersioning;
-bool Distribute;
+
 namespace tuner {
 
 static const char* DISABLE_NON_FORCED_TAG = "llvm.loop.disable_nonforced";
@@ -30,6 +24,9 @@ static const char* UNROLL_AND_JAM_COUNT_TAG = "llvm.loop.unroll_and_jam.count";
 static const char* LICM_DISABLE_TAG = "llvm.licm.disable";
 static const char* LICM_VERSIONING_DISABLE_TAG = "llvm.loop.licm_versioning.disable";
 static const char* DISTRIBUTE_ENABLE_TAG = "llvm.loop.distribute.enable";
+
+constexpr unsigned LoopTransformConfig::MIN_VALS[LoopTransformConfig::NUM_PARAMS];
+constexpr unsigned LoopTransformConfig::MAX_VALS[LoopTransformConfig::NUM_PARAMS];
 
 
 class ApplyLoopKnobs : public llvm::LoopPass {
@@ -53,8 +50,9 @@ public:
 
     KnobID ID = getLoopName(Loop);
     if (ID == InvalidKnobID) {
-      // TODO: Disable error message for loops in aot-compiled functions
-      errs() << "Loop name not found: can't apply attributes (in function " << Loop->getHeader()->getParent()->getName() << ")\n";
+      auto F = Loop->getHeader()->getParent();
+      if (!F->isDeclarationForLinker())
+        errs() << "Loop name not found: can't apply attributes (in function " << Loop->getHeader()->getParent()->getName() << ")\n";
       return false;
     }
 
@@ -87,7 +85,7 @@ private:
     if (EnableVectorization) {
       LoopMD = addTaggedInt32(LoopMD, VECTORIZE_WIDTH_TAG, Cfg.getVectorizeWidth());
       LoopMD = addTaggedInt32(LoopMD, INTERLEAVE_COUNT_TAG, Cfg.getInterleaveCount());
-      LoopMD = addTaggedBool(LoopMD, VECTORIZE_PREDICATE_ENABLE_TAG, Cfg.VectorizePredicateEnable);
+      LoopMD = addTaggedBool(LoopMD, VECTORIZE_PREDICATE_ENABLE_TAG, Cfg.getVectorizePredicateEnabled());
     }
 
     // Loop unrolling
@@ -101,7 +99,7 @@ private:
     if (EnableUnrolling) {
       LoopMD = addTaggedInt32(LoopMD, UNROLL_COUNT_TAG, Cfg.getUnrollCount());
       // NOTE: We never set llvm.loop.unroll.full, see KnobDataTypes.h
-      if (Cfg.UnrollAndJam) {
+      if (Cfg.getUnrollAndJam()) {
         // TODO: We use the same unroll count here, should they be handled separately?
         LoopMD = addTaggedInt32(LoopMD, UNROLL_AND_JAM_COUNT_TAG, Cfg.getUnrollCount());
       }
@@ -110,19 +108,21 @@ private:
       LoopMD = addTagMD(LoopMD, UNROLL_AND_JAM_DISABLE_TAG);
     }
 
-    if (Cfg.DisableLICMVersioning) {
+    if (Cfg.getDisableLICMVersioning()) {
       LoopMD = addTagMD(LoopMD, LICM_VERSIONING_DISABLE_TAG);
     }
 
-    LoopMD = addTaggedBool(LoopMD, DISTRIBUTE_ENABLE_TAG, Cfg.Distribute);
+    LoopMD = addTaggedBool(LoopMD, DISTRIBUTE_ENABLE_TAG, Cfg.getDistribute());
 
-    if (Cfg.DisableLICM) {
+    if (Cfg.getDisableLICM()) {
       LoopMD = addTagMD(LoopMD, LICM_DISABLE_TAG);
     }
 
     if (Cfg.DisableNonForced) {
       LoopMD = addTagMD(LoopMD, DISABLE_NON_FORCED_TAG);
     }
+
+    Loop->setLoopID(LoopMD);
 
     return true;
   }
@@ -148,14 +148,14 @@ void LoopTransformConfig::dump(llvm::raw_ostream& OS, unsigned Indent) const {
     return;
   }
   OS << I << DISABLE_NON_FORCED_TAG << ": " << DisableNonForced << "\n";
-  OS << I << DISTRIBUTE_ENABLE_TAG << ": " << Distribute << "\n";
+  OS << I << DISTRIBUTE_ENABLE_TAG << ": " << getDistribute() << "\n";
   OS << I << VECTORIZE_WIDTH_TAG << ": " << getVectorizeWidth() << "\n";
   OS << I << INTERLEAVE_COUNT_TAG << ": " << getInterleaveCount() << "\n";
   OS << I << UNROLL_COUNT_TAG << ": " << getUnrollCount() << "\n";
-  OS << I << UNROLL_AND_JAM_DISABLE_TAG << ": " <<  !UnrollAndJam << "\n";
-  OS << I << LICM_VERSIONING_DISABLE_TAG << ": " << DisableLICMVersioning << "\n";
-  OS << I << LICM_DISABLE_TAG << ": " << DisableLICM << "\n";
-  OS << I << VECTORIZE_PREDICATE_ENABLE_TAG << ": " << VectorizePredicateEnable << "\n";
+  OS << I << UNROLL_AND_JAM_DISABLE_TAG << ": " <<  !getUnrollAndJam() << "\n";
+  OS << I << LICM_VERSIONING_DISABLE_TAG << ": " << getDisableLICMVersioning() << "\n";
+  OS << I << LICM_DISABLE_TAG << ": " << getDisableLICM() << "\n";
+  OS << I << VECTORIZE_PREDICATE_ENABLE_TAG << ": " << getVectorizePredicateEnabled() << "\n";
 }
 
 llvm::raw_ostream& operator<<(llvm::raw_ostream& OS, const LoopTransformConfig& Cfg) {

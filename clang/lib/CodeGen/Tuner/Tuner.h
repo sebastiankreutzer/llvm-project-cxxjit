@@ -16,10 +16,79 @@ namespace tuner {
 
 using TunerRNE = std::mt19937_64;
 
+struct TimingStats {
+  unsigned N{0};
+  double Mean{0};
+  double Variance{0};
+  double SD{0};
+
+  TimingStats() = default;
+
+  TimingStats(unsigned N, double Mean, double Variance) :
+      N(N), Mean(Mean), Variance(Variance) {
+    SD = std::sqrt(Variance);
+  }
+
+  bool Valid() const {
+    return N > 0 && Mean > 0 && Variance >= 0;
+  }
+
+  bool betterThan(const TimingStats& Other) {
+    // TODO: Do t-test instead
+    if (!Valid())
+      return false;
+    if (!Other.Valid())
+      return true;
+    return Mean < Other.Mean;
+  }
+
+  bool operator<(const TimingStats& Other) {
+    return betterThan(Other);
+  }
+
+  double getTotal() {
+    return N * Mean;
+  }
+
+  double getRSD() {
+    return SD / Mean;
+  }
+
+  double getStdErrOfMean() {
+    return SD / std::sqrt(N);
+  }
+
+  double getRelativeStdErr() {
+    return getStdErrOfMean() / Mean;
+  }
+};
+
+using SharedEvalStats = std::shared_ptr<TimingStats>;
+
+class ConfigEvalRequest {
+public:
+  ConfigEvalRequest() = default;
+  explicit ConfigEvalRequest(KnobConfig Cfg)
+    : Cfg(std::move(Cfg)), Stats(std::make_shared<TimingStats>()) {}
+
+  KnobConfig Cfg;
+  SharedEvalStats Stats;
+};
+
+struct CompareConfigEval {
+  bool operator()(ConfigEvalRequest& A, ConfigEvalRequest& B) {
+    if (!A.Stats || !A.Stats->Valid())
+      return false;
+    if (!B.Stats || !B.Stats->Valid())
+      return true;
+    return A.Stats->betterThan(*B.Stats);
+  }
+};
+
 class Tuner {
 public:
   virtual ~Tuner() {};
-  virtual KnobConfig generateNextConfig() = 0;
+  virtual ConfigEvalRequest generateNextConfig() = 0;
 };
 
 struct GenDefaultConfigFn: public KnobSetFn {
@@ -55,6 +124,12 @@ struct GenRandomConfigFn: public KnobSetFn {
   KnobConfig Cfg;
 };
 
+inline void setEnableLoopTransform(KnobConfig& Cfg, bool Enable) {
+  for (auto& It : Cfg.LoopCfg) {
+    It.second.DisableLoopTransform = !Enable;
+  }
+}
+
 template<typename RNETy>
 KnobConfig createRandomConfig(RNETy& RNE, KnobSet& Set) {
   GenRandomConfigFn<RNETy> Fn(RNE);
@@ -71,28 +146,25 @@ inline KnobConfig createDefaultConfig(KnobSet& Set) {
 class RandomTuner: public Tuner {
 public:
   explicit RandomTuner(KnobSet& Knobs):
-    Knobs(Knobs), FirstIteration(true) {
-    RNE = TunerRNE(util::genSeed());
-  }
+    Knobs(Knobs), RNE(TunerRNE(util::genSeed())) {}
 
-
-  KnobConfig generateNextConfig() override {
-    if (FirstIteration) {
-      CurrentConfig = createDefaultConfig(Knobs);
-      FirstIteration = false;
-    } else {
-      CurrentConfig = createRandomConfig(RNE, Knobs);
-    }
-    return CurrentConfig;
+  // TODO : Here, change to EvaluationResult
+  ConfigEvalRequest generateNextConfig() override {
+    CurrentConfig = createRandomConfig(RNE, Knobs);
+    return ConfigEvalRequest(CurrentConfig);
   }
 
 private:
   KnobSet& Knobs;
   TunerRNE RNE;
   KnobConfig CurrentConfig;
-  bool FirstIteration;
 
 };
+
+//struct CostFunction {
+//public:
+//  virtual llvm::Optional<double> eval(unsigned ID) = 0;
+//};
 
 }
 

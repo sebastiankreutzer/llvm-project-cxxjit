@@ -10,6 +10,7 @@
 #include "llvm/Target/TargetMachine.h"
 
 #include "Tuner.h"
+#include "SimplexTuner.h"
 #include "CodeGenKnobs.h"
 
 namespace llvm {
@@ -51,13 +52,14 @@ public:
     Knobs.add(&OptLvl);
     Knobs.add(&OptSizeLvl);
     OptTuner = llvm::make_unique<RandomTuner>(Knobs);
+    //OptTuner = llvm::make_unique<SimplexTuner>(Knobs);
   }
 
   void init(llvm::Module* M);
 
   // Optimize the given module.
   // It is assumed that the module is a (slightly modified) clone of the module that init() was called with.
-  bool reoptimize(llvm::Module* M);
+  ConfigEvalRequest optimize(llvm::Module* M, bool UseDefault);
 
 
 private:

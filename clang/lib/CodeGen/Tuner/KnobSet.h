@@ -35,6 +35,10 @@ public:
     LoopKnobs.erase(ID);
   }
 
+  unsigned count() const {
+    return IntKnobs.size() + LoopKnobs.size();
+  }
+
   llvm::DenseMap<KnobID, IntKnob*> IntKnobs;
   llvm::DenseMap<KnobID, LoopKnob*> LoopKnobs;
 };
@@ -47,6 +51,10 @@ struct KnobConfig {
 
   llvm::DenseMap<KnobID, int> IntCfg;
   llvm::DenseMap <KnobID, LoopTransformConfig> LoopCfg;
+
+  unsigned getNumDimensions() const {
+    return IntCfg.size() + LoopCfg.size() * LoopTransformConfig::NUM_PARAMS;
+  }
 
 };
 

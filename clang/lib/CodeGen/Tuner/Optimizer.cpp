@@ -76,8 +76,8 @@ TargetIRAnalysis Optimizer::getTargetIRAnalysis() {
 }
 
 void Optimizer::createPasses(const llvm::Module& M, legacy::PassManager &PM, legacy::FunctionPassManager &FPM, KnobConfig& Cfg) {
-  auto OptLevel = OptLvl.getVal(Cfg);
-  auto OptSizeLevel = OptSizeLvl.getVal(Cfg);
+  auto OptLevel = 3;// OptLvl.getVal(Cfg);
+  auto OptSizeLevel = 1;//OptSizeLvl.getVal(Cfg); // FIXME TODO
 
   PassManagerBuilder PMB;
 
@@ -128,16 +128,24 @@ void Optimizer::init(Module* M) {
   PM.run(*M);
 }
 
-bool Optimizer::reoptimize(Module* M) {
-  if (!ModToOptimize) {
-    errs() << "Optimizer is not initialized!" << "\n";
-    return false;
-  }
+//#define DUMP_MOD_WITH_ATTRIBUTES
+ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
+  assert(ModToOptimize && "Optimizer is not initialized!");
 
   setCommandLineOpts(CodeGenOpts);
 
-  // TODO: For now, generate new config everytime optimize() is called. Figure out where that decision is to be made.
-  KnobConfig Cfg = OptTuner->generateNextConfig();
+  ConfigEvalRequest Request;
+
+  if (UseDefault) {
+    outs() << "Using default optimization config\n";
+    auto Cfg = createDefaultConfig(Knobs);
+    setEnableLoopTransform(Cfg, false);
+    Request = ConfigEvalRequest(Cfg);
+  } else {
+    Request = OptTuner->generateNextConfig();
+  }
+
+  auto& Cfg = Request.Cfg;
 
   KnobState KS(Knobs, Cfg);
   outs() << "Tuner Configuration: " << "\n";
@@ -168,6 +176,14 @@ bool Optimizer::reoptimize(Module* M) {
   {
     PrettyStackTraceString CrashInfo("Apply knobs to module");
     KnobPasses.run(*M);
+#ifdef DUMP_MOD_WITH_ATTRIBUTES
+    outs() << "*****************************\n";
+    outs() << "After loop knob application\n";
+    outs() << "*****************************\n";
+    outs().flush();
+    M->dump();
+    errs().flush();
+#endif
   }
 
   {
@@ -185,7 +201,7 @@ bool Optimizer::reoptimize(Module* M) {
     PerModulePasses.run(*M);
   }
 
-  return M;
+  return Request;
 }
 
 }

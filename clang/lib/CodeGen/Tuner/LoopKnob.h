@@ -28,28 +28,32 @@ LoopTransformConfig createRandomLoopConfig(RNETy& RNE) {
   // Enables attributes actually being applied
   Cfg.DisableLoopTransform = false;
 
-  std::uniform_int_distribution<unsigned> VecWidthDist(LoopTransformConfig::VECTORIZE_WIDTH_MIN, LoopTransformConfig::VECTORIZE_WIDTH_MAX);
-  Cfg.VectorizeWidthExp = VecWidthDist(RNE);
+
+  std::uniform_int_distribution<unsigned> VecWidthDist(LoopTransformConfig::MIN_VALS[LoopTransformConfig::VECTORIZE_WIDTH],
+      LoopTransformConfig::MAX_VALS[LoopTransformConfig::VECTORIZE_WIDTH]);
+  Cfg.Vals[LoopTransformConfig::VECTORIZE_WIDTH] = VecWidthDist(RNE);
 
   // Interleave count should not be greater than the vectorization width
-  const unsigned InterleaveMax = LoopTransformConfig::INTERLEAVE_COUNT_MAX;
-  std::uniform_int_distribution<unsigned> InterleaveCountDist(LoopTransformConfig::INTERLEAVE_COUNT_MIN, std::min(Cfg.VectorizeWidthExp, InterleaveMax));
-  Cfg.InterleaveCountExp = InterleaveCountDist(RNE);
+  const unsigned InterleaveMax = LoopTransformConfig::MAX_VALS[LoopTransformConfig::INTERLEAVE_COUNT];
+  std::uniform_int_distribution<unsigned> InterleaveCountDist(LoopTransformConfig::MIN_VALS[LoopTransformConfig::INTERLEAVE_COUNT],
+      std::min(Cfg.Vals[LoopTransformConfig::VECTORIZE_WIDTH], InterleaveMax));
+  Cfg.Vals[LoopTransformConfig::INTERLEAVE_COUNT] = InterleaveCountDist(RNE);
 
   // Probably no reason why this should be disabled...
-  Cfg.VectorizePredicateEnable = BiasedFlip(90);
+  Cfg.Vals[LoopTransformConfig::VECTORIZE_PREDICATE_ENABLE] = (unsigned) BiasedFlip(90);
 
   // Probably always beneficial?
-  Cfg.DisableLICM = BiasedFlip(10);
+  Cfg.Vals[LoopTransformConfig::DISABLE_LICM] = (unsigned) BiasedFlip(10);
 
-  Cfg.DisableLICMVersioning = BiasedFlip(30);
+  Cfg.Vals[LoopTransformConfig::DISABLE_LICM_VERSIONING] = (unsigned) BiasedFlip(30);
 
-  Cfg.Distribute = BiasedFlip(50);
+  Cfg.Vals[LoopTransformConfig::DISTRIBUTE] = (unsigned) BiasedFlip(50);
 
-  std::uniform_int_distribution<unsigned> UnrollDist(LoopTransformConfig::UNROLL_COUNT_MIN, LoopTransformConfig::UNROLL_COUNT_MAX);
-  Cfg.UnrollCountExp = UnrollDist(RNE);
+  std::uniform_int_distribution<unsigned> UnrollDist(LoopTransformConfig::MIN_VALS[LoopTransformConfig::UNROLL_COUNT],
+      LoopTransformConfig::MAX_VALS[LoopTransformConfig::UNROLL_COUNT]);
+  Cfg.Vals[LoopTransformConfig::UNROLL_COUNT] = UnrollDist(RNE);
 
-  Cfg.UnrollAndJam = BiasedFlip(50);
+  Cfg.Vals[LoopTransformConfig::UNROLL_AND_JAM] = (unsigned) BiasedFlip(50);
 
   Cfg.DisableNonForced = true;
 

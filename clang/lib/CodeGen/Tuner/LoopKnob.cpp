@@ -48,11 +48,16 @@ public:
       return false;
     }
 
+    auto F = Loop->getHeader()->getParent();
+
+    // We don't want to tune functions marked available_externally
+    if (F->isDeclarationForLinker()) {
+      return false;
+    }
+
     KnobID ID = getLoopName(Loop);
     if (ID == InvalidKnobID) {
-      auto F = Loop->getHeader()->getParent();
-      if (!F->isDeclarationForLinker())
-        errs() << "Loop name not found: can't apply attributes (in function " << Loop->getHeader()->getParent()->getName() << ")\n";
+      errs() << "Loop name not found: can't apply attributes (in function " << Loop->getHeader()->getParent()->getName() << ")\n";
       return false;
     }
 

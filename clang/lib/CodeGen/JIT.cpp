@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/CodeGen/JIT.h"
 #include "Tuner/Optimizer.h"
 #include "Tuner/TimingHelper.h"
 #include "clang/CodeGen/CodeGenAction.h"
@@ -1423,7 +1424,31 @@ struct CompilerData {
 
         QualType CanonFieldTy = Ctx->getCanonicalType(FieldTy);
 
-        if (FieldTy->isIntegralOrEnumerationType()) {
+
+        errs() << "Instantiating NTTA with " << Size << " bytes: \n";
+        CanonFieldTy.dump();
+        Fld->dump();
+
+        errs() << "Data: " << IntVal << "\n";
+
+        errs() << "Type as string: " << CanonFieldTy.getAsString() << "\n";
+
+        auto FieldDecl = CanonFieldTy.getTypePtr()->getAsRecordDecl();
+
+        if (FieldDecl && FieldDecl->getName() == "tunable_range") {
+          // TODO
+        }
+
+        if (CanonFieldTy.getAsString() == "struct jit::tunable_range<int>") {
+          errs() << "is template specialization\n";
+          auto Range = *reinterpret_cast<jit::tunable_range<int>*>(&IntWords[0]);
+          errs() << "Range is [" << Range.Min << ";" << Range.Max << "]\n";
+          llvm::APSInt SIntVal(32); // TODO
+          SIntVal = Range.Min;
+          Builder.push_back(TemplateArgument(*Ctx, SIntVal, Ctx->getIntTypeForBitwidth(32, false))); // TODO: Check expected template params
+        }
+
+        else if (FieldTy->isIntegralOrEnumerationType()) {
           llvm::APSInt SIntVal(IntVal,
                                FieldTy->isUnsignedIntegerOrEnumerationType());
           Builder.push_back(TemplateArgument(*Ctx, SIntVal, CanonFieldTy));

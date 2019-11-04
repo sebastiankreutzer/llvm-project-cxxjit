@@ -900,9 +900,10 @@ class CommandObjectCommandsAddRegex : public CommandObjectParsed,
 public:
   CommandObjectCommandsAddRegex(CommandInterpreter &interpreter)
       : CommandObjectParsed(
-            interpreter, "command regex", "Define a custom command in terms of "
-                                          "existing commands by matching "
-                                          "regular expressions.",
+            interpreter, "command regex",
+            "Define a custom command in terms of "
+            "existing commands by matching "
+            "regular expressions.",
             "command regex <cmd-name> [s/<regex>/<subst>/ ...]"),
         IOHandlerDelegateMultiline("",
                                    IOHandlerDelegate::Completion::LLDBCommand),
@@ -945,7 +946,7 @@ a number follows 'f':"
 
 protected:
   void IOHandlerActivated(IOHandler &io_handler, bool interactive) override {
-    StreamFileSP output_sp(io_handler.GetOutputStreamFile());
+    StreamFileSP output_sp(io_handler.GetOutputStreamFileSP());
     if (output_sp && interactive) {
       output_sp->PutCString("Enter one or more sed substitution commands in "
                             "the form: 's/<regex>/<subst>/'.\nTerminate the "
@@ -1197,8 +1198,8 @@ public:
   CommandObjectPythonFunction(CommandInterpreter &interpreter, std::string name,
                               std::string funct, std::string help,
                               ScriptedCommandSynchronicity synch)
-      : CommandObjectRaw(interpreter, name),
-        m_function_name(funct), m_synchro(synch), m_fetched_help_long(false) {
+      : CommandObjectRaw(interpreter, name), m_function_name(funct),
+        m_synchro(synch), m_fetched_help_long(false) {
     if (!help.empty())
       SetHelp(help);
     else {
@@ -1241,10 +1242,9 @@ protected:
 
     result.SetStatus(eReturnStatusInvalid);
 
-    if (!scripter ||
-        !scripter->RunScriptBasedCommand(m_function_name.c_str(),
-                                         raw_command_line, m_synchro, result,
-                                         error, m_exe_ctx)) {
+    if (!scripter || !scripter->RunScriptBasedCommand(
+                         m_function_name.c_str(), raw_command_line, m_synchro,
+                         result, error, m_exe_ctx)) {
       result.AppendError(error.AsCString());
       result.SetStatus(eReturnStatusFailed);
     } else {
@@ -1272,8 +1272,8 @@ public:
                                std::string name,
                                StructuredData::GenericSP cmd_obj_sp,
                                ScriptedCommandSynchronicity synch)
-      : CommandObjectRaw(interpreter, name),
-        m_cmd_obj_sp(cmd_obj_sp), m_synchro(synch), m_fetched_help_short(false),
+      : CommandObjectRaw(interpreter, name), m_cmd_obj_sp(cmd_obj_sp),
+        m_synchro(synch), m_fetched_help_short(false),
         m_fetched_help_long(false) {
     StreamString stream;
     stream.Printf("For more information run 'help %s'", name.c_str());
@@ -1585,7 +1585,7 @@ protected:
   };
 
   void IOHandlerActivated(IOHandler &io_handler, bool interactive) override {
-    StreamFileSP output_sp(io_handler.GetOutputStreamFile());
+    StreamFileSP output_sp(io_handler.GetOutputStreamFileSP());
     if (output_sp && interactive) {
       output_sp->PutCString(g_python_command_instructions);
       output_sp->Flush();
@@ -1594,7 +1594,7 @@ protected:
 
   void IOHandlerInputComplete(IOHandler &io_handler,
                               std::string &data) override {
-    StreamFileSP error_sp = io_handler.GetErrorStreamFile();
+    StreamFileSP error_sp = io_handler.GetErrorStreamFileSP();
 
     ScriptInterpreter *interpreter = GetDebugger().GetScriptInterpreter();
     if (interpreter) {
@@ -1821,9 +1821,10 @@ class CommandObjectMultiwordCommandsScript : public CommandObjectMultiword {
 public:
   CommandObjectMultiwordCommandsScript(CommandInterpreter &interpreter)
       : CommandObjectMultiword(
-            interpreter, "command script", "Commands for managing custom "
-                                           "commands implemented by "
-                                           "interpreter scripts.",
+            interpreter, "command script",
+            "Commands for managing custom "
+            "commands implemented by "
+            "interpreter scripts.",
             "command script <subcommand> [<subcommand-options>]") {
     LoadSubCommand("add", CommandObjectSP(
                               new CommandObjectCommandsScriptAdd(interpreter)));

@@ -1109,6 +1109,10 @@ public:
   APInt uadd_sat(const APInt &RHS) const;
   APInt ssub_sat(const APInt &RHS) const;
   APInt usub_sat(const APInt &RHS) const;
+  APInt smul_sat(const APInt &RHS) const;
+  APInt umul_sat(const APInt &RHS) const;
+  APInt sshl_sat(const APInt &RHS) const;
+  APInt ushl_sat(const APInt &RHS) const;
 
   /// Array-indexing support.
   ///
@@ -1503,9 +1507,11 @@ public:
 
   /// Insert the bits from a smaller APInt starting at bitPosition.
   void insertBits(const APInt &SubBits, unsigned bitPosition);
+  void insertBits(uint64_t SubBits, unsigned bitPosition, unsigned numBits);
 
   /// Return an APInt with the extracted bits [bitPosition,bitPosition+numBits).
   APInt extractBits(unsigned numBits, unsigned bitPosition) const;
+  uint64_t extractBitsAsZExtValue(unsigned numBits, unsigned bitPosition) const;
 
   /// @}
   /// \name Value Characterization Functions
@@ -2214,6 +2220,12 @@ APInt RoundingSDiv(const APInt &A, const APInt &B, APInt::Rounding RM);
 /// coefficients.
 Optional<APInt> SolveQuadraticEquationWrap(APInt A, APInt B, APInt C,
                                            unsigned RangeWidth);
+
+/// Compare two values, and if they are different, return the position of the
+/// most significant bit that is different in the values.
+Optional<unsigned> GetMostSignificantDifferentBit(const APInt &A,
+                                                  const APInt &B);
+
 } // End of APIntOps namespace
 
 // See friend declaration above. This additional declaration is required in

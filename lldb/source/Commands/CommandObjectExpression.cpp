@@ -202,11 +202,12 @@ CommandObjectExpression::CommandOptions::GetDefinitions() {
 
 CommandObjectExpression::CommandObjectExpression(
     CommandInterpreter &interpreter)
-    : CommandObjectRaw(
-          interpreter, "expression", "Evaluate an expression on the current "
-                                     "thread.  Displays any returned value "
-                                     "with LLDB's default formatting.",
-          "", eCommandProcessMustBePaused | eCommandTryTargetAPILock),
+    : CommandObjectRaw(interpreter, "expression",
+                       "Evaluate an expression on the current "
+                       "thread.  Displays any returned value "
+                       "with LLDB's default formatting.",
+                       "",
+                       eCommandProcessMustBePaused | eCommandTryTargetAPILock),
       IOHandlerDelegate(IOHandlerDelegate::Completion::Expression),
       m_option_group(), m_format_options(eFormatDefault),
       m_repl_option(LLDB_OPT_SET_1, false, "repl", 'r', "Drop into REPL", false,
@@ -498,8 +499,8 @@ void CommandObjectExpression::IOHandlerInputComplete(IOHandler &io_handler,
   //    StreamSP output_stream =
   //    io_handler.GetDebugger().GetAsyncOutputStream();
   //    StreamSP error_stream = io_handler.GetDebugger().GetAsyncErrorStream();
-  StreamFileSP output_sp(io_handler.GetOutputStreamFile());
-  StreamFileSP error_sp(io_handler.GetErrorStreamFile());
+  StreamFileSP output_sp = io_handler.GetOutputStreamFileSP();
+  StreamFileSP error_sp = io_handler.GetErrorStreamFileSP();
 
   EvaluateExpression(line.c_str(), output_sp.get(), error_sp.get());
   if (output_sp)
@@ -537,7 +538,7 @@ void CommandObjectExpression::GetMultilineExpression() {
                             1, // Show line numbers starting at 1
                             *this, nullptr));
 
-  StreamFileSP output_sp(io_handler_sp->GetOutputStreamFile());
+  StreamFileSP output_sp = io_handler_sp->GetOutputStreamFileSP();
   if (output_sp) {
     output_sp->PutCString(
         "Enter expressions, then terminate with an empty line to evaluate:\n");

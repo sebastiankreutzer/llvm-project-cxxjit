@@ -609,7 +609,7 @@ MatchTableRecord MatchTable::LineBreak = {
 void MatchTableRecord::emit(raw_ostream &OS, bool LineBreakIsNextAfterThis,
                             const MatchTable &Table) const {
   bool UseLineComment =
-      LineBreakIsNextAfterThis | (Flags & MTRF_LineBreakFollows);
+      LineBreakIsNextAfterThis || (Flags & MTRF_LineBreakFollows);
   if (Flags & (MTRF_JumpTarget | MTRF_CommaFollows))
     UseLineComment = false;
 
@@ -620,7 +620,7 @@ void MatchTableRecord::emit(raw_ostream &OS, bool LineBreakIsNextAfterThis,
   if (Flags & MTRF_Label)
     OS << ": @" << Table.getLabelIndex(LabelID);
 
-  if (Flags & MTRF_Comment && !UseLineComment)
+  if ((Flags & MTRF_Comment) && !UseLineComment)
     OS << "*/";
 
   if (Flags & MTRF_JumpTarget) {
@@ -1062,6 +1062,7 @@ public:
     IPM_Opcode,
     IPM_NumOperands,
     IPM_ImmPredicate,
+    IPM_Imm,
     IPM_AtomicOrderingMMO,
     IPM_MemoryLLTSize,
     IPM_MemoryVsLLTSize,
@@ -1335,6 +1336,23 @@ public:
   void emitPredicateOpcodes(MatchTable &Table,
                             RuleMatcher &Rule) const override {
     Table << MatchTable::Opcode("GIM_CheckIsMBB") << MatchTable::Comment("MI")
+          << MatchTable::IntValue(InsnVarID) << MatchTable::Comment("Op")
+          << MatchTable::IntValue(OpIdx) << MatchTable::LineBreak;
+  }
+};
+
+class ImmOperandMatcher : public OperandPredicateMatcher {
+public:
+  ImmOperandMatcher(unsigned InsnVarID, unsigned OpIdx)
+      : OperandPredicateMatcher(IPM_Imm, InsnVarID, OpIdx) {}
+
+  static bool classof(const PredicateMatcher *P) {
+    return P->getKind() == IPM_Imm;
+  }
+
+  void emitPredicateOpcodes(MatchTable &Table,
+                            RuleMatcher &Rule) const override {
+    Table << MatchTable::Opcode("GIM_CheckIsImm") << MatchTable::Comment("MI")
           << MatchTable::IntValue(InsnVarID) << MatchTable::Comment("Op")
           << MatchTable::IntValue(OpIdx) << MatchTable::LineBreak;
   }
@@ -1689,7 +1707,7 @@ public:
   }
 
   StringRef getOpcode() const { return I->TheDef->getName(); }
-  unsigned getNumOperands() const { return I->Operands.size(); }
+  bool isVariadicNumOperands() const { return I->Operands.isVariadic; }
 
   StringRef getOperandType(unsigned OpIdx) const {
     return I->Operands[OpIdx].OperandType;
@@ -2255,7 +2273,7 @@ void InstructionMatcher::optimize() {
 
   Stash.push_back(predicates_pop_front());
   if (Stash.back().get() == &OpcMatcher) {
-    if (NumOperandsCheck && OpcMatcher.getNumOperands() < getNumOperands())
+    if (NumOperandsCheck && OpcMatcher.isVariadicNumOperands())
       Stash.emplace_back(
           new InstructionNumOperandsMatcher(InsnVarID, getNumOperands()));
     NumOperandsCheck = false;
@@ -3794,6 +3812,10 @@ Error GlobalISelEmitter::importChildMatcher(RuleMatcher &Rule,
         OM.addPredicate<MBBOperandMatcher>();
         return Error::success();
       }
+      if (SrcChild->getOperator()->getName() == "timm") {
+        OM.addPredicate<ImmOperandMatcher>();
+        return Error::success();
+      }
     }
   }
 
@@ -3943,7 +3965,10 @@ Expected<action_iterator> GlobalISelEmitter::importExplicitUseRenderer(
     // rendered as operands.
     // FIXME: The target should be able to choose sign-extended when appropriate
     //        (e.g. on Mips).
-    if (DstChild->getOperator()->getName() == "imm") {
+    if (DstChild->getOperator()->getName() == "timm") {
+      DstMIBuilder.addRenderer<CopyRenderer>(DstChild->getName());
+      return InsertPt;
+    } else if (DstChild->getOperator()->getName() == "imm") {
       DstMIBuilder.addRenderer<CopyConstantAsImmRenderer>(DstChild->getName());
       return InsertPt;
     } else if (DstChild->getOperator()->getName() == "fpimm") {

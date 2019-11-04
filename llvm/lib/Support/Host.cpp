@@ -265,14 +265,12 @@ StringRef sys::detail::getHostCPUNameForARM(StringRef ProcCpuinfoContent) {
     unsigned Exynos = (Variant << 12) | Part;
     switch (Exynos) {
     default:
-      // Default by falling through to Exynos M1.
+      // Default by falling through to Exynos M3.
       LLVM_FALLTHROUGH;
-
-    case 0x1001:
-      return "exynos-m1";
-
-    case 0x4001:
-      return "exynos-m2";
+    case 0x1002:
+      return "exynos-m3";
+    case 0x1003:
+      return "exynos-m4";
     }
   }
 
@@ -316,7 +314,7 @@ StringRef sys::detail::getHostCPUNameForS390x(StringRef ProcCpuinfoContent) {
         unsigned int Id;
         if (!Lines[I].drop_front(Pos).getAsInteger(10, Id)) {
           if (Id >= 8561 && HaveVectorSupport)
-            return "arch13";
+            return "z15";
           if (Id >= 3906 && HaveVectorSupport)
             return "z14";
           if (Id >= 2964 && HaveVectorSupport)
@@ -1509,6 +1507,17 @@ bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
   if (crypto == (CAP_AES | CAP_PMULL | CAP_SHA1 | CAP_SHA2))
     Features["crypto"] = true;
 #endif
+
+  return true;
+}
+#elif defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64))
+bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
+  if (IsProcessorFeaturePresent(PF_ARM_NEON_INSTRUCTIONS_AVAILABLE))
+    Features["neon"] = true;
+  if (IsProcessorFeaturePresent(PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE))
+    Features["crc"] = true;
+  if (IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE))
+    Features["crypto"] = true;
 
   return true;
 }

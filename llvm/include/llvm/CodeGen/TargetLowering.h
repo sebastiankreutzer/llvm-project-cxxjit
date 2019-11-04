@@ -28,7 +28,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Analysis/LegacyDivergenceAnalysis.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/CodeGen/DAGCombine.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/RuntimeLibcalls.h"
@@ -54,6 +54,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MachineValueType.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/SizeOpts.h"
 #include <algorithm>
 #include <cassert>
 #include <climits>
@@ -73,8 +74,10 @@ class Constant;
 class FastISel;
 class FunctionLoweringInfo;
 class GlobalValue;
+class GISelKnownBits;
 class IntrinsicInst;
 struct KnownBits;
+class LegacyDivergenceAnalysis;
 class LLVMContext;
 class MachineBasicBlock;
 class MachineFunction;
@@ -187,13 +190,14 @@ public:
     bool IsReturned : 1;
     bool IsSwiftSelf : 1;
     bool IsSwiftError : 1;
+    bool IsCFGuardTarget : 1;
     uint16_t Alignment = 0;
     Type *ByValType = nullptr;
 
     ArgListEntry()
         : IsSExt(false), IsZExt(false), IsInReg(false), IsSRet(false),
           IsNest(false), IsByVal(false), IsInAlloca(false), IsReturned(false),
-          IsSwiftSelf(false), IsSwiftError(false) {}
+          IsSwiftSelf(false), IsSwiftError(false), IsCFGuardTarget(false) {}
 
     void setAttributes(const CallBase *Call, unsigned ArgIdx);
 
@@ -836,9 +840,9 @@ public:
     PointerUnion<const Value *, const PseudoSourceValue *> ptrVal;
 
     int          offset = 0;       // offset off of ptrVal
-    unsigned     size = 0;         // the size of the memory location
+    uint64_t     size = 0;         // the size of the memory location
                                    // (taken from memVT if zero)
-    MaybeAlign align = Align(1);   // alignment
+    MaybeAlign align = Align::None(); // alignment
 
     MachineMemOperand::Flags flags = MachineMemOperand::MONone;
     IntrinsicInfo() = default;
@@ -952,12 +956,16 @@ public:
       case ISD::STRICT_FLOG: EqOpc = ISD::FLOG; break;
       case ISD::STRICT_FLOG10: EqOpc = ISD::FLOG10; break;
       case ISD::STRICT_FLOG2: EqOpc = ISD::FLOG2; break;
+      case ISD::STRICT_LRINT: EqOpc = ISD::LRINT; break;
+      case ISD::STRICT_LLRINT: EqOpc = ISD::LLRINT; break;
       case ISD::STRICT_FRINT: EqOpc = ISD::FRINT; break;
       case ISD::STRICT_FNEARBYINT: EqOpc = ISD::FNEARBYINT; break;
       case ISD::STRICT_FMAXNUM: EqOpc = ISD::FMAXNUM; break;
       case ISD::STRICT_FMINNUM: EqOpc = ISD::FMINNUM; break;
       case ISD::STRICT_FCEIL: EqOpc = ISD::FCEIL; break;
       case ISD::STRICT_FFLOOR: EqOpc = ISD::FFLOOR; break;
+      case ISD::STRICT_LROUND: EqOpc = ISD::LROUND; break;
+      case ISD::STRICT_LLROUND: EqOpc = ISD::LLROUND; break;
       case ISD::STRICT_FROUND: EqOpc = ISD::FROUND; break;
       case ISD::STRICT_FTRUNC: EqOpc = ISD::FTRUNC; break;
       case ISD::STRICT_FP_TO_SINT: EqOpc = ISD::FP_TO_SINT; break;
@@ -1024,24 +1032,8 @@ public:
   /// Return true if lowering to a jump table is suitable for a set of case
   /// clusters which may contain \p NumCases cases, \p Range range of values.
   virtual bool isSuitableForJumpTable(const SwitchInst *SI, uint64_t NumCases,
-                                      uint64_t Range) const {
-    // FIXME: This function check the maximum table size and density, but the
-    // minimum size is not checked. It would be nice if the minimum size is
-    // also combined within this function. Currently, the minimum size check is
-    // performed in findJumpTable() in SelectionDAGBuiler and
-    // getEstimatedNumberOfCaseClusters() in BasicTTIImpl.
-    const bool OptForSize = SI->getParent()->getParent()->hasOptSize();
-    const unsigned MinDensity = getMinimumJumpTableDensity(OptForSize);
-    const unsigned MaxJumpTableSize = getMaximumJumpTableSize();
-    
-    // Check whether the number of cases is small enough and
-    // the range is dense enough for a jump table.
-    if ((OptForSize || Range <= MaxJumpTableSize) &&
-        (NumCases * 100 >= Range * MinDensity)) {
-      return true;
-    }
-    return false;
-  }
+                                      uint64_t Range, ProfileSummaryInfo *PSI,
+                                      BlockFrequencyInfo *BFI) const;
 
   /// Return true if lowering to a bit test is suitable for a set of case
   /// clusters which contains \p NumDests unique destinations, \p Low and
@@ -1352,9 +1344,9 @@ public:
 
   /// Certain targets have context senstive alignment requirements, where one
   /// type has the alignment requirement of another type.
-  virtual unsigned getABIAlignmentForCallingConv(Type *ArgTy,
-                                                 DataLayout DL) const {
-    return DL.getABITypeAlignment(ArgTy);
+  virtual Align getABIAlignmentForCallingConv(Type *ArgTy,
+                                              DataLayout DL) const {
+    return Align(DL.getABITypeAlignment(ArgTy));
   }
 
   /// If true, then instruction selection should seek to shrink the FP constant
@@ -1470,11 +1462,30 @@ public:
     return false;
   }
 
+  /// This function returns true if the memory access is aligned or if the
+  /// target allows this specific unaligned memory access. If the access is
+  /// allowed, the optional final parameter returns if the access is also fast
+  /// (as defined by the target).
+  bool allowsMemoryAccessForAlignment(
+      LLVMContext &Context, const DataLayout &DL, EVT VT,
+      unsigned AddrSpace = 0, unsigned Alignment = 1,
+      MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
+      bool *Fast = nullptr) const;
+
+  /// Return true if the memory access of this type is aligned or if the target
+  /// allows this specific unaligned access for the given MachineMemOperand.
+  /// If the access is allowed, the optional final parameter returns if the
+  /// access is also fast (as defined by the target).
+  bool allowsMemoryAccessForAlignment(LLVMContext &Context,
+                                      const DataLayout &DL, EVT VT,
+                                      const MachineMemOperand &MMO,
+                                      bool *Fast = nullptr) const;
+
   /// Return true if the target supports a memory access of this type for the
   /// given address space and alignment. If the access is allowed, the optional
   /// final parameter returns if the access is also fast (as defined by the
   /// target).
-  bool
+  virtual bool
   allowsMemoryAccess(LLVMContext &Context, const DataLayout &DL, EVT VT,
                      unsigned AddrSpace = 0, unsigned Alignment = 1,
                      MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
@@ -1577,18 +1588,18 @@ public:
   }
 
   /// Return the minimum stack alignment of an argument.
-  llvm::Align getMinStackArgumentAlignment() const {
+  Align getMinStackArgumentAlignment() const {
     return MinStackArgumentAlignment;
   }
 
   /// Return the minimum function alignment.
-  llvm::Align getMinFunctionAlignment() const { return MinFunctionAlignment; }
+  Align getMinFunctionAlignment() const { return MinFunctionAlignment; }
 
   /// Return the preferred function alignment.
-  llvm::Align getPrefFunctionAlignment() const { return PrefFunctionAlignment; }
+  Align getPrefFunctionAlignment() const { return PrefFunctionAlignment; }
 
   /// Return the preferred loop alignment.
-  virtual llvm::Align getPrefLoopAlignment(MachineLoop *ML = nullptr) const {
+  virtual Align getPrefLoopAlignment(MachineLoop *ML = nullptr) const {
     return PrefLoopAlignment;
   }
 
@@ -2101,24 +2112,24 @@ protected:
   }
 
   /// Set the target's minimum function alignment.
-  void setMinFunctionAlignment(llvm::Align Align) {
-    MinFunctionAlignment = Align;
+  void setMinFunctionAlignment(Align Alignment) {
+    MinFunctionAlignment = Alignment;
   }
 
   /// Set the target's preferred function alignment.  This should be set if
   /// there is a performance benefit to higher-than-minimum alignment
-  void setPrefFunctionAlignment(llvm::Align Align) {
-    PrefFunctionAlignment = Align;
+  void setPrefFunctionAlignment(Align Alignment) {
+    PrefFunctionAlignment = Alignment;
   }
 
   /// Set the target's preferred loop alignment. Default alignment is one, it
   /// means the target does not care about loop alignment. The target may also
   /// override getPrefLoopAlignment to provide per-loop values.
-  void setPrefLoopAlignment(llvm::Align Align) { PrefLoopAlignment = Align; }
+  void setPrefLoopAlignment(Align Alignment) { PrefLoopAlignment = Alignment; }
 
   /// Set the minimum stack alignment of an argument.
-  void setMinStackArgumentAlignment(llvm::Align Align) {
-    MinStackArgumentAlignment = Align;
+  void setMinStackArgumentAlignment(Align Alignment) {
+    MinStackArgumentAlignment = Alignment;
   }
 
   /// Set the maximum atomic operation size supported by the
@@ -2480,7 +2491,8 @@ public:
   /// Return true if an fpext operation input to an \p Opcode operation is free
   /// (for instance, because half-precision floating-point numbers are
   /// implicitly extended to float-precision) for an FMA instruction.
-  virtual bool isFPExtFoldable(unsigned Opcode, EVT DestVT, EVT SrcVT) const {
+  virtual bool isFPExtFoldable(const SelectionDAG &DAG, unsigned Opcode,
+                               EVT DestVT, EVT SrcVT) const {
     assert(DestVT.isFloatingPoint() && SrcVT.isFloatingPoint() &&
            "invalid fpext types");
     return isFPExtFree(DestVT, SrcVT);
@@ -2514,6 +2526,14 @@ public:
   /// types that support FMAs (via Legal or Custom actions)
   virtual bool isFMAFasterThanFMulAndFAdd(EVT) const {
     return false;
+  }
+
+  /// Returns true if the FADD or FSUB node passed could legally be combined with
+  /// an fmul to form an ISD::FMAD.
+  virtual bool isFMADLegalForFAddFSub(const SelectionDAG &DAG,
+                                      const SDNode *N) const {
+    assert(N->getOpcode() == ISD::FADD || N->getOpcode() == ISD::FSUB);
+    return isOperationLegal(ISD::FMAD, N->getValueType(0));
   }
 
   /// Return true if it's profitable to narrow operations of type VT1 to
@@ -2583,6 +2603,12 @@ public:
   // GEP to make the GEP fit into the addressing mode and can be sunk into the
   // same blocks of its users.
   virtual bool shouldConsiderGEPOffsetSplit() const { return false; }
+
+  // Return the shift amount threshold for profitable transforms into shifts.
+  // Transforms creating shifts above the returned value will be avoided.
+  virtual unsigned getShiftAmountThreshold(EVT VT) const {
+    return VT.getScalarSizeInBits();
+  }
 
   //===--------------------------------------------------------------------===//
   // Runtime Library hooks
@@ -2680,18 +2706,18 @@ private:
   Sched::Preference SchedPreferenceInfo;
 
   /// The minimum alignment that any argument on the stack needs to have.
-  llvm::Align MinStackArgumentAlignment;
+  Align MinStackArgumentAlignment;
 
   /// The minimum function alignment (used when optimizing for size, and to
   /// prevent explicitly provided alignment from leading to incorrect code).
-  llvm::Align MinFunctionAlignment;
+  Align MinFunctionAlignment;
 
   /// The preferred function alignment (used when alignment unspecified and
   /// optimizing for speed).
-  llvm::Align PrefFunctionAlignment;
+  Align PrefFunctionAlignment;
 
   /// The preferred loop alignment (in log2 bot in bytes).
-  llvm::Align PrefLoopAlignment;
+  Align PrefLoopAlignment;
 
   /// Size in bits of the maximum atomics size the backend supports.
   /// Accesses larger than this will be expanded by AtomicExpandPass.
@@ -3148,7 +3174,8 @@ public:
   /// or one and return them in the KnownZero/KnownOne bitsets. The DemandedElts
   /// argument allows us to only collect the known bits that are shared by the
   /// requested vector elements. This is for GISel.
-  virtual void computeKnownBitsForTargetInstr(Register R, KnownBits &Known,
+  virtual void computeKnownBitsForTargetInstr(GISelKnownBits &Analysis,
+                                              Register R, KnownBits &Known,
                                               const APInt &DemandedElts,
                                               const MachineRegisterInfo &MRI,
                                               unsigned Depth = 0) const;
@@ -3241,6 +3268,8 @@ public:
     SDValue CombineTo(SDNode *N, ArrayRef<SDValue> To, bool AddTo = true);
     SDValue CombineTo(SDNode *N, SDValue Res, bool AddTo = true);
     SDValue CombineTo(SDNode *N, SDValue Res0, SDValue Res1, bool AddTo = true);
+
+    bool recursivelyDeleteUnusedNodes(SDNode *N);
 
     void CommitTargetLoweringOpt(const TargetLoweringOpt &TLO);
   };
@@ -3364,6 +3393,18 @@ public:
       const SmallVectorImpl<MachineBasicBlock *> &Exits) const {
     llvm_unreachable("Not Implemented");
   }
+
+  /// Return 1 if we can compute the negated form of the specified expression
+  /// for the same cost as the expression itself, or 2 if we can compute the
+  /// negated form more cheaply than the expression itself. Else return 0.
+  virtual char isNegatibleForFree(SDValue Op, SelectionDAG &DAG,
+                                  bool LegalOperations, bool ForCodeSize,
+                                  unsigned Depth = 0) const;
+
+  /// If isNegatibleForFree returns true, return the newly negated expression.
+  virtual SDValue getNegatedExpression(SDValue Op, SelectionDAG &DAG,
+                                       bool LegalOperations, bool ForCodeSize,
+                                       unsigned Depth = 0) const;
 
   //===--------------------------------------------------------------------===//
   // Lowering methods - These methods must be implemented by targets so that
@@ -3650,8 +3691,8 @@ public:
   /// Return the register ID of the name passed in. Used by named register
   /// global variables extension. There is no target-independent behaviour
   /// so the default action is to bail.
-  virtual unsigned getRegisterByName(const char* RegName, EVT VT,
-                                     SelectionDAG &DAG) const {
+  virtual Register getRegisterByName(const char* RegName, EVT VT,
+                                     const MachineFunction &MF) const {
     report_fatal_error("Named registers not implemented for this target");
   }
 

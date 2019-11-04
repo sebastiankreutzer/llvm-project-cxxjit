@@ -151,7 +151,7 @@ public:
         "for\n"
         "        internal_dict: an LLDB support object not to be used\"\"\"\n";
 
-    StreamFileSP output_sp(io_handler.GetOutputStreamFile());
+    StreamFileSP output_sp(io_handler.GetOutputStreamFileSP());
     if (output_sp && interactive) {
       output_sp->PutCString(g_summary_addreader_instructions);
       output_sp->Flush();
@@ -160,7 +160,7 @@ public:
 
   void IOHandlerInputComplete(IOHandler &io_handler,
                               std::string &data) override {
-    StreamFileSP error_sp = io_handler.GetErrorStreamFile();
+    StreamFileSP error_sp = io_handler.GetErrorStreamFileSP();
 
 #ifndef LLDB_DISABLE_PYTHON
     ScriptInterpreter *interpreter = GetDebugger().GetScriptInterpreter();
@@ -383,7 +383,7 @@ protected:
   }
 
   void IOHandlerActivated(IOHandler &io_handler, bool interactive) override {
-    StreamFileSP output_sp(io_handler.GetOutputStreamFile());
+    StreamFileSP output_sp(io_handler.GetOutputStreamFileSP());
     if (output_sp && interactive) {
       output_sp->PutCString(g_synth_addreader_instructions);
       output_sp->Flush();
@@ -392,7 +392,7 @@ protected:
 
   void IOHandlerInputComplete(IOHandler &io_handler,
                               std::string &data) override {
-    StreamFileSP error_sp = io_handler.GetErrorStreamFile();
+    StreamFileSP error_sp = io_handler.GetErrorStreamFileSP();
 
 #ifndef LLDB_DISABLE_PYTHON
     ScriptInterpreter *interpreter = GetDebugger().GetScriptInterpreter();
@@ -1059,8 +1059,9 @@ protected:
 
     bool any_printed = false;
 
-    auto category_closure = [&result, &formatter_regex, &any_printed](
-        const lldb::TypeCategoryImplSP &category) -> void {
+    auto category_closure =
+        [&result, &formatter_regex,
+         &any_printed](const lldb::TypeCategoryImplSP &category) -> void {
       result.GetOutputStream().Printf(
           "-----------------------\nCategory: %s%s\n-----------------------\n",
           category->GetName(), category->IsEnabled() ? "" : " (disabled)");
@@ -2343,9 +2344,9 @@ bool CommandObjectTypeSynthAdd::AddSynth(ConstString type_name,
       type = eRegexSynth;
   }
 
-  if (category->AnyMatches(type_name, eFormatCategoryItemFilter |
-                                          eFormatCategoryItemRegexFilter,
-                           false)) {
+  if (category->AnyMatches(
+          type_name, eFormatCategoryItemFilter | eFormatCategoryItemRegexFilter,
+          false)) {
     if (error)
       error->SetErrorStringWithFormat("cannot add synthetic for type %s when "
                                       "filter is defined in same category!",
@@ -2468,9 +2469,9 @@ private:
         type = eRegexFilter;
     }
 
-    if (category->AnyMatches(type_name, eFormatCategoryItemSynth |
-                                            eFormatCategoryItemRegexSynth,
-                             false)) {
+    if (category->AnyMatches(
+            type_name, eFormatCategoryItemSynth | eFormatCategoryItemRegexSynth,
+            false)) {
       if (error)
         error->SetErrorStringWithFormat("cannot add filter for type %s when "
                                         "synthetic is defined in same "
@@ -2828,8 +2829,7 @@ public:
   CommandObjectFormatterInfo(CommandInterpreter &interpreter,
                              const char *formatter_name,
                              DiscoveryFunction discovery_func)
-      : CommandObjectRaw(interpreter, "", "", "",
-                         eCommandRequiresFrame),
+      : CommandObjectRaw(interpreter, "", "", "", eCommandRequiresFrame),
         m_formatter_name(formatter_name ? formatter_name : ""),
         m_discovery_function(discovery_func) {
     StreamString name;

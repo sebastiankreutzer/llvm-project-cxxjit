@@ -1018,7 +1018,9 @@ bool AArch64InstructionSelector::selectVectorSHL(
     return false;
 
   unsigned Opc = 0;
-  if (Ty == LLT::vector(4, 32)) {
+  if (Ty == LLT::vector(2, 64)) {
+    Opc = AArch64::USHLv2i64;
+  } else if (Ty == LLT::vector(4, 32)) {
     Opc = AArch64::USHLv4i32;
   } else if (Ty == LLT::vector(2, 32)) {
     Opc = AArch64::USHLv2i32;
@@ -1052,7 +1054,11 @@ bool AArch64InstructionSelector::selectVectorASHR(
   unsigned Opc = 0;
   unsigned NegOpc = 0;
   const TargetRegisterClass *RC = nullptr;
-  if (Ty == LLT::vector(4, 32)) {
+  if (Ty == LLT::vector(2, 64)) {
+    Opc = AArch64::SSHLv2i64;
+    NegOpc = AArch64::NEGv2i64;
+    RC = &AArch64::FPR128RegClass;
+  } else if (Ty == LLT::vector(4, 32)) {
     Opc = AArch64::SSHLv4i32;
     NegOpc = AArch64::NEGv4i32;
     RC = &AArch64::FPR128RegClass;
@@ -2059,14 +2065,15 @@ bool AArch64InstructionSelector::select(MachineInstr &I) {
     unsigned DstSize = DstTy.getSizeInBits();
     unsigned SrcSize = SrcTy.getSizeInBits();
 
+    if (DstTy.isVector())
+      return false; // Should be handled by imported patterns.
+
     assert((*RBI.getRegBank(DefReg, MRI, TRI)).getID() ==
                AArch64::GPRRegBankID &&
            "Unexpected ext regbank");
 
     MachineIRBuilder MIB(I);
     MachineInstr *ExtI;
-    if (DstTy.isVector())
-      return false; // Should be handled by imported patterns.
 
     // First check if we're extending the result of a load which has a dest type
     // smaller than 32 bits, then this zext is redundant. GPR32 is the smallest

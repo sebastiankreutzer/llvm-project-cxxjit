@@ -388,8 +388,25 @@ static void instantiateOMPDeclareVariantAttr(
   if (Expr *E = Attr.getVariantFuncRef())
     VariantFuncRef = Subst(E);
 
-  (void)S.ActOnOpenMPDeclareVariantDirective(
-      S.ConvertDeclToDeclGroup(New), VariantFuncRef.get(), Attr.getRange());
+  ExprResult Score;
+  if (Expr *E = Attr.getScore())
+    Score = Subst(E);
+
+  // Check function/variant ref.
+  Optional<std::pair<FunctionDecl *, Expr *>> DeclVarData =
+      S.checkOpenMPDeclareVariantFunction(
+          S.ConvertDeclToDeclGroup(New), VariantFuncRef.get(), Attr.getRange());
+  if (!DeclVarData)
+    return;
+  // Instantiate the attribute.
+  Sema::OpenMPDeclareVariantCtsSelectorData Data(
+      Attr.getCtxSelectorSet(), Attr.getCtxSelector(),
+      llvm::makeMutableArrayRef(Attr.implVendors_begin(),
+                                Attr.implVendors_size()),
+      Score);
+  S.ActOnOpenMPDeclareVariantDirective(DeclVarData.getValue().first,
+                                       DeclVarData.getValue().second,
+                                       Attr.getRange(), Data);
 }
 
 static void instantiateDependentAMDGPUFlatWorkGroupSizeAttr(
@@ -2032,6 +2049,11 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
     }
   }
 
+  if (D->isExplicitlyDefaulted())
+    SemaRef.SetDeclDefaulted(Function, D->getLocation());
+  if (D->isDeleted())
+    SemaRef.SetDeclDeleted(Function, D->getLocation());
+
   if (Function->isLocalExternDecl() && !Function->getPreviousDecl())
     DC->makeDeclVisibleInContext(PrincipalDecl);
 
@@ -2039,7 +2061,6 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
       PrincipalDecl->isInIdentifierNamespace(Decl::IDNS_Ordinary))
     PrincipalDecl->setNonMemberOperator();
 
-  assert(!D->isDefaulted() && "only methods should be defaulted");
   return Function;
 }
 
@@ -2139,10 +2160,9 @@ Decl *TemplateDeclInstantiator::VisitCXXMethodDecl(
         Constructor->getConstexprKind());
     Method->setRangeEnd(Constructor->getEndLoc());
   } else if (CXXDestructorDecl *Destructor = dyn_cast<CXXDestructorDecl>(D)) {
-    Method = CXXDestructorDecl::Create(SemaRef.Context, Record,
-                                       StartLoc, NameInfo, T, TInfo,
-                                       Destructor->isInlineSpecified(),
-                                       false);
+    Method = CXXDestructorDecl::Create(
+        SemaRef.Context, Record, StartLoc, NameInfo, T, TInfo,
+        Destructor->isInlineSpecified(), false, Destructor->getConstexprKind());
     Method->setRangeEnd(Destructor->getEndLoc());
   } else if (CXXConversionDecl *Conversion = dyn_cast<CXXConversionDecl>(D)) {
     Method = CXXConversionDecl::Create(
@@ -3499,14 +3519,21 @@ TemplateDeclInstantiator::SubstTemplateParams(TemplateParameterList *L) {
   if (Invalid)
     return nullptr;
 
-  // Note: we substitute into associated constraints later
-  Expr *const UninstantiatedRequiresClause = L->getRequiresClause();
+  // FIXME: Concepts: Substitution into requires clause should only happen when
+  // checking satisfaction.
+  Expr *InstRequiresClause = nullptr;
+  if (Expr *E = L->getRequiresClause()) {
+    ExprResult Res = SemaRef.SubstExpr(E, TemplateArgs);
+    if (Res.isInvalid() || !Res.isUsable()) {
+      return nullptr;
+    }
+    InstRequiresClause = Res.get();
+  }
 
   TemplateParameterList *InstL
     = TemplateParameterList::Create(SemaRef.Context, L->getTemplateLoc(),
                                     L->getLAngleLoc(), Params,
-                                    L->getRAngleLoc(),
-                                    UninstantiatedRequiresClause);
+                                    L->getRAngleLoc(), InstRequiresClause);
   return InstL;
 }
 
@@ -3993,9 +4020,6 @@ void Sema::InstantiateExceptionSpec(SourceLocation PointOfInstantiation,
 bool
 TemplateDeclInstantiator::InitFunctionInstantiation(FunctionDecl *New,
                                                     FunctionDecl *Tmpl) {
-  if (Tmpl->isDeleted())
-    New->setDeletedAsWritten();
-
   New->setImplicit(Tmpl->isImplicit());
 
   // Forward the mangling number from the template to the instantiated decl.

@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CodeGen/JIT.h"
+#include "JITCompiler.h"
+
 #include "Tuner/Optimizer.h"
 #include "Tuner/TimingHelper.h"
 #include "clang/CodeGen/CodeGenAction.h"
@@ -118,8 +120,9 @@
 #include <iomanip>
 #include <unordered_map>
 
-using namespace clang;
 using namespace llvm;
+using namespace clang;
+using namespace clang::jit;
 
 #define DEBUG_TYPE "clang-jit"
 
@@ -227,319 +230,7 @@ void fatal() {
   report_fatal_error("Clang JIT failed!");
 }
 
-// This is a variant of ORC's LegacyLookupFnResolver with a cutomized
-// getResponsibilitySet behavior allowing us to claim responsibility for weak
-// symbols in the loaded modules that we don't otherwise have.
-// Note: We generally convert all IR level symbols to have strong linkage, but
-// that won't cover everything (and especially doesn't cover the DW.ref.
-// symbols created by the low-level EH logic on some platforms).
-template <typename LegacyLookupFn>
-class ClangLookupFnResolver final : public llvm::orc::SymbolResolver {
-public:
-  using ErrorReporter = std::function<void(Error)>;
 
-  ClangLookupFnResolver(llvm::orc::ExecutionSession &ES,
-                              LegacyLookupFn LegacyLookup,
-                              ErrorReporter ReportError)
-      : ES(ES), LegacyLookup(std::move(LegacyLookup)),
-        ReportError(std::move(ReportError)) {}
-
-  llvm::orc::SymbolNameSet
-  getResponsibilitySet(const llvm::orc::SymbolNameSet &Symbols) final {
-    llvm::orc::SymbolNameSet Result;
-
-    for (auto &S : Symbols) {
-      if (JITSymbol Sym = LegacyLookup(*S)) {
-        // If the symbol exists elsewhere, and we have only a weak version,
-        // then we're not responsible.
-        continue;
-      } else if (auto Err = Sym.takeError()) {
-        ReportError(std::move(Err));
-        return llvm::orc::SymbolNameSet();
-      } else {
-        Result.insert(S);
-      }
-    }
-
-    return Result;
-  }
-
-  llvm::orc::SymbolNameSet
-  lookup(std::shared_ptr<llvm::orc::AsynchronousSymbolQuery> Query,
-                         llvm::orc::SymbolNameSet Symbols) final {
-    return llvm::orc::lookupWithLegacyFn(ES, *Query, Symbols, LegacyLookup);
-  }
-
-private:
-  llvm::orc::ExecutionSession &ES;
-  LegacyLookupFn LegacyLookup;
-  ErrorReporter ReportError;
-};
-
-template <typename LegacyLookupFn>
-std::shared_ptr<ClangLookupFnResolver<LegacyLookupFn>>
-createClangLookupResolver(llvm::orc::ExecutionSession &ES,
-                          LegacyLookupFn LegacyLookup,
-                          std::function<void(Error)> ErrorReporter) {
-  return std::make_shared<ClangLookupFnResolver<LegacyLookupFn>>(
-      ES, std::move(LegacyLookup), std::move(ErrorReporter));
-}
-
-class ClangJIT {
-public:
-  using ObjLayerT = llvm::orc::LegacyRTDyldObjectLinkingLayer;
-  using CompileLayerT = llvm::orc::LegacyIRCompileLayer<ObjLayerT, llvm::orc::SimpleCompiler>;
-
-  ClangJIT(DenseMap<StringRef, const void *> &LocalSymAddrs)
-      : LocalSymAddrs(LocalSymAddrs),
-        Resolver(createClangLookupResolver(
-            ES,
-            [this](const std::string &Name) {
-              return findSymbol(Name);
-            },
-            [](Error Err) { cantFail(std::move(Err), "lookupFlags failed"); })),
-        TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
-        ObjectLayer(ES,
-                    [this](llvm::orc::VModuleKey) {
-                      return ObjLayerT::Resources{
-                          std::make_shared<SectionMemoryManager>(), Resolver};
-                    }),
-        CompileLayer(ObjectLayer, llvm::orc::SimpleCompiler(*TM)),
-        CXXRuntimeOverrides(
-            [this](const std::string &S) { return mangle(S); }) {
-    llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
-  }
-
-  ~ClangJIT() {
-    // Run any destructors registered with __cxa_atexit.
-    CXXRuntimeOverrides.runDestructors();
-
-    // Run any IR destructors.
-    for (auto &DtorRunner : IRStaticDestructorRunners)
-      cantFail(DtorRunner.runViaLayer(CompileLayer));
-  }
-
-  llvm::TargetMachine &getTargetMachine() { return *TM; }
-
-  llvm::orc::VModuleKey addModule(std::unique_ptr<llvm::Module> M) {
-    // Record the static constructors and destructors. We have to do this before
-    // we hand over ownership of the module to the JIT.
-    std::vector<std::string> CtorNames, DtorNames;
-    for (auto Ctor : llvm::orc::getConstructors(*M))
-      if (Ctor.Func && !Ctor.Func->hasAvailableExternallyLinkage())
-        CtorNames.push_back(mangle(Ctor.Func->getName()));
-    for (auto Dtor : llvm::orc::getDestructors(*M))
-      if (Dtor.Func && !Dtor.Func->hasAvailableExternallyLinkage())
-        DtorNames.push_back(mangle(Dtor.Func->getName()));
-
-    auto K = ES.allocateVModule();
-    cantFail(CompileLayer.addModule(K, std::move(M)));
-    ModuleKeys.push_back(K);
-
-    // Run the static constructors, and save the static destructor runner for
-    // execution when the JIT is torn down.
-    llvm::orc::LegacyCtorDtorRunner<CompileLayerT>
-      CtorRunner(std::move(CtorNames), K);
-    if (auto Err = CtorRunner.runViaLayer(CompileLayer)) {
-      llvm::errs() << "Error while running static constructors: " << Err << "\n";
-      errs().flush();
-      fatal();
-    }
-
-    IRStaticDestructorRunners.emplace_back(std::move(DtorNames), K);
-
-    return K;
-  }
-
-  void removeModule(llvm::orc::VModuleKey K) {
-    ModuleKeys.erase(find(ModuleKeys, K));
-    cantFail(CompileLayer.removeModule(K));
-  }
-
-  llvm::JITSymbol findSymbol(const std::string Name) {
-    return findMangledSymbol(mangle(Name));
-  }
-
-private:
-  std::string mangle(const std::string &Name) {
-    std::string MangledName;
-    {
-      llvm::raw_string_ostream MangledNameStream(MangledName);
-      llvm::Mangler::getNameWithPrefix(MangledNameStream, Name, DL);
-    }
-    return MangledName;
-  }
-
-  llvm::JITSymbol findMangledSymbol(const std::string &Name) {
-    for (auto H : make_range(ModuleKeys.rbegin(), ModuleKeys.rend()))
-      if (auto Sym = CompileLayer.findSymbolIn(H, Name,
-                                               /*ExportedSymbolsOnly*/ false))
-        return Sym;
-
-    if (auto Sym = CXXRuntimeOverrides.searchOverrides(Name))
-      return Sym;
-
-    auto LSAI = LocalSymAddrs.find(Name);
-    if (LSAI != LocalSymAddrs.end())
-      return llvm::JITSymbol(llvm::pointerToJITTargetAddress(LSAI->second),
-                             llvm::JITSymbolFlags::Exported);
-
-    // If we can't find the symbol in the JIT, try looking in the host process.
-    if (auto SymAddr = RTDyldMemoryManager::getSymbolAddressInProcess(Name))
-      return llvm::JITSymbol(SymAddr, llvm::JITSymbolFlags::Exported);
-
-#ifdef _WIN32
-    // For Windows retry without "_" at beginning, as RTDyldMemoryManager uses
-    // GetProcAddress and standard libraries like msvcrt.dll use names
-    // with and without "_" (for example "_itoa" but "sin").
-    if (Name.length() > 2 && Name[0] == '_')
-      if (auto SymAddr =
-              RTDyldMemoryManager::getSymbolAddressInProcess(Name.substr(1)))
-        return llvm::JITSymbol(SymAddr, llvm::JITSymbolFlags::Exported);
-#endif
-
-    return nullptr;
-  }
-
-  DenseMap<StringRef, const void *> &LocalSymAddrs; 
-  llvm::orc::ExecutionSession ES;
-  std::shared_ptr<llvm::orc::SymbolResolver> Resolver;
-  std::unique_ptr<llvm::TargetMachine> TM;
-  const llvm::DataLayout DL;
-  ObjLayerT ObjectLayer;
-  CompileLayerT CompileLayer;
-  std::vector<llvm::orc::VModuleKey> ModuleKeys;
-
-  llvm::orc::LegacyLocalCXXRuntimeOverrides CXXRuntimeOverrides;
-  std::vector<llvm::orc::LegacyCtorDtorRunner<CompileLayerT>>
-    IRStaticDestructorRunners;
-};
-
-class BackendConsumer : public ASTConsumer {
-  DiagnosticsEngine &Diags;
-  BackendAction Action;
-  const HeaderSearchOptions &HeaderSearchOpts;
-  const CodeGenOptions &CodeGenOpts;
-  const clang::TargetOptions &TargetOpts;
-  const LangOptions &LangOpts;
-  std::unique_ptr<raw_pwrite_stream> AsmOutStream;
-  ASTContext *Context;
-  std::string InFile;
-  const PreprocessorOptions &PPOpts;
-  LLVMContext &C;
-  std::vector<std::unique_ptr<llvm::Module>> &DevLinkMods;
-  CoverageSourceInfo *CoverageInfo;
-
-  std::unique_ptr<CodeGenerator> Gen;
-
-  void replaceGenerator() {
-    Gen.reset(CreateLLVMCodeGen(Diags, InFile, HeaderSearchOpts, PPOpts,
-                                CodeGenOpts, C, CoverageInfo));
-  }
-
-public:
-  BackendConsumer(BackendAction Action, DiagnosticsEngine &Diags,
-                  const HeaderSearchOptions &HeaderSearchOpts,
-                  const PreprocessorOptions &PPOpts,
-                  const CodeGenOptions &CodeGenOpts,
-                  const clang::TargetOptions &TargetOpts,
-                  const LangOptions &LangOpts, bool TimePasses,
-                  const std::string &InFile,
-                  std::unique_ptr<raw_pwrite_stream> OS, LLVMContext &C,
-                  std::vector<std::unique_ptr<llvm::Module>> &DevLinkMods,
-                  CoverageSourceInfo *CoverageInfo = nullptr)
-      : Diags(Diags), Action(Action), HeaderSearchOpts(HeaderSearchOpts),
-        CodeGenOpts(CodeGenOpts), TargetOpts(TargetOpts), LangOpts(LangOpts),
-        AsmOutStream(std::move(OS)), Context(nullptr), InFile(InFile),
-        PPOpts(PPOpts), C(C), DevLinkMods(DevLinkMods),
-        CoverageInfo(CoverageInfo) { }
-
-  llvm::Module *getModule() const { return Gen->GetModule(); }
-  std::unique_ptr<llvm::Module> takeModule() {
-    return std::unique_ptr<llvm::Module>(Gen->ReleaseModule());
-  }
-
-  CodeGenerator *getCodeGenerator() { return Gen.get(); }
-
-  void HandleCXXStaticMemberVarInstantiation(VarDecl *VD) override {
-    Gen->HandleCXXStaticMemberVarInstantiation(VD);
-  }
-
-  void Initialize(ASTContext &Ctx) override {
-    replaceGenerator();
-    Context = &Ctx;
-    Gen->Initialize(Ctx);
-  }
-
-  bool HandleTopLevelDecl(DeclGroupRef D) override {
-    Gen->HandleTopLevelDecl(D);
-    return true;
-  }
-
-  void HandleInlineFunctionDefinition(FunctionDecl *D) override {
-    Gen->HandleInlineFunctionDefinition(D);
-  }
-
-  void HandleInterestingDecl(DeclGroupRef D) override {
-    HandleTopLevelDecl(D);
-  }
-
-  void HandleTranslationUnit(ASTContext &C) override {
-      Gen->HandleTranslationUnit(C);
-
-    // Silently ignore if we weren't initialized for some reason.
-    if (!getModule())
-      return;
-
-    for (auto &BM : DevLinkMods) {
-      std::unique_ptr<llvm::Module> M = llvm::CloneModule(*BM);
-      M->setDataLayout(getModule()->getDataLayoutStr());
-      M->setTargetTriple(getModule()->getTargetTriple());
-
-      for (Function &F : *M)
-        Gen->CGM().AddDefaultFnAttrs(F);
-
-      bool Err = Linker::linkModules(
-              *getModule(), std::move(M), llvm::Linker::Flags::LinkOnlyNeeded,
-              [](llvm::Module &M, const llvm::StringSet<> &GVS) {
-                internalizeModule(M, [&GVS](const llvm::GlobalValue &GV) {
-                  return !GV.hasName() || (GVS.count(GV.getName()) == 0);
-                });
-              });
-
-      if (Err)
-        fatal();
-    }
-
-  }
-
-  void HandleTagDeclDefinition(TagDecl *D) override {
-    Gen->HandleTagDeclDefinition(D);
-  }
-
-  void HandleTagDeclRequiredDefinition(const TagDecl *D) override {
-    Gen->HandleTagDeclRequiredDefinition(D);
-  }
-
-  void CompleteTentativeDefinition(VarDecl *D) override {
-    Gen->CompleteTentativeDefinition(D);
-  }
-
-  void AssignInheritanceModel(CXXRecordDecl *RD) override {
-    Gen->AssignInheritanceModel(RD);
-  }
-
-  void HandleVTable(CXXRecordDecl *RD) override {
-    Gen->HandleVTable(RD);
-  }
-
-  void EmitOptimized() {
-    EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
-                      LangOpts, Context->getTargetInfo().getDataLayout(),
-                      getModule(), Action,
-                      llvm::make_unique<llvm::buffer_ostream>(*AsmOutStream));
-  }
-};
 
 class JFIMapDeclVisitor : public RecursiveASTVisitor<JFIMapDeclVisitor> {
   DenseMap<unsigned, FunctionDecl *> &Map;
@@ -594,1679 +285,8 @@ std::unique_ptr<llvm::LLVMContext> LCtx;
 
 bool InitializedDevTarget = false;
 
-struct DevFileData {
-  const char *Filename;
-  const void *Data;
-  size_t DataSize;
-};
 
-struct DevData {
-  const char *Triple;
-  const char *Arch;
-  const char *ASTBuffer;
-  size_t ASTBufferSize;
-  const void *CmdArgs;
-  size_t CmdArgsLen;
-  DevFileData *FileData;
-  size_t FileDataCnt;
-};
 
-
-
-
-struct StatsTracker {
-  bool HasBest{false};
-  unsigned BestVersion;
-  tuner::TimingStats BestStats;
-
-  void update(unsigned ID, tuner::TimingStats Stats) {
-    if (!HasBest || Stats.betterThan(BestStats)) {
-      BestVersion = ID;
-      BestStats = Stats;
-      HasBest = true;
-    }
-  }
-
-};
-
-
-//class JITPerfMonitor {
-//
-//  ClangJIT* CJ;
-//
-//  // TODO: Currently, none of this is thread safe (use atomics?)
-//
-//  struct GlobalNames {
-//    std::string TotalCyclesGlobal{""};
-//    std::string MeanCyclesGlobal{""};
-//    std::string CallCountGlobal{""};
-//    std::string VarNGlobal{""};
-//  };
-//
-//  // Saves global names to look up addresses after compilation
-//  /*llvm::DenseMap<SmallString<16>, InstrGlobals>*/ llvm::StringMap<GlobalNames> InstrGlobalMap;
-//
-//public:
-//
-//  struct PerfGlobals {
-//    double* VarN{nullptr};
-//    int64_t* Cycles{nullptr};
-//    int64_t* CallCount{nullptr};
-//    double* MeanCycles{nullptr};
-//
-//    bool Valid() {
-//      return VarN && Cycles && CallCount && MeanCycles;
-//    }
-//  };
-//
-//private:
-//
-//
-//  Value* insertRDTSCP(IRBuilder<>& IRB) {
-//    llvm::Module* M = IRB.GetInsertBlock()->getModule();
-//    // TODO: Limited to x86 for now. Replace with llvm.readcyclecounter intrinsic?
-//    auto* RDTSCP = Intrinsic::getDeclaration(M, Intrinsic::x86_rdtscp);
-//    auto* Call = IRB.CreateCall(RDTSCP);
-//    return IRB.CreateExtractValue(Call, {0}); // 64 bit value
-//  }
-//
-//  Value* instrumentPreCall(IRBuilder<>& IRB) {
-//    return insertRDTSCP(IRB);
-//  }
-//
-//  void instrumentPostCall(IRBuilder<>& IRB, GlobalVariable* CallCount, GlobalVariable* CycleCount, GlobalVariable* MeanCycles, GlobalVariable* VarN, Value* StartCycles) {
-//
-//    auto* StopCycles = insertRDTSCP(IRB);
-//
-//    // Update cycles
-//    // RDTSCP should be 64bit, so we can probably ignore overflows
-//    auto* CurrentTotal = IRB.CreateLoad(CycleCount);
-//    auto* Elapsed = IRB.CreateSub(StopCycles, StartCycles);
-//    auto* ElapsedFloat = IRB.CreateSIToFP(Elapsed, IRB.getDoubleTy());
-//    auto* NewTotal = IRB.CreateAdd(CurrentTotal, Elapsed);
-//    IRB.CreateStore(NewTotal, CycleCount);
-//
-//    // Update call count
-//    auto* OldCount = IRB.CreateLoad(CallCount);
-//    auto* Incd = IRB.CreateAdd(OldCount, IRB.getInt64(1));
-//    IRB.CreateStore(Incd, CallCount);
-//
-//    auto* F = IRB.GetInsertBlock()->getParent();
-//
-//    auto* IfBB = BasicBlock::Create(IRB.getContext(), "not_called_before", F);
-//    auto* ElseBB = BasicBlock::Create(IRB.getContext(), "called_before", F);
-//    auto* RetBB = BasicBlock::Create(IRB.getContext(), "return", F);
-//
-//    // TODO: Remove this eventually, for debugging only
-//    //IRB.CreateCall(ReportFn, {Elapsed});
-//
-//    // Branch
-//    IRB.CreateCondBr(IRB.CreateICmpEQ(OldCount, IRB.getInt64(0)), IfBB, ElseBB);
-//
-//    // Call count is zero
-//    IRB.SetInsertPoint(IfBB);
-//    IRB.CreateStore(ElapsedFloat, MeanCycles);
-//    IRB.CreateBr(RetBB);
-//
-//    // Call count is not zero
-//    IRB.SetInsertPoint(ElseBB);
-//    // Update mean
-//    auto* OldMean = IRB.CreateLoad(MeanCycles);
-//    auto* T1 = IRB.CreateFSub(ElapsedFloat, OldMean);
-//    auto* NewMean = IRB.CreateFAdd(OldMean, IRB.CreateFDiv(T1, IRB.CreateSIToFP(Incd, IRB.getDoubleTy())));
-//    IRB.CreateStore(NewMean, MeanCycles);
-//
-//    // Update variance
-//    auto* OldVarN = IRB.CreateLoad(VarN);
-//    auto* VarNInc = IRB.CreateFMul(T1, IRB.CreateFSub(ElapsedFloat, NewMean));
-//    auto* NewVarN = IRB.CreateFAdd(OldVarN, VarNInc);
-//    IRB.CreateStore(NewVarN, VarN);
-//    IRB.CreateBr(RetBB);
-//
-//    IRB.SetInsertPoint(RetBB);
-//
-////    auto TrackerPtrInt = IRB.getInt64(reinterpret_cast<int64_t>(&Tracker));
-////    auto TrackerPtr = IRB.CreateIntToPtr(TrackerPtrInt, IRB.getInt8PtrTy());
-////    auto IDConst = IRB.getInt32(ID);
-////    IRB.CreateCall(CallbackFn, {TrackerPtr, IDConst, Incd, NewMean, NewVarN});
-//  }
-//
-//  template<typename T>
-//  T* fetchGlobal(const std::string& Name) {
-//    auto Sym = CJ->findSymbol(Name);
-//    auto addr = Sym.getAddress();
-//    if (!addr) {
-//      errs() << "Unable to find address of global " << Name << "\n";
-//      return nullptr;
-//    }
-//    return reinterpret_cast<T*>(addr.get());
-//  }
-//
-//
-//public:
-//
-//  JITPerfMonitor(ClangJIT* CJ): CJ(CJ) {
-//  }
-//
-//  JITPerfMonitor(const JITPerfMonitor&) = delete;
-//  JITPerfMonitor& operator=(const JITPerfMonitor&) = delete;
-//
-////  ~JITPerfMonitor() {
-////    printReport();
-////  }
-//
-//  PerfGlobals lookupGlobals(StringRef FName) {
-//    auto It = InstrGlobalMap.find(FName);
-//    if (It == InstrGlobalMap.end()) {
-//      return PerfGlobals();
-//    }
-//    auto& GlobalNames = It->second;
-//
-//    PerfGlobals PG;
-//    PG.CallCount = fetchGlobal<int64_t>(GlobalNames.CallCountGlobal);
-//    PG.Cycles = fetchGlobal<int64_t>(GlobalNames.TotalCyclesGlobal);
-//    PG.MeanCycles = fetchGlobal<double>(GlobalNames.MeanCyclesGlobal);
-//    PG.VarN = fetchGlobal<double>(GlobalNames.VarNGlobal);
-//    return PG;
-//  }
-//
-//  Function* createInstrumentedWrapper(Function* F/*, Function* CallbackFn, StatsTracker& Tracker, unsigned ID*/) {
-//    std::string FName = F->getName().str();
-//    auto* M = F->getParent();
-//
-//    auto& C = M->getContext();
-//
-//    auto make_global = [&](llvm::Type* GType, Constant* Init, const char* Suffix) -> llvm::GlobalVariable* {
-//      const char* Prefix = "__clangjit_";
-//      std::stringstream ss;
-//      ss << Prefix << FName << "_" << Suffix; // TODO: Probably not the fastest way to do this
-//      auto Name = ss.str();
-//      M->getOrInsertGlobal(Name, GType);
-//      auto* Global = M->getGlobalVariable(Name);
-//      Global->setInitializer(Init);
-//      Global->setLinkage(GlobalVariable::InternalLinkage); // TODO: Correct linkage type?
-//      return Global;
-//    };
-//
-//    auto make_global_int64 = [&](const char* Suffix) -> llvm::GlobalVariable* {
-//      auto* GType = llvm::Type::getInt64Ty(C);
-//      return make_global(GType, ConstantInt::get(GType, 0, false), Suffix);
-//    };
-//
-//    auto make_global_double = [&](const char* Suffix) -> llvm::GlobalVariable* {
-//      auto* GType = llvm::Type::getDoubleTy(C);
-//      return make_global(GType, ConstantFP::get(GType, 0.0), Suffix);
-//    };
-//
-//    auto* CyclesGlobal = make_global_int64("cycles");
-//    auto* MeanCyclesGlobal = make_global_double("mean_cycles");
-//    auto* CallCountGlobal = make_global_int64("count");
-//    auto* VarNGlobal = make_global_double("var_n");
-//
-//    auto& FGlobals = InstrGlobalMap[FName];
-//    FGlobals.TotalCyclesGlobal = CyclesGlobal->getName();
-//    FGlobals.MeanCyclesGlobal = MeanCyclesGlobal->getName();
-//    FGlobals.CallCountGlobal = CallCountGlobal->getName();
-//    FGlobals.VarNGlobal = VarNGlobal->getName();
-//
-////    InstrGlobals Globals;
-////    Globals.TotalCyclesGlobal = CyclesGlobal;
-////    Globals.CallCountGlobal = CallCountGlobal;
-////    InstrGlobalMap[FName] = Globals;
-//
-//
-//    std::string FImplName = "__clangjit_impl_" + FName;
-//    F->setName(FImplName);
-//
-//    Function* Wrapper = Function::Create(F->getFunctionType(), Function::ExternalLinkage, FName, M);
-//    //Wrapper->stealArgumentListFrom(*F);
-//
-//    auto* EB = BasicBlock::Create(C, "", Wrapper);
-//    IRBuilder<> IRB(EB);
-//
-//    Value* CyclesStart = instrumentPreCall(IRB);
-//
-//    // TODO: Not sure what's the best way to get the argument list here
-//    llvm::SmallVector<Value*, 8> ArgList;
-//    for (auto&& arg : Wrapper->args()) {
-//      ArgList.emplace_back(&arg);
-//    }
-//
-//    auto* FCall = IRB.CreateCall(F, ArgList);
-//
-//    instrumentPostCall(IRB, CallCountGlobal, CyclesGlobal, MeanCyclesGlobal, VarNGlobal, CyclesStart);
-//
-//    if (F->getReturnType()->isVoidTy()) {
-//      IRB.CreateRetVoid();
-//    } else {
-//      IRB.CreateRet(FCall);
-//    }
-//
-//    return Wrapper;
-//  }
-//
-//private:
-//
-//
-//};
-
-
-
-struct JITContext {
-
-  using VersionID = unsigned;
-
-  JITContext() = default;
-
-//  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  StringRef DeclName)
-//    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName)
-//    {
-//
-//    }
-
-
-  // Whether the function currently available in the JIT engine
-  bool Emitted{false};
-  // The unoptimized module
-  std::unique_ptr<llvm::Module> Mod{nullptr};
-  // Mangled function name
-  SmallString<32> DeclName{""};
-  // Symbols emitted during instantiation (also mangled) that need to be replaced in the running module on recompilation.
-  SmallVector<SmallString<16>, 16> ReplaceOnRecompilation{};
-  // Version ID of the initial compilation. This module must not be deleted since it contains the global definitions which
-  // all subsequent recompilations depend on.
-  VersionID PrimaryVersion{0};
-  // Optimizer instance for this module
-  std::unique_ptr<tuner::Optimizer> Opt{nullptr};
-
-};
-
-struct JITInstantiation {
-
-  JITInstantiation() = default;
-
-  JITInstantiation(JITContext::VersionID ID, orc::VModuleKey ModKey, void* FPtr, tuner::TimingGlobals Globals, tuner::ConfigEvalRequest Request)
-      : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals), Request(std::move(Request))
-  {}
-
-  tuner::TimingStats updateStats() {
-    if (!Globals.Valid()) {
-      return {};
-    }
-    auto CallCount = *Globals.CallCount;
-    auto Mean = *Globals.MeanCycles;
-    auto Var = *Globals.VarN / CallCount;
-    auto NewStats = tuner::TimingStats(CallCount, Mean, Var);
-    *Request.Stats = NewStats;
-    return NewStats;
-  }
-
-  JITContext::VersionID ID{0};
-  orc::VModuleKey ModKey{0};
-  void* FPtr{nullptr};
-  tuner::TimingGlobals Globals;
-  tuner::ConfigEvalRequest Request;
-  //TimingStats Stats;
-  // TODO: Place info about instantiation specific optimization here
-};
-
-
-struct CompilerData {
-  std::unique_ptr<CompilerInvocation>     Invocation;
-  std::unique_ptr<llvm::opt::OptTable>    Opts;
-  IntrusiveRefCntPtr<DiagnosticOptions>   DiagOpts;
-  std::unique_ptr<TextDiagnosticPrinter>  DiagnosticPrinter;
-  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem;
-  IntrusiveRefCntPtr<DiagnosticsEngine>   Diagnostics;
-  IntrusiveRefCntPtr<FileManager>         FileMgr;
-  IntrusiveRefCntPtr<SourceManager>       SourceMgr;
-  IntrusiveRefCntPtr<MemoryBufferCache>   PCMCache;
-  std::unique_ptr<HeaderSearch>           HeaderInfo;
-  std::unique_ptr<PCHContainerReader>     PCHContainerRdr;
-  IntrusiveRefCntPtr<TargetInfo>          Target;
-  std::shared_ptr<Preprocessor>           PP;
-  IntrusiveRefCntPtr<ASTContext>          Ctx;
-  std::shared_ptr<clang::TargetOptions>   TargetOpts;
-  std::shared_ptr<HeaderSearchOptions>    HSOpts;
-  std::shared_ptr<PreprocessorOptions>    PPOpts;
-  IntrusiveRefCntPtr<ASTReader>           Reader;
-  std::unique_ptr<BackendConsumer>        Consumer;
-  std::unique_ptr<Sema>                   S;
-  TrivialModuleLoader                     ModuleLoader;
-  std::unique_ptr<llvm::Module>           RunningMod;
-
-  DenseMap<StringRef, const void *>       LocalSymAddrs;
-  DenseMap<StringRef, ValueDecl *>        NewLocalSymDecls;
-  std::unique_ptr<ClangJIT>               CJ;
-
-  DenseMap<unsigned, FunctionDecl *>      FuncMap;
-
-  // A map of each instantiation to the containing function. These might not be
-  // unique, but should be unique for any place where it matters
-  // (instantiations with from-string types).
-  DenseMap<unsigned, FunctionDecl *>      CSFuncMap;
-
-  std::unique_ptr<CompilerData>           DevCD;
-  SmallString<1>                          DevAsm;
-  std::vector<std::unique_ptr<llvm::Module>> DevLinkMods;
-
-//  std::unique_ptr<JITPerfMonitor>         PerfMonitor;
-
-
- // DenseMap<InstInfo, InstContext, InstMapInfo>          InstContextMap;
-
-
-  CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
-               const void *ASTBuffer, size_t ASTBufferSize,
-               const void *IRBuffer, size_t IRBufferSize,
-               const void **LocalPtrs, unsigned LocalPtrsCnt,
-               const void **LocalDbgPtrs, unsigned LocalDbgPtrsCnt,
-               const DevData *DeviceData, unsigned DevCnt,
-               int ForDev = -1) {
-    bool IsForDev = (ForDev != -1);
-
-    StringRef CombinedArgv((const char *) CmdArgs, CmdArgsLen);
-    SmallVector<StringRef, 32> Argv;
-    CombinedArgv.split(Argv, '\0', /*MaxSplit*/ -1, false);
-
-    llvm::opt::ArgStringList CC1Args;
-    for (auto &ArgStr : Argv)
-      CC1Args.push_back(ArgStr.begin());
-
-    unsigned MissingArgIndex, MissingArgCount;
-    Opts = driver::createDriverOptTable();
-    llvm::opt::InputArgList ParsedArgs = Opts->ParseArgs(
-      CC1Args, MissingArgIndex, MissingArgCount);
-
-    DiagOpts = new DiagnosticOptions();
-    ParseDiagnosticArgs(*DiagOpts, ParsedArgs);
-    DiagnosticPrinter.reset(new TextDiagnosticPrinter(
-      llvm::errs(), &*DiagOpts));
-    Diagnostics = new DiagnosticsEngine(
-      IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs()), &*DiagOpts,
-      DiagnosticPrinter.get(), false);
-
-    // Note that LangOpts, TargetOpts can also be read from the AST, but
-    // CodeGenOpts need to come from the stored command line.
-
-    Invocation.reset(new CompilerInvocation);
-    CompilerInvocation::CreateFromArgs(*Invocation,
-                                 const_cast<const char **>(CC1Args.data()),
-                                 const_cast<const char **>(CC1Args.data()) +
-                                 CC1Args.size(), *Diagnostics);
-    Invocation->getFrontendOpts().DisableFree = false;
-    Invocation->getCodeGenOpts().DisableFree = false;
-
-    InMemoryFileSystem = new llvm::vfs::InMemoryFileSystem;
-    FileMgr = new FileManager(FileSystemOptions(), InMemoryFileSystem);
-
-    const char *Filename = "__clang_jit.pcm";
-    StringRef ASTBufferSR((const char *) ASTBuffer, ASTBufferSize);
-    InMemoryFileSystem->addFile(Filename, 0,
-                                llvm::MemoryBuffer::getMemBufferCopy(ASTBufferSR));
-
-    PCHContainerRdr.reset(new RawPCHContainerReader);
-    SourceMgr = new SourceManager(*Diagnostics, *FileMgr,
-                                  /*UserFilesAreVolatile*/ false);
-    PCMCache = new MemoryBufferCache;
-    HSOpts = std::make_shared<HeaderSearchOptions>();
-    HSOpts->ModuleFormat = PCHContainerRdr->getFormat();
-    HeaderInfo.reset(new HeaderSearch(HSOpts,
-                                      *SourceMgr,
-                                      *Diagnostics,
-                                      *Invocation->getLangOpts(),
-                                      /*Target=*/nullptr));
-    PPOpts = std::make_shared<PreprocessorOptions>();
-
-    unsigned Counter;
-
-    PP = std::make_shared<Preprocessor>(
-        PPOpts, *Diagnostics, *Invocation->getLangOpts(),
-        *SourceMgr, *PCMCache, *HeaderInfo, ModuleLoader,
-        /*IILookup=*/nullptr,
-        /*OwnsHeaderSearch=*/false);
-
-    // For parsing type names in strings later, we'll need to have Preprocessor
-    // keep the Lexer around even after it hits the end of the each file (used
-    // for each type name).
-    PP->enableIncrementalProcessing();
-
-    Ctx = new ASTContext(*Invocation->getLangOpts(), *SourceMgr,
-                         PP->getIdentifierTable(), PP->getSelectorTable(),
-                         PP->getBuiltinInfo());
-
-    Reader = new ASTReader(*PP, Ctx.get(), *PCHContainerRdr, {},
-                           /*isysroot=*/"",
-                           /*DisableValidation=*/ false,
-                           /*AllowPCHWithCompilerErrors*/ false);
-
-    Reader->setListener(llvm::make_unique<ASTInfoCollector>(
-      *PP, Ctx.get(), *HSOpts, *PPOpts, *Invocation->getLangOpts(),
-      TargetOpts, Target, Counter));
-
-    Ctx->setExternalSource(Reader);
-
-    switch (Reader->ReadAST(Filename, serialization::MK_MainFile,
-                            SourceLocation(), ASTReader::ARR_None)) {
-    case ASTReader::Success:
-      break;
-
-    case ASTReader::Failure:
-    case ASTReader::Missing:
-    case ASTReader::OutOfDate:
-    case ASTReader::VersionMismatch:
-    case ASTReader::ConfigurationMismatch:
-    case ASTReader::HadErrors:
-      Diagnostics->Report(diag::err_fe_unable_to_load_pch);
-      fatal();
-      return;
-    }
-
-    PP->setCounterValue(Counter);
-
-    // Now that we've read the language options from the AST file, change the JIT mode.
-    Invocation->getLangOpts()->setCPlusPlusJIT(LangOptions::JITMode::JM_IsJIT);
-
-    // Keep externally available functions, etc.
-    Invocation->getCodeGenOpts().PrepareForLTO = true;
-
-    BackendAction BA = Backend_EmitNothing;
-    std::unique_ptr<raw_pwrite_stream> OS(new llvm::raw_null_ostream);
-
-    if (ForDev) {
-       BA = Backend_EmitAssembly;
-       OS.reset(new raw_svector_ostream(DevAsm));
-    }
-
-    Consumer.reset(new BackendConsumer(
-        BA, *Diagnostics, Invocation->getHeaderSearchOpts(),
-        Invocation->getPreprocessorOpts(), Invocation->getCodeGenOpts(),
-        Invocation->getTargetOpts(), *Invocation->getLangOpts(), false, Filename,
-        std::move(OS), *LCtx, DevLinkMods));
-
-    // Create a semantic analysis object and tell the AST reader about it.
-    S.reset(new Sema(*PP, *Ctx, *Consumer));
-    S->Initialize();
-    Reader->InitializeSema(*S);
-
-    // Tell the diagnostic client that we have started a source file.
-    Diagnostics->getClient()->BeginSourceFile(PP->getLangOpts(), PP.get());
-
-    JFIMapDeclVisitor(FuncMap).TraverseAST(*Ctx);
-    JFICSMapDeclVisitor(CSFuncMap).TraverseAST(*Ctx);
-
-    if (IRBufferSize) {
-      llvm::SMDiagnostic Err;
-      StringRef IRBufferSR((const char *) IRBuffer, IRBufferSize);
-      RunningMod = parseIR(
-        *llvm::MemoryBuffer::getMemBufferCopy(IRBufferSR), Err, *LCtx);
-
-      for (auto &F : RunningMod->functions())
-        if (!F.isDeclaration())
-          F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-
-      for (auto &GV : RunningMod->global_values())
-        if (!GV.isDeclaration()) {
-          if (GV.hasAppendingLinkage())
-            cast<GlobalVariable>(GV).setInitializer(nullptr);
-          else if (isa<GlobalAlias>(GV))
-            // Aliases cannot have externally-available linkage, so give them
-            // private linkage.
-            GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
-          else
-            GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-        }
-    }
-
-    Consumer->Initialize(*Ctx);
-
-    for (unsigned Idx = 0; Idx < 2*LocalPtrsCnt; Idx += 2) {
-      const char *Name = (const char *) LocalPtrs[Idx];
-      const void *Ptr = LocalPtrs[Idx+1];
-      LocalSymAddrs[Name] = Ptr;
-    }
-
-    for (unsigned Idx = 0; Idx < 2*LocalDbgPtrsCnt; Idx += 2) {
-      const char *Name = (const char *) LocalDbgPtrs[Idx];
-      const void *Ptr = LocalDbgPtrs[Idx+1];
-      LocalSymAddrs[Name] = Ptr;
-    }
-
-    if (!IsForDev)
-      CJ = llvm::make_unique<ClangJIT>(LocalSymAddrs);
-
-    if (IsForDev)
-      for (unsigned i = 0; i < DeviceData[ForDev].FileDataCnt; ++i) {
-        StringRef FileBufferSR(
-                    (const char *) DeviceData[ForDev].FileData[i].Data,
-                    DeviceData[ForDev].FileData[i].DataSize);
-
-        llvm::SMDiagnostic Err;
-        DevLinkMods.push_back(parseIR(
-          *llvm::MemoryBuffer::getMemBufferCopy(FileBufferSR), Err, *LCtx));
-      }
-
-    if (!IsForDev && Invocation->getLangOpts()->CUDA) {
-      typedef int (*cudaGetDevicePtr)(int *);
-      auto cudaGetDevice =
-        (cudaGetDevicePtr) RTDyldMemoryManager::getSymbolAddressInProcess(
-                                                     "cudaGetDevice");
-      if (!cudaGetDevice) {
-        llvm::errs() << "Could not find CUDA API functions; "
-                        "did you forget to link with -lcudart?\n";
-        fatal();
-      }
-
-      typedef int (*cudaGetDeviceCountPtr)(int *);
-      auto cudaGetDeviceCount =
-        (cudaGetDeviceCountPtr) RTDyldMemoryManager::getSymbolAddressInProcess(
-                                                     "cudaGetDeviceCount");
-
-      int SysDevCnt;
-      if (cudaGetDeviceCount(&SysDevCnt)) {
-        llvm::errs() << "Failed to get CUDA device count!\n";
-        fatal();
-      }
-
-      typedef int (*cudaDeviceGetAttributePtr)(int *, int, int);
-      auto cudaDeviceGetAttribute =
-        (cudaDeviceGetAttributePtr) RTDyldMemoryManager::getSymbolAddressInProcess(
-                                      "cudaDeviceGetAttribute");
-
-      if (SysDevCnt) {
-        int CDev;
-        if (cudaGetDevice(&CDev))
-          fatal();
-
-        int CLMajor, CLMinor;
-        if (cudaDeviceGetAttribute(
-              &CLMajor, /*cudaDevAttrComputeCapabilityMajor*/ 75, CDev))
-          fatal();
-        if (cudaDeviceGetAttribute(
-              &CLMinor, /*cudaDevAttrComputeCapabilityMinor*/ 76, CDev))
-          fatal();
-
-        SmallString<6> EffArch;
-        raw_svector_ostream(EffArch) << "sm_" << CLMajor << CLMinor;
-
-        SmallVector<StringRef, 2> DevArchs;
-        for (unsigned i = 0; i < DevCnt; ++i) {
-          if (!Triple(DeviceData[i].Triple).isNVPTX())
-            continue;
-          if (!StringRef(DeviceData[i].Arch).startswith("sm_"))
-            continue;
-          DevArchs.push_back(DeviceData[i].Arch);
-        }
-
-        std::sort(DevArchs.begin(), DevArchs.end());
-        auto ArchI =
-          std::upper_bound(DevArchs.begin(), DevArchs.end(), EffArch);
-        if (ArchI == DevArchs.begin()) {
-          llvm::errs() << "No JIT device configuration supports " <<
-                          EffArch << "\n";
-          fatal();
-        }
-
-        auto BestDevArch = *--ArchI;
-        int BestDevIdx = 0;
-        for (; BestDevIdx < (int) DevCnt; ++BestDevIdx) {
-          if (!Triple(DeviceData[BestDevIdx].Triple).isNVPTX())
-            continue;
-          if (DeviceData[BestDevIdx].Arch == BestDevArch)
-            break;
-        }
-
-        assert(BestDevIdx != (int) DevCnt && "Didn't find the chosen device data?");
-
-        if (!InitializedDevTarget) {
-          // In theory, we only need to initialize the NVPTX target here,
-          // however, there doesn't seem to be any good way to know if the
-          // NVPTX target is enabled.
-          //
-          // LLVMInitializeNVPTXTargetInfo();
-          // LLVMInitializeNVPTXTarget();
-          // LLVMInitializeNVPTXTargetMC();
-          // LLVMInitializeNVPTXAsmPrinter();
-
-          llvm::InitializeAllTargets();
-          llvm::InitializeAllTargetMCs();
-          llvm::InitializeAllAsmPrinters();
-
-          InitializedDevTarget = true;
-        }
-
-        DevCD.reset(new CompilerData(
-            DeviceData[BestDevIdx].CmdArgs, DeviceData[BestDevIdx].CmdArgsLen,
-            DeviceData[BestDevIdx].ASTBuffer, DeviceData[BestDevIdx].ASTBufferSize,
-            nullptr, 0, nullptr, 0, nullptr, 0, DeviceData, DevCnt, BestDevIdx));
-      }
-    }
-
-    // Performance monitoring
-//    PerfMonitor.reset(new JITPerfMonitor(CJ.get()));
-  }
-
-  void restoreFuncDeclContext(FunctionDecl *FunD) {
-    // NOTE: This mirrors the corresponding code in
-    // Parser::ParseLateTemplatedFuncDef (which is used to late parse a C++
-    // function template in Microsoft mode).
-
-    struct ContainingDC {
-      ContainingDC(DeclContext *DC, bool ShouldPush) : Pair(DC, ShouldPush) {}
-      llvm::PointerIntPair<DeclContext *, 1, bool> Pair;
-      DeclContext *getDC() { return Pair.getPointer(); }
-      bool shouldPushDC() { return Pair.getInt(); }
-    };
-
-    SmallVector<ContainingDC, 4> DeclContextsToReenter;
-    DeclContext *DD = FunD;
-    DeclContext *NextContaining = S->getContainingDC(DD);
-    while (DD && !DD->isTranslationUnit()) {
-      bool ShouldPush = DD == NextContaining;
-      DeclContextsToReenter.push_back({DD, ShouldPush});
-      if (ShouldPush)
-        NextContaining = S->getContainingDC(DD);
-      DD = DD->getLexicalParent();
-    }
-
-    // Reenter template scopes from outermost to innermost.
-    for (ContainingDC CDC : reverse(DeclContextsToReenter)) {
-      (void) S->ActOnReenterTemplateScope(S->getCurScope(),
-                                           cast<Decl>(CDC.getDC()));
-      if (CDC.shouldPushDC())
-        S->PushDeclContext(S->getCurScope(), CDC.getDC());
-    }
-  }
-
-  std::string instantiateTemplate(const void *NTTPValues, const char **TypeStrings,
-                                  unsigned Idx) {
-    FunctionDecl *FD = FuncMap[Idx];
-    if (!FD)
-      fatal();
-
-    RecordDecl *RD =
-      Ctx->buildImplicitRecord(llvm::Twine("__clang_jit_args_")
-                               .concat(llvm::Twine(Idx))
-                               .concat(llvm::Twine("_t"))
-                               .str());
-
-    RD->startDefinition();
-
-    enum TASaveKind {
-      TASK_None,
-      TASK_Type,
-      TASK_Value
-    };
-
-    SmallVector<TASaveKind, 8> TAIsSaved;
-
-    auto *FTSI = FD->getTemplateSpecializationInfo();
-    for (auto &TA : FTSI->TemplateArguments->asArray()) {
-      auto HandleTA = [&](const TemplateArgument &TA) {
-        if (TA.getKind() == TemplateArgument::Type)
-          if (TA.getAsType()->isJITFromStringType()) {
-            TAIsSaved.push_back(TASK_Type);
-            return;
-          }
-
-        if (TA.getKind() != TemplateArgument::Expression) {
-          TAIsSaved.push_back(TASK_None);
-          return;
-        }
-
-        SmallVector<PartialDiagnosticAt, 8> Notes;
-        Expr::EvalResult Eval;
-        Eval.Diag = &Notes;
-        if (TA.getAsExpr()->
-              EvaluateAsConstantExpr(Eval, Expr::EvaluateForMangling, *Ctx)) {
-          TAIsSaved.push_back(TASK_None);
-          return;
-        }
-
-        QualType FieldTy = TA.getNonTypeTemplateArgumentType();
-        auto *Field = FieldDecl::Create(
-            *Ctx, RD, SourceLocation(), SourceLocation(), /*Id=*/nullptr,
-            FieldTy, Ctx->getTrivialTypeSourceInfo(FieldTy, SourceLocation()),
-            /*BW=*/nullptr, /*Mutable=*/false, /*InitStyle=*/ICIS_NoInit);
-        Field->setAccess(AS_public);
-        RD->addDecl(Field);
-
-        TAIsSaved.push_back(TASK_Value);
-      };
-
-      if (TA.getKind() == TemplateArgument::Pack) {
-        for (auto &PTA : TA.getPackAsArray())
-          HandleTA(PTA);
-        continue;
-      }
-
-      HandleTA(TA);
-    }
-
-    RD->completeDefinition();
-    RD->addAttr(PackedAttr::CreateImplicit(*Ctx));
-
-    const ASTRecordLayout &RLayout = Ctx->getASTRecordLayout(RD);
-    assert(Ctx->getCharWidth() == 8 && "char is not 8 bits!");
-
-    QualType RDTy = Ctx->getRecordType(RD);
-    auto Fields = cast<RecordDecl>(RDTy->getAsTagDecl())->field_begin();
-
-    SmallVector<TemplateArgument, 8> Builder;
-
-    unsigned TAIdx = 0, TSIdx = 0;
-    for (auto &TA : FTSI->TemplateArguments->asArray()) {
-      auto HandleTA = [&](const TemplateArgument &TA,
-                          SmallVector<TemplateArgument, 8> &Builder) {
-        if (TAIsSaved[TAIdx] == TASK_Type) {
-          PP->ResetForJITTypes();
-
-          PP->setPredefines(TypeStrings[TSIdx]);
-          PP->EnterMainSourceFile();
-
-          Parser P(*PP, *S, /*SkipFunctionBodies*/true, /*JITTypes*/true);
-
-          // Reset this to nullptr so that when we call
-          // Parser::Initialize it has the clean slate it expects.
-          S->CurContext = nullptr;
-
-          P.Initialize();
-
-          Sema::ContextRAII TUContext(*S, Ctx->getTranslationUnitDecl());
-
-          auto CSFMI = CSFuncMap.find(Idx);
-          if (CSFMI != CSFuncMap.end()) {
-	  // Note that this restores the context of the function in which the
-	  // template was instantiated, but not the state *within* the
-	  // function, so local types will remain unavailable.
-
-            auto *FunD = CSFMI->second;
-            restoreFuncDeclContext(FunD);
-            S->CurContext = S->getContainingDC(FunD);
-          }
-
-          TypeResult TSTy = P.ParseTypeName();
-          if (TSTy.isInvalid())
-            fatal();
-
-          QualType TypeFromString = Sema::GetTypeFromParser(TSTy.get());
-          TypeFromString = Ctx->getCanonicalType(TypeFromString);
-
-          Builder.push_back(TemplateArgument(TypeFromString));
-
-          ++TSIdx;
-          ++TAIdx;
-          return;
-        }
-
-        if (TAIsSaved[TAIdx++] != TASK_Value) {
-          Builder.push_back(TA);
-          return;
-        }
-
-        assert(TA.getKind() == TemplateArgument::Expression &&
-               "Only expressions template arguments handled here");
-
-        QualType FieldTy = TA.getNonTypeTemplateArgumentType();
-
-        assert(!FieldTy->isMemberPointerType() &&
-               "Can't handle member pointers here without ABI knowledge");
-
-        auto *Fld = *Fields++;
-        unsigned Offset = RLayout.getFieldOffset(Fld->getFieldIndex()) / 8;
-        unsigned Size = Ctx->getTypeSizeInChars(FieldTy).getQuantity();
-
-        unsigned NumIntWords = llvm::alignTo<8>(Size);
-        SmallVector<uint64_t, 2> IntWords(NumIntWords, 0);
-        std::memcpy((char *) IntWords.data(),
-                    ((const char *) NTTPValues) + Offset, Size);
-        llvm::APInt IntVal(Size*8, IntWords);
-
-        QualType CanonFieldTy = Ctx->getCanonicalType(FieldTy);
-
-
-        errs() << "Instantiating NTTA with " << Size << " bytes: \n";
-        CanonFieldTy.dump();
-        Fld->dump();
-
-        errs() << "Data: " << IntVal << "\n";
-
-        errs() << "Type as string: " << CanonFieldTy.getAsString() << "\n";
-
-        auto FieldDecl = CanonFieldTy.getTypePtr()->getAsRecordDecl();
-
-        if (FieldDecl && FieldDecl->getName() == "tunable_range") {
-          // TODO
-        }
-
-        if (CanonFieldTy.getAsString() == "struct jit::tunable_range<int>") {
-          errs() << "is template specialization\n";
-          auto Range = *reinterpret_cast<jit::tunable_range<int>*>(&IntWords[0]);
-          errs() << "Range is [" << Range.Min << ";" << Range.Max << "]\n";
-          llvm::APSInt SIntVal(32); // TODO
-          SIntVal = Range.Min;
-          Builder.push_back(TemplateArgument(*Ctx, SIntVal, Ctx->getIntTypeForBitwidth(32, false))); // TODO: Check expected template params
-        }
-
-        else if (FieldTy->isIntegralOrEnumerationType()) {
-          llvm::APSInt SIntVal(IntVal,
-                               FieldTy->isUnsignedIntegerOrEnumerationType());
-          Builder.push_back(TemplateArgument(*Ctx, SIntVal, CanonFieldTy));
-        } else {
-          assert(FieldTy->isPointerType() || FieldTy->isReferenceType() ||
-                 FieldTy->isNullPtrType());
-          if (IntVal.isNullValue()) {
-            Builder.push_back(TemplateArgument(CanonFieldTy, /*isNullPtr*/true));
-          } else {
-	  // Note: We always generate a new global for pointer values here.
-	  // This provides a new potential way to introduce an ODR violation:
-	  // If you also generate an instantiation using the same pointer value
-	  // using some other symbol name, this will generate a different
-	  // instantiation.
-
-	  // As we guarantee that the template parameters are not allowed to
-	  // point to subobjects, this is useful for optimization because each
-	  // of these resolve to distinct underlying objects.
-
-            llvm::SmallString<256> GlobalName("__clang_jit_symbol_");
-            IntVal.toString(GlobalName, 16, false);
-
-	  // To this base name we add the mangled type. Stack/heap addresses
-	  // can be reused with variables of different type, and these should
-	  // have different names even if they share the same address;
-            auto &CGM = Consumer->getCodeGenerator()->CGM();
-            llvm::raw_svector_ostream MOut(GlobalName);
-            CGM.getCXXABI().getMangleContext().mangleTypeName(CanonFieldTy, MOut);
-
-            auto NLDSI = NewLocalSymDecls.find(GlobalName);
-            if (NLDSI != NewLocalSymDecls.end()) {
-                Builder.push_back(TemplateArgument(NLDSI->second, CanonFieldTy));
-            } else {
-              Sema::ContextRAII TUContext(*S, Ctx->getTranslationUnitDecl());
-              SourceLocation Loc = FTSI->getPointOfInstantiation();
-
-              QualType STy = CanonFieldTy->getPointeeType();
-              auto &II = PP->getIdentifierTable().get(GlobalName);
-
-              if (STy->isFunctionType()) {
-                auto *TAFD =
-                  FunctionDecl::Create(*Ctx, S->CurContext, Loc, Loc, &II,
-                                       STy, /*TInfo=*/nullptr, SC_Extern, false,
-                                       STy->isFunctionProtoType());
-                TAFD->setImplicit();
-
-                if (const FunctionProtoType *FT = dyn_cast<FunctionProtoType>(STy)) {
-                  SmallVector<ParmVarDecl*, 16> Params;
-                  for (unsigned i = 0, e = FT->getNumParams(); i != e; ++i) {
-                    ParmVarDecl *Parm =
-                      ParmVarDecl::Create(*Ctx, TAFD, SourceLocation(), SourceLocation(),
-                                          nullptr, FT->getParamType(i), /*TInfo=*/nullptr,
-                                          SC_None, nullptr);
-                    Parm->setScopeInfo(0, i);
-                    Params.push_back(Parm);
-                  }
-
-                  TAFD->setParams(Params);
-                }
-
-                NewLocalSymDecls[II.getName()] = TAFD;
-                Builder.push_back(TemplateArgument(TAFD, CanonFieldTy));
-              } else {
-                bool MadeArray = false;
-                auto *TPL = FTSI->getTemplate()->getTemplateParameters();
-                if (TPL->size() >= TAIdx) {
-                  auto *Param = TPL->getParam(TAIdx-1);
-                  if (NonTypeTemplateParmDecl *NTTP =
-                        dyn_cast<NonTypeTemplateParmDecl>(Param)) {
-                    QualType OrigTy = NTTP->getType()->getPointeeType();
-                    OrigTy = OrigTy.getDesugaredType(*Ctx);
-
-                    bool IsArray = false;
-                    llvm::APInt Sz;
-                    QualType ElemTy;
-                    if (const auto *DAT = dyn_cast<DependentSizedArrayType>(OrigTy)) {
-                      Expr* SzExpr = DAT->getSizeExpr();
-
-                      // Get the already-processed arguments for potential substitution.
-                      auto *NewTAL = TemplateArgumentList::CreateCopy(*Ctx, Builder);
-                      MultiLevelTemplateArgumentList SubstArgs(*NewTAL);
-
-                      SmallVector<Expr *, 1> NewSzExprVec;
-                      if (!S->SubstExprs(SzExpr, /*IsCall*/ false, SubstArgs, NewSzExprVec)) {
-                        Expr::EvalResult NewSzResult;
-                        if (NewSzExprVec[0]->EvaluateAsInt(NewSzResult, *Ctx)) {
-                          Sz = NewSzResult.Val.getInt();
-                          ElemTy = DAT->getElementType();
-                          IsArray = true;
-                        }
-                      }
-                    } else if (const auto *CAT = dyn_cast<ConstantArrayType>(OrigTy)) {
-                      Sz = CAT->getSize();
-                      ElemTy = CAT->getElementType();
-                      IsArray = true;
-                    }
-
-                    if (IsArray && (ElemTy->isIntegerType() ||
-                                    ElemTy->isFloatingType())) {
-                      QualType ArrTy =
-                        Ctx->getConstantArrayType(ElemTy,
-                                                  Sz, clang::ArrayType::Normal, 0);
-
-                      SmallVector<Expr *, 16> Vals;
-                      unsigned ElemSize = Ctx->getTypeSizeInChars(ElemTy).getQuantity();
-                      unsigned ElemNumIntWords = llvm::alignTo<8>(ElemSize);
-                      const char *Elem = (const char *) IntVal.getZExtValue();
-                      for (unsigned i = 0; i < Sz.getZExtValue(); ++i) {
-                        SmallVector<uint64_t, 2> ElemIntWords(ElemNumIntWords, 0);
-
-                        std::memcpy((char *) ElemIntWords.data(), Elem, ElemSize);
-                        Elem += ElemSize;
-
-                        llvm::APInt ElemVal(ElemSize*8, ElemIntWords);
-                        if (ElemTy->isIntegerType()) {
-                          Vals.push_back(new (*Ctx) IntegerLiteral(
-                            *Ctx, ElemVal, ElemTy, Loc));
-                        } else {
-                          llvm::APFloat ElemValFlt(Ctx->getFloatTypeSemantics(ElemTy), ElemVal);
-                          Vals.push_back(FloatingLiteral::Create(*Ctx, ElemValFlt,
-                                                                 false, ElemTy, Loc));
-                        }
-                      }
-
-                      InitListExpr *InitL = new (*Ctx) InitListExpr(*Ctx, Loc, Vals, Loc);
-                      InitL->setType(ArrTy);
-
-                      auto *TAVD =
-                        VarDecl::Create(*Ctx, S->CurContext, Loc, Loc, &II,
-                                        ArrTy, Ctx->getTrivialTypeSourceInfo(ArrTy, Loc),
-                                        SC_Extern);
-                      TAVD->setImplicit();
-                      TAVD->setConstexpr(true);
-                      TAVD->setInit(InitL);
-
-                      NewLocalSymDecls[II.getName()] = TAVD;
-                      Builder.push_back(TemplateArgument(TAVD, Ctx->getLValueReferenceType(ArrTy)));
-
-                      MadeArray = true;
-                    }
-                  }
-                }
-
-                if (!MadeArray) {
-                  auto *TAVD =
-                    VarDecl::Create(*Ctx, S->CurContext, Loc, Loc, &II,
-                                    STy, Ctx->getTrivialTypeSourceInfo(STy, Loc),
-                                    SC_Extern);
-                  TAVD->setImplicit();
-
-                  NewLocalSymDecls[II.getName()] = TAVD;
-                  Builder.push_back(TemplateArgument(TAVD, CanonFieldTy));
-                }
-              }
-
-              LocalSymAddrs[II.getName()] = (const void *) IntVal.getZExtValue();
-            }
-          }
-        }
-      };
-
-      if (TA.getKind() == TemplateArgument::Pack) {
-        SmallVector<TemplateArgument, 8> PBuilder;
-        for (auto &PTA : TA.getPackAsArray())
-          HandleTA(PTA, PBuilder);
-        Builder.push_back(TemplateArgument::CreatePackCopy(*Ctx, PBuilder));
-        continue;
-      }
-
-      HandleTA(TA, Builder);
-    }
-
-    SourceLocation Loc = FTSI->getPointOfInstantiation();
-    auto *NewTAL = TemplateArgumentList::CreateCopy(*Ctx, Builder);
-    MultiLevelTemplateArgumentList SubstArgs(*NewTAL);
-
-    auto *FunctionTemplate = FTSI->getTemplate();
-    DeclContext *Owner = FunctionTemplate->getDeclContext();
-    if (FunctionTemplate->getFriendObjectKind())
-      Owner = FunctionTemplate->getLexicalDeclContext();
-
-    std::string SMName;
-    FunctionTemplateDecl *FTD = FTSI->getTemplate();
-    sema::TemplateDeductionInfo Info(Loc);
-    {
-      Sema::InstantiatingTemplate Inst(
-        *S, Loc, FTD, NewTAL->asArray(),
-        Sema::CodeSynthesisContext::ExplicitTemplateArgumentSubstitution, Info);
-      Sema::ContextRAII TUContext(*S, Ctx->getTranslationUnitDecl());
-
-      auto *Specialization = cast_or_null<FunctionDecl>(
-        S->SubstDecl(FunctionTemplate->getTemplatedDecl(), Owner, SubstArgs));
-      if (!Specialization || Specialization->isInvalidDecl())
-        fatal();
-
-      Specialization->setTemplateSpecializationKind(TSK_ExplicitInstantiationDefinition, Loc);
-      S->InstantiateFunctionDefinition(Loc, Specialization, true, true, true);
-
-      SMName = Consumer->getCodeGenerator()->CGM().getMangledName(Specialization);
-    }
-
-    if (Diagnostics->hasErrorOccurred())
-      fatal();
-
-    return SMName;
-  }
-
-  void emitAllNeeded(bool CheckExisting = true) {
-    // There might have been functions/variables with local linkage that were
-    // only used by JIT functions. These would not have been used during
-    // initial code generation for this translation unit, and so not emitted.
-    // We need to make sure that they're emited now (if they're now necessary).
-
-    // Note that we skip having the code generator visiting the decl if it is
-    // already defined or already present in our running module. Note that this
-    // is not sufficient to prevent all redundant code generation (this might
-    // also happen during the instantiation of the top-level function
-    // template), and this is why we merge the running module into the new one
-    // with the running-module overriding new entities.
-
-    SmallSet<StringRef, 16> LastDeclNames;
-    bool Changed;
-    do {
-      Changed = false;
-
-      Consumer->getCodeGenerator()->CGM().EmitAllDeferred([&](GlobalDecl GD) {
-        auto MName = Consumer->getCodeGenerator()->CGM().getMangledName(GD);
-        if (!CheckExisting || !CJ->findSymbol(MName)) {
-          Changed = true;
-          return false;
-        }
-
-        return true;
-      });
-
-      SmallSet<StringRef, 16> DeclNames;
-      for (auto &F : Consumer->getModule()->functions())
-        if (F.isDeclaration() && !F.isIntrinsic())
-          if (!LastDeclNames.count(F.getName()))
-            DeclNames.insert(F.getName());
-
-      for (auto &GV : Consumer->getModule()->global_values())
-        if (GV.isDeclaration())
-          if (!LastDeclNames.count(GV.getName()))
-            DeclNames.insert(GV.getName());
-
-      for (auto &DeclName : DeclNames) {
-        if (CheckExisting && CJ->findSymbol(DeclName))
-          continue;
-
-        Decl *D = const_cast<Decl *>(Consumer->getCodeGenerator()->
-                                       GetDeclForMangledName(DeclName));
-        if (!D)
-          continue;
-
-        Consumer->HandleInterestingDecl(DeclGroupRef(D));
-        LastDeclNames.insert(DeclName);
-        Changed = true;
-      }
-    } while (Changed);
-  }
-
-
-
-//  Function* instrumentFunction(Function* F/*, StatsTracker& Tracker, JITContext::VersionID ID*/) {
-//    auto* Gen = Consumer->getCodeGenerator();
-//
-//    auto *FnTy =
-//        llvm::FunctionType::get(Gen->CGM().VoidTy, {Gen->CGM().VoidPtrTy, Gen->CGM().Int32Ty, Gen->CGM().Int32Ty, Gen->CGM().DoubleTy, Gen->CGM().DoubleTy, Gen->CGM().Int64Ty}/*TypeParams*/,
-//            /*isVarArg*/ false);
-//
-//    auto CBFn = Gen->CGM().CreateRuntimeFunction(FnTy, "__clang_jit_update_stats");
-//
-//    return PerfMonitor->createInstrumentedWrapper(F/*, dyn_cast<Function>(CBFn.getCallee()), Tracker, ID*/);
-//  }
-
-  JITInstantiation recompileFunction(const void *NTTPValues, const char **TypeStrings,
-                          unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID) {
-    assert(JITCtx.Emitted && "Instantiation has not been emitted yet");
-    assert(!DevCD && "Recompilation is currently not supported for device code");
-
-    StringRef SMName = JITCtx.DeclName;
-
-    assert(CJ->findSymbol(SMName) && "Function for recompilation cannot be found");
-
-    auto BaseMod = llvm::CloneModule(*JITCtx.Mod);
-
-    // Remove symbols from the running module which have been emitted as part of a previous compilation
-    // of the same function.
-    // This is done to ensure that the newly optimized IR will be used for inlining in the future.
-    // TODO: When tuning, does this make sense? The newest module might not have the best code.
-    //       Maybe we should use a baseline version (from the first compilation) and stick with that.
-    //       Alternatively, we could try to update the code with the current best version.
-    int NumRemoved = 0;
-    for (auto& ValueName : JITCtx.ReplaceOnRecompilation) {
-      auto GV = RunningMod->getNamedValue(ValueName);
-      if (GV) {
-        GV->removeFromParent();
-        NumRemoved++;
-        // TODO: Make sure that there are no remaining dependencies
-        // TODO: A function marked as emitted may possibly be removed during optimization and therefore not reintroduced
-        //       into the running module. Find out if that can happen and is problematic.
-      }/* else {
-        outs() << "Global not found: " << ValueName << "\n";
-      }*/
-
-    }
-    outs() << "Removed " << NumRemoved << " globals" << "\n";
-
-    return finalizeModule(std::move(BaseMod), JITCtx, ID);
-  }
-
-//#define DUMP_MOD
-//#define DUMP_MOD_ONCE
-//#define DUMP_MOD_OPTIMIZED
-//#define DUMP_MOD_INSTRUMENTED
-#define PRINT_MOD_STATS
-
-   JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
-                        unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID) {
-    std::string SMName = instantiateTemplate(NTTPValues, TypeStrings, Idx);
-
-    auto* FDecl = Consumer->getCodeGenerator()->GetDeclForMangledName(SMName);
-
-    // Now we know the name of the symbol, check to see if we already have it.
-    if (auto SpecSymbol = CJ->findSymbol(SMName))
-      if (SpecSymbol.getAddress())
-        // FIXME: Figure out how to handle this.
-        return JITInstantiation();
-        //return (void *) llvm::cantFail(SpecSymbol.getAddress());
-
-    if (DevCD)
-      DevCD->instantiateTemplate(NTTPValues, TypeStrings, Idx);
-
-    emitAllNeeded();
-
-    if (DevCD)
-      DevCD->emitAllNeeded(false);
-
-    // Before anything gets optimized, mark the top-level symbol we're
-    // generating so that it doesn't get eliminated by the optimizer.
-
-    auto *TopGV =
-      cast<GlobalObject>(Consumer->getModule()->getNamedValue(SMName));
-    assert(TopGV && "Didn't generate the desired top-level symbol?");
-
-    TopGV->setLinkage(llvm::GlobalValue::ExternalLinkage);
-    TopGV->setComdat(nullptr);
-
-    // Finalize the module, generate module-level metadata, etc.
-
-    if (DevCD) {
-      DevCD->Consumer->HandleTranslationUnit(*DevCD->Ctx);
-      DevCD->Consumer->EmitOptimized();
-
-      // We have now created the PTX output, but what we really need as a
-      // fatbin that the CUDA runtime will recognize.
-
-      // The outer header of the fat binary is documented in the CUDA
-      // fatbinary.h header. As mentioned there, the overall size must be a
-      // multiple of eight, and so we must make sure that the PTX is.
-      while (DevCD->DevAsm.size() % 7)
-        DevCD->DevAsm += ' ';
-      DevCD->DevAsm += '\0';
-
-      // NVIDIA, unfortunatly, does not provide full documentation on their
-      // fatbin format. There is some information on the outer header block in
-      // the CUDA fatbinary.h header. Also, it is possible to figure out more
-      // about the format by creating fatbins using the provided utilities
-      // and then observing what cuobjdump reports about the resulting files.
-      // There are some other online references which shed light on the format,
-      // including https://reviews.llvm.org/D8397 and FatBinaryContext.{cpp,h}
-      // from the GPU Ocelot project (https://github.com/gtcasl/gpuocelot).
-
-      SmallString<128> FatBin;
-      llvm::raw_svector_ostream FBOS(FatBin);
-
-      struct FatBinHeader {
-        uint32_t Magic;      // 0x00
-        uint16_t Version;    // 0x04
-        uint16_t HeaderSize; // 0x06
-        uint32_t DataSize;   // 0x08
-        uint32_t unknown0c;  // 0x0c
-      public:
-        FatBinHeader(uint32_t DataSize)
-            : Magic(0xba55ed50), Version(1),
-              HeaderSize(sizeof(*this)), DataSize(DataSize), unknown0c(0) {}
-      };
-
-      enum FatBinFlags {
-        AddressSize64 = 0x01,
-        HasDebugInfo = 0x02,
-        ProducerCuda = 0x04,
-        HostLinux = 0x10,
-        HostMac = 0x20,
-        HostWindows = 0x40
-      };
-
-      struct FatBinFileHeader {
-        uint16_t Kind;             // 0x00
-        uint16_t unknown02;        // 0x02
-        uint32_t HeaderSize;       // 0x04
-        uint32_t DataSize;         // 0x08
-        uint32_t unknown0c;        // 0x0c
-        uint32_t CompressedSize;   // 0x10
-        uint32_t SubHeaderSize;    // 0x14
-        uint16_t VersionMinor;     // 0x18
-        uint16_t VersionMajor;     // 0x1a
-        uint32_t CudaArch;         // 0x1c
-        uint32_t unknown20;        // 0x20
-        uint32_t unknown24;        // 0x24
-        uint32_t Flags;            // 0x28
-        uint32_t unknown2c;        // 0x2c
-        uint32_t unknown30;        // 0x30
-        uint32_t unknown34;        // 0x34
-        uint32_t UncompressedSize; // 0x38
-        uint32_t unknown3c;        // 0x3c
-        uint32_t unknown40;        // 0x40
-        uint32_t unknown44;        // 0x44
-        FatBinFileHeader(uint32_t DataSize, uint32_t CudaArch, uint32_t Flags)
-            : Kind(1 /*PTX*/), unknown02(0x0101), HeaderSize(sizeof(*this)),
-              DataSize(DataSize), unknown0c(0), CompressedSize(0),
-              SubHeaderSize(HeaderSize - 8), VersionMinor(2), VersionMajor(4),
-              CudaArch(CudaArch), unknown20(0), unknown24(0), Flags(Flags), unknown2c(0),
-              unknown30(0), unknown34(0), UncompressedSize(0), unknown3c(0),
-              unknown40(0), unknown44(0) {}
-      };
-
-      uint32_t CudaArch;
-      StringRef(DevCD->Invocation->getTargetOpts().CPU)
-        .drop_front(3 /*sm_*/).getAsInteger(10, CudaArch);
-
-      uint32_t Flags = ProducerCuda;
-      if (DevCD->Invocation->getCodeGenOpts().getDebugInfo() >=
-            codegenoptions::LimitedDebugInfo)
-        Flags |= HasDebugInfo;
-
-      if (Triple(DevCD->Invocation->getTargetOpts().Triple).getArch() ==
-            Triple::nvptx64)
-        Flags |= AddressSize64;
-
-      if (Triple(Invocation->getTargetOpts().Triple).isOSWindows())
-        Flags |= HostWindows;
-      else if (Triple(Invocation->getTargetOpts().Triple).isOSDarwin())
-        Flags |= HostMac;
-      else
-        Flags |= HostLinux;
-
-      FatBinFileHeader FBFHdr(DevCD->DevAsm.size(), CudaArch, Flags);
-      FatBinHeader FBHdr(DevCD->DevAsm.size() + FBFHdr.HeaderSize);
-
-      FBOS.write((char *) &FBHdr, FBHdr.HeaderSize);
-      FBOS.write((char *) &FBFHdr, FBFHdr.HeaderSize);
-      FBOS << DevCD->DevAsm;
-
-      if (::getenv("CLANG_JIT_CUDA_DUMP_DYNAMIC_FATBIN")) {
-        SmallString<128> Path;
-        auto EC = llvm::sys::fs::createUniqueFile(
-                      llvm::Twine("clang-jit-") +
-                      llvm::sys::path::filename(Invocation->getCodeGenOpts().
-                                                  MainFileName) +
-                      llvm::Twine("-%%%%.fatbin"), Path,
-                    llvm::sys::fs::owner_read | llvm::sys::fs::owner_write);
-        if (!EC) {
-          raw_fd_ostream DOS(Path, EC);
-          if (!EC)
-            DOS << FatBin;
-        }
-      }
-
-      Consumer->getCodeGenerator()->CGM().getCodeGenOpts().GPUBinForJIT =
-        FatBin;
-      DevCD->DevAsm.clear();
-    }
-
-    // Finalize translation unit. No optimization yet.
-    Consumer->HandleTranslationUnit(*Ctx);
-
-    // First, mark everything we've newly generated with external linkage. When
-    // we generate additional modules, we'll mark these functions as available
-    // externally, and so we're likely to inline them, but if not, we'll need
-    // to link with the ones generated here.
-
-    for (auto &F : Consumer->getModule()->functions()) {
-      F.setLinkage(llvm::GlobalValue::ExternalLinkage);
-      F.setComdat(nullptr);
-
-      if (!F.isDeclaration())
-        JITCtx.ReplaceOnRecompilation.push_back(F.getName());
-    }
-
-    auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
-      if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
-        return false;
-
-      auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
-      if (!GVar || !GVar->isConstant())
-        return false;
-
-      return true;
-    };
-
-    for (auto &GV : Consumer->getModule()->global_values()) {
-      if (IsLocalUnnamedConst(GV) || GV.hasAppendingLinkage())
-        continue;
-
-      GV.setLinkage(llvm::GlobalValue::ExternalLinkage);
-      if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
-        GO->setComdat(nullptr);
-
-    }
-
-
-    auto GenMod = Consumer->takeModule();
-    // Reset for next instantiation
-    Consumer->Initialize(*Ctx);
-
-    auto Opt = llvm::make_unique<tuner::Optimizer>(*Diagnostics,
-                                                   *HSOpts,
-                                                   Invocation->getCodeGenOpts(),
-                                                   *TargetOpts,
-                                                   *Invocation->getLangOpts(),
-                                                   CJ->getTargetMachine());
-    Opt->init(GenMod.get());
-
-#ifdef DUMP_MOD
-     outs() << "*****************************\n";
-     outs() << "Initial Running Module:\n";
-     outs() << "*****************************\n";
-
-     outs().flush();
-     RunningMod->dump();
-     errs().flush();
-#endif
-
-
-#if defined(DUMP_MOD) || defined(DUMP_MOD_ONCE)
-    outs() << "*****************************\n";
-    outs() << "Module saved for recompilation:\n";
-    outs() << "*****************************\n";
-
-    outs().flush();
-    GenMod->dump();
-    errs().flush();
-#endif
-
-
-    JITCtx.DeclName = SMName;
-    JITCtx.Mod = llvm::CloneModule(*GenMod);
-    JITCtx.Opt = std::move(Opt);
-
-    auto Inst = finalizeModule(std::move(GenMod), JITCtx, ID);
-    JITCtx.Emitted = true;
-    JITCtx.PrimaryVersion = Inst.ID;
-    return Inst;
-  }
-
-private:
-
-  void prepareForLinking(llvm::Module* DstMod, const llvm::Module* SrcMod) {
-
-    // During linking, all named metadata (except llvm.module.flags) from the source module will be appended to the
-    // existing MD in the destination module (see IRLinker::linkNamedMDNodes).
-    // This causes llvm.ident to double in size every time its recompiled.
-    // To prevent this, we just clear all named metadata of the destination module that already exists in the source module.
-    // TODO: Will this possibly destroy important information? If yes, fall back to clearing llvm.ident directly.
-
-    const NamedMDNode *ModFlags = DstMod->getModuleFlagsMetadata();
-    for (NamedMDNode &NMD : DstMod->named_metadata()) {
-      // Ignore module flags
-      if (&NMD == ModFlags)
-        continue;
-      if (SrcMod->getNamedMetadata(NMD.getName())) {
-        NMD.clearOperands();
-      }
-    }
-  }
-
-  JITInstantiation finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx, JITContext::VersionID ID) {
-
-    StringRef SMName = JITCtx.DeclName;
-
-    auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
-      if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
-        return false;
-
-      auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
-      if (!GVar || !GVar->isConstant())
-        return false;
-
-      return true;
-    };
-
-    // Global variables that have been emitted during a previous compilation run must not be re-emitted.
-    // We therefore need to change the linkage of all globals to common linkage for every recompilation.
-    // TODO: Probably more efficient to this once after the initial compilation
-    if (JITCtx.Emitted) {
-      for (auto &GV : Mod->global_values()) {
-
-        if (isa<Function>(GV))
-          continue;
-        if (GV.hasLocalLinkage())
-          continue;
-
-        GV.setLinkage(GlobalValue::CommonLinkage); // TODO: Is this the correct linkage type?
-      }
-
-#ifdef DUMP_MOD
-      outs() << "*****************************\n";
-      outs() << "After adjusting linkage\n";
-      outs() << "*****************************\n";
-      outs().flush();
-      Mod->dump();
-      errs().flush();
-#endif
-
-    }
-
-    // Here we link our previous cache of definitions, etc. into this module.
-    // This includes all of our previously-generated functions (marked as
-    // available externally). We prefer our previously-generated versions to
-    // our current versions should both modules contain the same entities (as
-    // the previously-generated versions have already been optimized).
-
-    // We need to be specifically careful about constants in our module,
-    // however. Clang will generate all string literals as .str (plus a
-    // number), and these from previously-generated code will conflict with the
-    // names chosen for string literals in this module.
-
-    for (auto &GV : Mod->global_values()) {
-      if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
-        continue;
-
-      if (!RunningMod->getNamedValue(GV.getName()))
-        continue;
-
-      llvm::SmallString<16> UniqueName(GV.getName());
-      unsigned BaseSize = UniqueName.size();
-      do {
-        // Trim any suffix off and append the next number.
-        UniqueName.resize(BaseSize);
-        llvm::raw_svector_ostream S(UniqueName);
-        S << "." << ++LastUnique;
-      } while (RunningMod->getNamedValue(UniqueName));
-
-      GV.setName(UniqueName);
-    }
-
-    // Clang will generate local init/deinit functions for variable
-    // initialization, CUDA registration, etc. and these can't be shared with
-    // the base part of the module (as they specifically initialize variables,
-    // etc. that we just generated).
-
-    for (auto &F : Mod->functions()) {
-      // FIXME: This likely covers the set of TU-local init/deinit functions
-      // that can't be shared with the base module. There should be a better
-      // way to do this (e.g., we could record all functions that
-      // CreateGlobalInitOrDestructFunction creates? - ___cuda_ would still be
-      // a special case).
-      if (!F.getName().startswith("__cuda_") &&
-          !F.getName().startswith("_GLOBAL_") &&
-          !F.getName().startswith("__GLOBAL_") &&
-          !F.getName().startswith("__cxx_"))
-        continue;
-
-      if (!RunningMod->getFunction(F.getName()))
-        continue;
-
-      llvm::SmallString<16> UniqueName(F.getName());
-      unsigned BaseSize = UniqueName.size();
-      do {
-        // Trim any suffix off and append the next number.
-        UniqueName.resize(BaseSize);
-        llvm::raw_svector_ostream S(UniqueName);
-        S << "." << ++LastUnique;
-      } while (RunningMod->getFunction(UniqueName));
-
-      F.setName(UniqueName);
-    }
-
-    prepareForLinking(Mod.get(), RunningMod.get());
-    if (Linker::linkModules(*Mod, llvm::CloneModule(*RunningMod),
-                            Linker::Flags::OverrideFromSrc))
-      fatal();
-
-//    outs() << "*****************************\n";
-//    outs() << "After linking with RunningMod, before optimizing\n";
-//    outs() << "*****************************\n";
-//    Consumer->getModule()->dump();
-//    errs().flush();
-
-    // Optimize the merged module, containing both the newly generated IR as well as
-    // previously emitted code marked available_externally.
-    // NOTE: Nothing to do here for device, since tuning is currently only implemented for host code.
-    // CUDA code is optimized/emitted during the initial function resolution.
-
-    auto& Opt = JITCtx.Opt;
-    auto Request = Opt->optimize(Mod.get(), !JITCtx.Emitted);
-    //Consumer->EmitOptimized();
-
-    std::unique_ptr<llvm::Module> ToRunMod =
-        llvm::CloneModule(*Mod);
-
-#if defined(DUMP_MOD) || defined(DUMP_MOD_OPTIMIZED)
-    outs() << "*****************************\n";
-    outs() << "After optimization\n";
-    outs() << "*****************************\n";
-    outs().flush();
-    ToRunMod->dump();
-    errs().flush();
-#endif
-
-#ifdef PRINT_MOD_STATS
-// TODO
-    unsigned InstCount = 0;
-    for (auto& F : *ToRunMod) {
-      InstCount += F.getInstructionCount();
-    }
-    unsigned GlobalCount = ToRunMod->getGlobalList().size();
-
-    outs() << "Optimized module stats: " << InstCount << " instructions, " << GlobalCount << " globals\n";
-#endif
-
-    // Instrument optimized function for tuning
-    auto SMF = ToRunMod->getFunction(SMName);
-
-    tuner::TimingHelper TH(SMF);
-    TH.createTimingWrapper();
-
-    //auto* Wrapper = instrumentFunction(SMF);
-
-#ifdef DUMP_MOD_INSTRUMENTED
-    outs() << "*****************************\n";
-    outs() << "After instrumentation\n";
-    outs() << "*****************************\n";
-    outs().flush();
-    ToRunMod->dump();
-    errs().flush();
-#endif
-
-
-    auto ModKey = CJ->addModule(std::move(ToRunMod));
-
-    // Now that we've generated code for this module, take them optimized code
-    // and mark the definitions as available externally. We'll link them into
-    // future modules this way so that they can be inlined.
-
-    // Linker does not link definitions marked as available_externally by default,
-    // that's why we need to specify OverrideFromSource.
-
-
-    for (auto &F : Mod->functions())
-      if (!F.isDeclaration())
-        F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-
-    for (auto &GV : Mod->global_values())
-      if (!GV.isDeclaration()) {
-        if (GV.hasAppendingLinkage())
-          cast<GlobalVariable>(GV).setInitializer(nullptr);
-        else if (isa<GlobalAlias>(GV))
-          // Aliases cannot have externally-available linkage, so give them
-          // private linkage.
-          GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
-        else
-          GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
-      }
-
-
-    prepareForLinking(RunningMod.get(), Mod.get());
-
-    if (Linker::linkModules(*RunningMod, std::move(Mod),
-                            Linker::Flags::OverrideFromSrc))
-      fatal();
-
-#ifdef DUMP_MOD
-    outs() << "*****************************\n";
-    outs() << "New Running Module\n";
-    outs() << "*****************************\n";
-    outs().flush();
-    RunningMod->dump();
-    errs().flush();
-#endif
-
-
-    auto SpecSymbol = CJ->findSymbol(SMName);
-    assert(SpecSymbol && "Can't find the specialization just generated?");
-
-    if (auto Err = SpecSymbol.takeError()) {
-      errs() << "JIT Error: " << Err << "\n";
-      fatal();
-    }
-
-    if (!SpecSymbol.getAddress())
-      fatal();
-
-    auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
-
-    // Look up addresses of timing globals
-    auto* CJPtr = CJ.get();
-    auto Globals = TH.lookupGlobals([CJPtr] (StringRef SymName) -> void* {
-      auto Sym = CJPtr->findSymbol(SymName);
-      if (auto Err = Sym.takeError()) {
-        llvm::errs() << "Can't find symbol " << SymName << ": " << Err << "\n";
-        return nullptr;
-      }
-      auto Addr = Sym.getAddress();
-      if (!Addr) {
-        llvm::errs() << "Unable to find address of global " << SymName << "\n";
-        return nullptr;
-      }
-      return reinterpret_cast<void*>(Addr.get());
-    });
-    //auto Globals = PerfMonitor->lookupGlobals(SMName);
-
-
-    return {ID, ModKey, FPtr, Globals, Request};
-  }
-};
 
 llvm::sys::SmartMutex<false> Mutex;
 bool InitializedTarget = false;
@@ -2506,6 +526,1392 @@ llvm::DenseMap<InstInfo, JITFunctionData, InstMapInfo> Instantiations;
 
 } // anonymous namespace
 
+
+namespace clang {
+namespace jit {
+
+void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
+Gen->HandleTranslationUnit(C);
+
+// Silently ignore if we weren't initialized for some reason.
+if (!getModule())
+return;
+
+for (auto &BM : DevLinkMods) {
+std::unique_ptr<llvm::Module> M = llvm::CloneModule(*BM);
+M->setDataLayout(getModule()->getDataLayoutStr());
+M->setTargetTriple(getModule()->getTargetTriple());
+
+for (Function &F : *M)
+Gen->CGM().AddDefaultFnAttrs(F);
+
+bool Err = Linker::linkModules(
+    *getModule(), std::move(M), llvm::Linker::Flags::LinkOnlyNeeded,
+    [](llvm::Module &M, const llvm::StringSet<> &GVS) {
+      internalizeModule(M, [&GVS](const llvm::GlobalValue &GV) {
+        return !GV.hasName() || (GVS.count(GV.getName()) == 0);
+      });
+    });
+
+if (Err)
+fatal();
+}
+
+}
+
+ClangJIT::ClangJIT(DenseMap<StringRef, const void *> &LocalSymAddrs)
+    : LocalSymAddrs(LocalSymAddrs),
+      Resolver(createClangLookupResolver(
+          ES,
+          [this](const std::string &Name) {
+            return findSymbol(Name);
+          },
+          [](Error Err) { cantFail(std::move(Err), "lookupFlags failed"); })),
+      TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
+      ObjectLayer(ES,
+                  [this](llvm::orc::VModuleKey) {
+                    return ObjLayerT::Resources{
+                        std::make_shared<SectionMemoryManager>(), Resolver};
+                  }),
+      CompileLayer(ObjectLayer, llvm::orc::SimpleCompiler(*TM)),
+      CXXRuntimeOverrides(
+          [this](const std::string &S) { return mangle(S); }) {
+  llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
+}
+
+llvm::orc::VModuleKey ClangJIT::addModule(std::unique_ptr<llvm::Module> M) {
+  // Record the static constructors and destructors. We have to do this before
+  // we hand over ownership of the module to the JIT.
+  std::vector<std::string> CtorNames, DtorNames;
+  for (auto Ctor : llvm::orc::getConstructors(*M))
+    if (Ctor.Func && !Ctor.Func->hasAvailableExternallyLinkage())
+      CtorNames.push_back(mangle(Ctor.Func->getName()));
+  for (auto Dtor : llvm::orc::getDestructors(*M))
+    if (Dtor.Func && !Dtor.Func->hasAvailableExternallyLinkage())
+      DtorNames.push_back(mangle(Dtor.Func->getName()));
+
+  auto K = ES.allocateVModule();
+  cantFail(CompileLayer.addModule(K, std::move(M)));
+  ModuleKeys.push_back(K);
+
+  // Run the static constructors, and save the static destructor runner for
+  // execution when the JIT is torn down.
+  llvm::orc::LegacyCtorDtorRunner<CompileLayerT>
+      CtorRunner(std::move(CtorNames), K);
+  if (auto Err = CtorRunner.runViaLayer(CompileLayer)) {
+    llvm::errs() << "Error while running static constructors: " << Err << "\n";
+    errs().flush();
+    fatal();
+  }
+
+  IRStaticDestructorRunners.emplace_back(std::move(DtorNames), K);
+
+  return K;
+}
+
+void ClangJIT::removeModule(llvm::orc::VModuleKey K) {
+  ModuleKeys.erase(find(ModuleKeys, K));
+  cantFail(CompileLayer.removeModule(K));
+}
+
+
+
+
+  CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen, const void *ASTBuffer, size_t ASTBufferSize,
+                             const void *IRBuffer, size_t IRBufferSize, const void **LocalPtrs, unsigned LocalPtrsCnt,
+                             const void **LocalDbgPtrs, unsigned LocalDbgPtrsCnt, const clang::jit::DevData *DeviceData,
+                             unsigned DevCnt, int ForDev) {
+    bool IsForDev = (ForDev != -1);
+
+    StringRef CombinedArgv((const char *) CmdArgs, CmdArgsLen);
+    SmallVector<StringRef, 32> Argv;
+    CombinedArgv.split(Argv, '\0', /*MaxSplit*/ -1, false);
+
+    llvm::opt::ArgStringList CC1Args;
+    for (auto &ArgStr : Argv)
+      CC1Args.push_back(ArgStr.begin());
+
+    unsigned MissingArgIndex, MissingArgCount;
+    Opts = driver::createDriverOptTable();
+    llvm::opt::InputArgList ParsedArgs = Opts->ParseArgs(
+        CC1Args, MissingArgIndex, MissingArgCount);
+
+    DiagOpts = new DiagnosticOptions();
+    ParseDiagnosticArgs(*DiagOpts, ParsedArgs);
+    DiagnosticPrinter.reset(new TextDiagnosticPrinter(
+        llvm::errs(), &*DiagOpts));
+    Diagnostics = new DiagnosticsEngine(
+        IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs()), &*DiagOpts,
+        DiagnosticPrinter.get(), false);
+
+    // Note that LangOpts, TargetOpts can also be read from the AST, but
+    // CodeGenOpts need to come from the stored command line.
+
+    Invocation.reset(new CompilerInvocation);
+    CompilerInvocation::CreateFromArgs(*Invocation,
+                                       const_cast<const char **>(CC1Args.data()),
+                                       const_cast<const char **>(CC1Args.data()) +
+                                       CC1Args.size(), *Diagnostics);
+    Invocation->getFrontendOpts().DisableFree = false;
+    Invocation->getCodeGenOpts().DisableFree = false;
+
+    InMemoryFileSystem = new llvm::vfs::InMemoryFileSystem;
+    FileMgr = new FileManager(FileSystemOptions(), InMemoryFileSystem);
+
+    const char *Filename = "__clang_jit.pcm";
+    StringRef ASTBufferSR((const char *) ASTBuffer, ASTBufferSize);
+    InMemoryFileSystem->addFile(Filename, 0,
+                                llvm::MemoryBuffer::getMemBufferCopy(ASTBufferSR));
+
+    PCHContainerRdr.reset(new RawPCHContainerReader);
+    SourceMgr = new SourceManager(*Diagnostics, *FileMgr,
+        /*UserFilesAreVolatile*/ false);
+    PCMCache = new MemoryBufferCache;
+    HSOpts = std::make_shared<HeaderSearchOptions>();
+    HSOpts->ModuleFormat = PCHContainerRdr->getFormat();
+    HeaderInfo.reset(new HeaderSearch(HSOpts,
+                                      *SourceMgr,
+                                      *Diagnostics,
+                                      *Invocation->getLangOpts(),
+        /*Target=*/nullptr));
+    PPOpts = std::make_shared<PreprocessorOptions>();
+
+    unsigned Counter;
+
+    PP = std::make_shared<Preprocessor>(
+        PPOpts, *Diagnostics, *Invocation->getLangOpts(),
+        *SourceMgr, *PCMCache, *HeaderInfo, ModuleLoader,
+        /*IILookup=*/nullptr,
+        /*OwnsHeaderSearch=*/false);
+
+    // For parsing type names in strings later, we'll need to have Preprocessor
+    // keep the Lexer around even after it hits the end of the each file (used
+    // for each type name).
+    PP->enableIncrementalProcessing();
+
+    Ctx = new ASTContext(*Invocation->getLangOpts(), *SourceMgr,
+                         PP->getIdentifierTable(), PP->getSelectorTable(),
+                         PP->getBuiltinInfo());
+
+    Reader = new ASTReader(*PP, Ctx.get(), *PCHContainerRdr, {},
+        /*isysroot=*/"",
+        /*DisableValidation=*/ false,
+        /*AllowPCHWithCompilerErrors*/ false);
+
+    Reader->setListener(llvm::make_unique<ASTInfoCollector>(
+        *PP, Ctx.get(), *HSOpts, *PPOpts, *Invocation->getLangOpts(),
+        TargetOpts, Target, Counter));
+
+    Ctx->setExternalSource(Reader);
+
+    switch (Reader->ReadAST(Filename, serialization::MK_MainFile,
+                            SourceLocation(), ASTReader::ARR_None)) {
+      case ASTReader::Success:
+        break;
+
+      case ASTReader::Failure:
+      case ASTReader::Missing:
+      case ASTReader::OutOfDate:
+      case ASTReader::VersionMismatch:
+      case ASTReader::ConfigurationMismatch:
+      case ASTReader::HadErrors:
+        Diagnostics->Report(diag::err_fe_unable_to_load_pch);
+        fatal();
+        return;
+    }
+
+    PP->setCounterValue(Counter);
+
+    // Now that we've read the language options from the AST file, change the JIT mode.
+    Invocation->getLangOpts()->setCPlusPlusJIT(LangOptions::JITMode::JM_IsJIT);
+
+    // Keep externally available functions, etc.
+    Invocation->getCodeGenOpts().PrepareForLTO = true;
+
+    BackendAction BA = Backend_EmitNothing;
+    std::unique_ptr<raw_pwrite_stream> OS(new llvm::raw_null_ostream);
+
+    if (ForDev) {
+      BA = Backend_EmitAssembly;
+      OS.reset(new raw_svector_ostream(DevAsm));
+    }
+
+    Consumer.reset(new BackendConsumer(
+        BA, *Diagnostics, Invocation->getHeaderSearchOpts(),
+        Invocation->getPreprocessorOpts(), Invocation->getCodeGenOpts(),
+        Invocation->getTargetOpts(), *Invocation->getLangOpts(), false, Filename,
+        std::move(OS), *LCtx, DevLinkMods));
+
+    // Create a semantic analysis object and tell the AST reader about it.
+    S.reset(new Sema(*PP, *Ctx, *Consumer));
+    S->Initialize();
+    Reader->InitializeSema(*S);
+
+    // Tell the diagnostic client that we have started a source file.
+    Diagnostics->getClient()->BeginSourceFile(PP->getLangOpts(), PP.get());
+
+    JFIMapDeclVisitor(FuncMap).TraverseAST(*Ctx);
+    JFICSMapDeclVisitor(CSFuncMap).TraverseAST(*Ctx);
+
+    if (IRBufferSize) {
+      llvm::SMDiagnostic Err;
+      StringRef IRBufferSR((const char *) IRBuffer, IRBufferSize);
+      RunningMod = parseIR(
+          *llvm::MemoryBuffer::getMemBufferCopy(IRBufferSR), Err, *LCtx);
+
+      for (auto &F : RunningMod->functions())
+        if (!F.isDeclaration())
+          F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+
+      for (auto &GV : RunningMod->global_values())
+        if (!GV.isDeclaration()) {
+          if (GV.hasAppendingLinkage())
+            cast<GlobalVariable>(GV).setInitializer(nullptr);
+          else if (isa<GlobalAlias>(GV))
+            // Aliases cannot have externally-available linkage, so give them
+            // private linkage.
+            GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
+          else
+            GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+        }
+    }
+
+    Consumer->Initialize(*Ctx);
+
+    for (unsigned Idx = 0; Idx < 2*LocalPtrsCnt; Idx += 2) {
+      const char *Name = (const char *) LocalPtrs[Idx];
+      const void *Ptr = LocalPtrs[Idx+1];
+      LocalSymAddrs[Name] = Ptr;
+    }
+
+    for (unsigned Idx = 0; Idx < 2*LocalDbgPtrsCnt; Idx += 2) {
+      const char *Name = (const char *) LocalDbgPtrs[Idx];
+      const void *Ptr = LocalDbgPtrs[Idx+1];
+      LocalSymAddrs[Name] = Ptr;
+    }
+
+    if (!IsForDev)
+      CJ = llvm::make_unique<ClangJIT>(LocalSymAddrs);
+
+    if (IsForDev)
+      for (unsigned i = 0; i < DeviceData[ForDev].FileDataCnt; ++i) {
+        StringRef FileBufferSR(
+            (const char *) DeviceData[ForDev].FileData[i].Data,
+            DeviceData[ForDev].FileData[i].DataSize);
+
+        llvm::SMDiagnostic Err;
+        DevLinkMods.push_back(parseIR(
+            *llvm::MemoryBuffer::getMemBufferCopy(FileBufferSR), Err, *LCtx));
+      }
+
+    if (!IsForDev && Invocation->getLangOpts()->CUDA) {
+      typedef int (*cudaGetDevicePtr)(int *);
+      auto cudaGetDevice =
+          (cudaGetDevicePtr) RTDyldMemoryManager::getSymbolAddressInProcess(
+              "cudaGetDevice");
+      if (!cudaGetDevice) {
+        llvm::errs() << "Could not find CUDA API functions; "
+                        "did you forget to link with -lcudart?\n";
+        fatal();
+      }
+
+      typedef int (*cudaGetDeviceCountPtr)(int *);
+      auto cudaGetDeviceCount =
+          (cudaGetDeviceCountPtr) RTDyldMemoryManager::getSymbolAddressInProcess(
+              "cudaGetDeviceCount");
+
+      int SysDevCnt;
+      if (cudaGetDeviceCount(&SysDevCnt)) {
+        llvm::errs() << "Failed to get CUDA device count!\n";
+        fatal();
+      }
+
+      typedef int (*cudaDeviceGetAttributePtr)(int *, int, int);
+      auto cudaDeviceGetAttribute =
+          (cudaDeviceGetAttributePtr) RTDyldMemoryManager::getSymbolAddressInProcess(
+              "cudaDeviceGetAttribute");
+
+      if (SysDevCnt) {
+        int CDev;
+        if (cudaGetDevice(&CDev))
+          fatal();
+
+        int CLMajor, CLMinor;
+        if (cudaDeviceGetAttribute(
+            &CLMajor, /*cudaDevAttrComputeCapabilityMajor*/ 75, CDev))
+          fatal();
+        if (cudaDeviceGetAttribute(
+            &CLMinor, /*cudaDevAttrComputeCapabilityMinor*/ 76, CDev))
+          fatal();
+
+        SmallString<6> EffArch;
+        raw_svector_ostream(EffArch) << "sm_" << CLMajor << CLMinor;
+
+        SmallVector<StringRef, 2> DevArchs;
+        for (unsigned i = 0; i < DevCnt; ++i) {
+          if (!Triple(DeviceData[i].Triple).isNVPTX())
+            continue;
+          if (!StringRef(DeviceData[i].Arch).startswith("sm_"))
+            continue;
+          DevArchs.push_back(DeviceData[i].Arch);
+        }
+
+        std::sort(DevArchs.begin(), DevArchs.end());
+        auto ArchI =
+            std::upper_bound(DevArchs.begin(), DevArchs.end(), EffArch);
+        if (ArchI == DevArchs.begin()) {
+          llvm::errs() << "No JIT device configuration supports " <<
+                       EffArch << "\n";
+          fatal();
+        }
+
+        auto BestDevArch = *--ArchI;
+        int BestDevIdx = 0;
+        for (; BestDevIdx < (int) DevCnt; ++BestDevIdx) {
+          if (!Triple(DeviceData[BestDevIdx].Triple).isNVPTX())
+            continue;
+          if (DeviceData[BestDevIdx].Arch == BestDevArch)
+            break;
+        }
+
+        assert(BestDevIdx != (int) DevCnt && "Didn't find the chosen device data?");
+
+        if (!InitializedDevTarget) {
+          // In theory, we only need to initialize the NVPTX target here,
+          // however, there doesn't seem to be any good way to know if the
+          // NVPTX target is enabled.
+          //
+          // LLVMInitializeNVPTXTargetInfo();
+          // LLVMInitializeNVPTXTarget();
+          // LLVMInitializeNVPTXTargetMC();
+          // LLVMInitializeNVPTXAsmPrinter();
+
+          llvm::InitializeAllTargets();
+          llvm::InitializeAllTargetMCs();
+          llvm::InitializeAllAsmPrinters();
+
+          InitializedDevTarget = true;
+        }
+
+        DevCD.reset(new CompilerData(
+            DeviceData[BestDevIdx].CmdArgs, DeviceData[BestDevIdx].CmdArgsLen,
+            DeviceData[BestDevIdx].ASTBuffer, DeviceData[BestDevIdx].ASTBufferSize,
+            nullptr, 0, nullptr, 0, nullptr, 0, DeviceData, DevCnt, BestDevIdx));
+      }
+    }
+  }
+
+
+void CompilerData::restoreFuncDeclContext(FunctionDecl *FunD) {
+  // NOTE: This mirrors the corresponding code in
+  // Parser::ParseLateTemplatedFuncDef (which is used to late parse a C++
+  // function template in Microsoft mode).
+
+  struct ContainingDC {
+    ContainingDC(DeclContext *DC, bool ShouldPush) : Pair(DC, ShouldPush) {}
+    llvm::PointerIntPair<DeclContext *, 1, bool> Pair;
+    DeclContext *getDC() { return Pair.getPointer(); }
+    bool shouldPushDC() { return Pair.getInt(); }
+  };
+
+  SmallVector<ContainingDC, 4> DeclContextsToReenter;
+  DeclContext *DD = FunD;
+  DeclContext *NextContaining = S->getContainingDC(DD);
+  while (DD && !DD->isTranslationUnit()) {
+    bool ShouldPush = DD == NextContaining;
+    DeclContextsToReenter.push_back({DD, ShouldPush});
+    if (ShouldPush)
+      NextContaining = S->getContainingDC(DD);
+    DD = DD->getLexicalParent();
+  }
+
+  // Reenter template scopes from outermost to innermost.
+  for (ContainingDC CDC : reverse(DeclContextsToReenter)) {
+    (void) S->ActOnReenterTemplateScope(S->getCurScope(),
+                                        cast<Decl>(CDC.getDC()));
+    if (CDC.shouldPushDC())
+      S->PushDeclContext(S->getCurScope(), CDC.getDC());
+  }
+}
+
+std::string CompilerData::instantiateTemplate(const void *NTTPValues, const char **TypeStrings,
+                                unsigned Idx) {
+  FunctionDecl *FD = FuncMap[Idx];
+  if (!FD)
+    fatal();
+
+  RecordDecl *RD =
+      Ctx->buildImplicitRecord(llvm::Twine("__clang_jit_args_")
+                                   .concat(llvm::Twine(Idx))
+                                   .concat(llvm::Twine("_t"))
+                                   .str());
+
+  RD->startDefinition();
+
+  enum TASaveKind {
+    TASK_None,
+    TASK_Type,
+    TASK_Value
+  };
+
+  SmallVector<TASaveKind, 8> TAIsSaved;
+
+  auto *FTSI = FD->getTemplateSpecializationInfo();
+  for (auto &TA : FTSI->TemplateArguments->asArray()) {
+    auto HandleTA = [&](const TemplateArgument &TA) {
+      if (TA.getKind() == TemplateArgument::Type)
+        if (TA.getAsType()->isJITFromStringType()) {
+          TAIsSaved.push_back(TASK_Type);
+          return;
+        }
+
+      if (TA.getKind() != TemplateArgument::Expression) {
+        TAIsSaved.push_back(TASK_None);
+        return;
+      }
+
+      SmallVector<PartialDiagnosticAt, 8> Notes;
+      Expr::EvalResult Eval;
+      Eval.Diag = &Notes;
+      if (TA.getAsExpr()->
+          EvaluateAsConstantExpr(Eval, Expr::EvaluateForMangling, *Ctx)) {
+        TAIsSaved.push_back(TASK_None);
+        return;
+      }
+
+      QualType FieldTy = TA.getNonTypeTemplateArgumentType();
+      auto *Field = FieldDecl::Create(
+          *Ctx, RD, SourceLocation(), SourceLocation(), /*Id=*/nullptr,
+          FieldTy, Ctx->getTrivialTypeSourceInfo(FieldTy, SourceLocation()),
+          /*BW=*/nullptr, /*Mutable=*/false, /*InitStyle=*/ICIS_NoInit);
+      Field->setAccess(AS_public);
+      RD->addDecl(Field);
+
+      TAIsSaved.push_back(TASK_Value);
+    };
+
+    if (TA.getKind() == TemplateArgument::Pack) {
+      for (auto &PTA : TA.getPackAsArray())
+        HandleTA(PTA);
+      continue;
+    }
+
+    HandleTA(TA);
+  }
+
+  RD->completeDefinition();
+  RD->addAttr(PackedAttr::CreateImplicit(*Ctx));
+
+  const ASTRecordLayout &RLayout = Ctx->getASTRecordLayout(RD);
+  assert(Ctx->getCharWidth() == 8 && "char is not 8 bits!");
+
+  QualType RDTy = Ctx->getRecordType(RD);
+  auto Fields = cast<RecordDecl>(RDTy->getAsTagDecl())->field_begin();
+
+  SmallVector<TemplateArgument, 8> Builder;
+
+  unsigned TAIdx = 0, TSIdx = 0;
+  for (auto &TA : FTSI->TemplateArguments->asArray()) {
+    auto HandleTA = [&](const TemplateArgument &TA,
+                        SmallVector<TemplateArgument, 8> &Builder) {
+      if (TAIsSaved[TAIdx] == TASK_Type) {
+        PP->ResetForJITTypes();
+
+        PP->setPredefines(TypeStrings[TSIdx]);
+        PP->EnterMainSourceFile();
+
+        Parser P(*PP, *S, /*SkipFunctionBodies*/true, /*JITTypes*/true);
+
+        // Reset this to nullptr so that when we call
+        // Parser::Initialize it has the clean slate it expects.
+        S->CurContext = nullptr;
+
+        P.Initialize();
+
+        Sema::ContextRAII TUContext(*S, Ctx->getTranslationUnitDecl());
+
+        auto CSFMI = CSFuncMap.find(Idx);
+        if (CSFMI != CSFuncMap.end()) {
+          // Note that this restores the context of the function in which the
+          // template was instantiated, but not the state *within* the
+          // function, so local types will remain unavailable.
+
+          auto *FunD = CSFMI->second;
+          restoreFuncDeclContext(FunD);
+          S->CurContext = S->getContainingDC(FunD);
+        }
+
+        TypeResult TSTy = P.ParseTypeName();
+        if (TSTy.isInvalid())
+          fatal();
+
+        QualType TypeFromString = Sema::GetTypeFromParser(TSTy.get());
+        TypeFromString = Ctx->getCanonicalType(TypeFromString);
+
+        Builder.push_back(TemplateArgument(TypeFromString));
+
+        ++TSIdx;
+        ++TAIdx;
+        return;
+      }
+
+      if (TAIsSaved[TAIdx++] != TASK_Value) {
+        Builder.push_back(TA);
+        return;
+      }
+
+      assert(TA.getKind() == TemplateArgument::Expression &&
+             "Only expressions template arguments handled here");
+
+      QualType FieldTy = TA.getNonTypeTemplateArgumentType();
+
+      assert(!FieldTy->isMemberPointerType() &&
+             "Can't handle member pointers here without ABI knowledge");
+
+      auto *Fld = *Fields++;
+      unsigned Offset = RLayout.getFieldOffset(Fld->getFieldIndex()) / 8;
+      unsigned Size = Ctx->getTypeSizeInChars(FieldTy).getQuantity();
+
+      unsigned NumIntWords = llvm::alignTo<8>(Size);
+      SmallVector<uint64_t, 2> IntWords(NumIntWords, 0);
+      std::memcpy((char *) IntWords.data(),
+                  ((const char *) NTTPValues) + Offset, Size);
+      llvm::APInt IntVal(Size*8, IntWords);
+
+      QualType CanonFieldTy = Ctx->getCanonicalType(FieldTy);
+
+
+      errs() << "Instantiating NTTA with " << Size << " bytes: \n";
+      CanonFieldTy.dump();
+      Fld->dump();
+
+      errs() << "Data: " << IntVal << "\n";
+
+      errs() << "Type as string: " << CanonFieldTy.getAsString() << "\n";
+
+      auto FieldDecl = CanonFieldTy.getTypePtr()->getAsRecordDecl();
+
+      if (FieldDecl && FieldDecl->getName() == "tunable_range") {
+        // TODO
+      }
+
+      if (CanonFieldTy.getAsString() == "struct jit::tunable_range<int>") {
+        errs() << "is template specialization\n";
+        auto Range = *reinterpret_cast<jit::tunable_range<int>*>(&IntWords[0]);
+        errs() << "Range is [" << Range.Min << ";" << Range.Max << "]\n";
+        llvm::APSInt SIntVal(32); // TODO
+        SIntVal = Range.Min;
+        Builder.push_back(TemplateArgument(*Ctx, SIntVal, Ctx->getIntTypeForBitwidth(32, false))); // TODO: Check expected template params
+      }
+
+      else if (FieldTy->isIntegralOrEnumerationType()) {
+        llvm::APSInt SIntVal(IntVal,
+                             FieldTy->isUnsignedIntegerOrEnumerationType());
+        Builder.push_back(TemplateArgument(*Ctx, SIntVal, CanonFieldTy));
+      } else {
+        assert(FieldTy->isPointerType() || FieldTy->isReferenceType() ||
+               FieldTy->isNullPtrType());
+        if (IntVal.isNullValue()) {
+          Builder.push_back(TemplateArgument(CanonFieldTy, /*isNullPtr*/true));
+        } else {
+          // Note: We always generate a new global for pointer values here.
+          // This provides a new potential way to introduce an ODR violation:
+          // If you also generate an instantiation using the same pointer value
+          // using some other symbol name, this will generate a different
+          // instantiation.
+
+          // As we guarantee that the template parameters are not allowed to
+          // point to subobjects, this is useful for optimization because each
+          // of these resolve to distinct underlying objects.
+
+          llvm::SmallString<256> GlobalName("__clang_jit_symbol_");
+          IntVal.toString(GlobalName, 16, false);
+
+          // To this base name we add the mangled type. Stack/heap addresses
+          // can be reused with variables of different type, and these should
+          // have different names even if they share the same address;
+          auto &CGM = Consumer->getCodeGenerator()->CGM();
+          llvm::raw_svector_ostream MOut(GlobalName);
+          CGM.getCXXABI().getMangleContext().mangleTypeName(CanonFieldTy, MOut);
+
+          auto NLDSI = NewLocalSymDecls.find(GlobalName);
+          if (NLDSI != NewLocalSymDecls.end()) {
+            Builder.push_back(TemplateArgument(NLDSI->second, CanonFieldTy));
+          } else {
+            Sema::ContextRAII TUContext(*S, Ctx->getTranslationUnitDecl());
+            SourceLocation Loc = FTSI->getPointOfInstantiation();
+
+            QualType STy = CanonFieldTy->getPointeeType();
+            auto &II = PP->getIdentifierTable().get(GlobalName);
+
+            if (STy->isFunctionType()) {
+              auto *TAFD =
+                  FunctionDecl::Create(*Ctx, S->CurContext, Loc, Loc, &II,
+                                       STy, /*TInfo=*/nullptr, SC_Extern, false,
+                                       STy->isFunctionProtoType());
+              TAFD->setImplicit();
+
+              if (const FunctionProtoType *FT = dyn_cast<FunctionProtoType>(STy)) {
+                SmallVector<ParmVarDecl*, 16> Params;
+                for (unsigned i = 0, e = FT->getNumParams(); i != e; ++i) {
+                  ParmVarDecl *Parm =
+                      ParmVarDecl::Create(*Ctx, TAFD, SourceLocation(), SourceLocation(),
+                                          nullptr, FT->getParamType(i), /*TInfo=*/nullptr,
+                                          SC_None, nullptr);
+                  Parm->setScopeInfo(0, i);
+                  Params.push_back(Parm);
+                }
+
+                TAFD->setParams(Params);
+              }
+
+              NewLocalSymDecls[II.getName()] = TAFD;
+              Builder.push_back(TemplateArgument(TAFD, CanonFieldTy));
+            } else {
+              bool MadeArray = false;
+              auto *TPL = FTSI->getTemplate()->getTemplateParameters();
+              if (TPL->size() >= TAIdx) {
+                auto *Param = TPL->getParam(TAIdx-1);
+                if (NonTypeTemplateParmDecl *NTTP =
+                    dyn_cast<NonTypeTemplateParmDecl>(Param)) {
+                  QualType OrigTy = NTTP->getType()->getPointeeType();
+                  OrigTy = OrigTy.getDesugaredType(*Ctx);
+
+                  bool IsArray = false;
+                  llvm::APInt Sz;
+                  QualType ElemTy;
+                  if (const auto *DAT = dyn_cast<DependentSizedArrayType>(OrigTy)) {
+                    Expr* SzExpr = DAT->getSizeExpr();
+
+                    // Get the already-processed arguments for potential substitution.
+                    auto *NewTAL = TemplateArgumentList::CreateCopy(*Ctx, Builder);
+                    MultiLevelTemplateArgumentList SubstArgs(*NewTAL);
+
+                    SmallVector<Expr *, 1> NewSzExprVec;
+                    if (!S->SubstExprs(SzExpr, /*IsCall*/ false, SubstArgs, NewSzExprVec)) {
+                      Expr::EvalResult NewSzResult;
+                      if (NewSzExprVec[0]->EvaluateAsInt(NewSzResult, *Ctx)) {
+                        Sz = NewSzResult.Val.getInt();
+                        ElemTy = DAT->getElementType();
+                        IsArray = true;
+                      }
+                    }
+                  } else if (const auto *CAT = dyn_cast<ConstantArrayType>(OrigTy)) {
+                    Sz = CAT->getSize();
+                    ElemTy = CAT->getElementType();
+                    IsArray = true;
+                  }
+
+                  if (IsArray && (ElemTy->isIntegerType() ||
+                                  ElemTy->isFloatingType())) {
+                    QualType ArrTy =
+                        Ctx->getConstantArrayType(ElemTy,
+                                                  Sz, clang::ArrayType::Normal, 0);
+
+                    SmallVector<Expr *, 16> Vals;
+                    unsigned ElemSize = Ctx->getTypeSizeInChars(ElemTy).getQuantity();
+                    unsigned ElemNumIntWords = llvm::alignTo<8>(ElemSize);
+                    const char *Elem = (const char *) IntVal.getZExtValue();
+                    for (unsigned i = 0; i < Sz.getZExtValue(); ++i) {
+                      SmallVector<uint64_t, 2> ElemIntWords(ElemNumIntWords, 0);
+
+                      std::memcpy((char *) ElemIntWords.data(), Elem, ElemSize);
+                      Elem += ElemSize;
+
+                      llvm::APInt ElemVal(ElemSize*8, ElemIntWords);
+                      if (ElemTy->isIntegerType()) {
+                        Vals.push_back(new (*Ctx) IntegerLiteral(
+                            *Ctx, ElemVal, ElemTy, Loc));
+                      } else {
+                        llvm::APFloat ElemValFlt(Ctx->getFloatTypeSemantics(ElemTy), ElemVal);
+                        Vals.push_back(FloatingLiteral::Create(*Ctx, ElemValFlt,
+                                                               false, ElemTy, Loc));
+                      }
+                    }
+
+                    InitListExpr *InitL = new (*Ctx) InitListExpr(*Ctx, Loc, Vals, Loc);
+                    InitL->setType(ArrTy);
+
+                    auto *TAVD =
+                        VarDecl::Create(*Ctx, S->CurContext, Loc, Loc, &II,
+                                        ArrTy, Ctx->getTrivialTypeSourceInfo(ArrTy, Loc),
+                                        SC_Extern);
+                    TAVD->setImplicit();
+                    TAVD->setConstexpr(true);
+                    TAVD->setInit(InitL);
+
+                    NewLocalSymDecls[II.getName()] = TAVD;
+                    Builder.push_back(TemplateArgument(TAVD, Ctx->getLValueReferenceType(ArrTy)));
+
+                    MadeArray = true;
+                  }
+                }
+              }
+
+              if (!MadeArray) {
+                auto *TAVD =
+                    VarDecl::Create(*Ctx, S->CurContext, Loc, Loc, &II,
+                                    STy, Ctx->getTrivialTypeSourceInfo(STy, Loc),
+                                    SC_Extern);
+                TAVD->setImplicit();
+
+                NewLocalSymDecls[II.getName()] = TAVD;
+                Builder.push_back(TemplateArgument(TAVD, CanonFieldTy));
+              }
+            }
+
+            LocalSymAddrs[II.getName()] = (const void *) IntVal.getZExtValue();
+          }
+        }
+      }
+    };
+
+    if (TA.getKind() == TemplateArgument::Pack) {
+      SmallVector<TemplateArgument, 8> PBuilder;
+      for (auto &PTA : TA.getPackAsArray())
+        HandleTA(PTA, PBuilder);
+      Builder.push_back(TemplateArgument::CreatePackCopy(*Ctx, PBuilder));
+      continue;
+    }
+
+    HandleTA(TA, Builder);
+  }
+
+  SourceLocation Loc = FTSI->getPointOfInstantiation();
+  auto *NewTAL = TemplateArgumentList::CreateCopy(*Ctx, Builder);
+  MultiLevelTemplateArgumentList SubstArgs(*NewTAL);
+
+  auto *FunctionTemplate = FTSI->getTemplate();
+  DeclContext *Owner = FunctionTemplate->getDeclContext();
+  if (FunctionTemplate->getFriendObjectKind())
+    Owner = FunctionTemplate->getLexicalDeclContext();
+
+  std::string SMName;
+  FunctionTemplateDecl *FTD = FTSI->getTemplate();
+  sema::TemplateDeductionInfo Info(Loc);
+  {
+    Sema::InstantiatingTemplate Inst(
+        *S, Loc, FTD, NewTAL->asArray(),
+        Sema::CodeSynthesisContext::ExplicitTemplateArgumentSubstitution, Info);
+    Sema::ContextRAII TUContext(*S, Ctx->getTranslationUnitDecl());
+
+    auto *Specialization = cast_or_null<FunctionDecl>(
+        S->SubstDecl(FunctionTemplate->getTemplatedDecl(), Owner, SubstArgs));
+    if (!Specialization || Specialization->isInvalidDecl())
+      fatal();
+
+    Specialization->setTemplateSpecializationKind(TSK_ExplicitInstantiationDefinition, Loc);
+    S->InstantiateFunctionDefinition(Loc, Specialization, true, true, true);
+
+    SMName = Consumer->getCodeGenerator()->CGM().getMangledName(Specialization);
+  }
+
+  if (Diagnostics->hasErrorOccurred())
+    fatal();
+
+  return SMName;
+}
+
+void CompilerData::emitAllNeeded(bool CheckExisting) {
+  // There might have been functions/variables with local linkage that were
+  // only used by JIT functions. These would not have been used during
+  // initial code generation for this translation unit, and so not emitted.
+  // We need to make sure that they're emited now (if they're now necessary).
+
+  // Note that we skip having the code generator visiting the decl if it is
+  // already defined or already present in our running module. Note that this
+  // is not sufficient to prevent all redundant code generation (this might
+  // also happen during the instantiation of the top-level function
+  // template), and this is why we merge the running module into the new one
+  // with the running-module overriding new entities.
+
+  SmallSet<StringRef, 16> LastDeclNames;
+  bool Changed;
+  do {
+    Changed = false;
+
+    Consumer->getCodeGenerator()->CGM().EmitAllDeferred([&](GlobalDecl GD) {
+      auto MName = Consumer->getCodeGenerator()->CGM().getMangledName(GD);
+      if (!CheckExisting || !CJ->findSymbol(MName)) {
+        Changed = true;
+        return false;
+      }
+
+      return true;
+    });
+
+    SmallSet<StringRef, 16> DeclNames;
+    for (auto &F : Consumer->getModule()->functions())
+      if (F.isDeclaration() && !F.isIntrinsic())
+        if (!LastDeclNames.count(F.getName()))
+          DeclNames.insert(F.getName());
+
+    for (auto &GV : Consumer->getModule()->global_values())
+      if (GV.isDeclaration())
+        if (!LastDeclNames.count(GV.getName()))
+          DeclNames.insert(GV.getName());
+
+    for (auto &DeclName : DeclNames) {
+      if (CheckExisting && CJ->findSymbol(DeclName))
+        continue;
+
+      Decl *D = const_cast<Decl *>(Consumer->getCodeGenerator()->
+          GetDeclForMangledName(DeclName));
+      if (!D)
+        continue;
+
+      Consumer->HandleInterestingDecl(DeclGroupRef(D));
+      LastDeclNames.insert(DeclName);
+      Changed = true;
+    }
+  } while (Changed);
+}
+
+
+JITInstantiation CompilerData::recompileFunction(const void *NTTPValues, const char **TypeStrings,
+                                   unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID) {
+  assert(JITCtx.Emitted && "Instantiation has not been emitted yet");
+  assert(!DevCD && "Recompilation is currently not supported for device code");
+
+  StringRef SMName = JITCtx.DeclName;
+
+  assert(CJ->findSymbol(SMName) && "Function for recompilation cannot be found");
+
+  auto BaseMod = llvm::CloneModule(*JITCtx.Mod);
+
+  // Remove symbols from the running module which have been emitted as part of a previous compilation
+  // of the same function.
+  // This is done to ensure that the newly optimized IR will be used for inlining in the future.
+  // TODO: When tuning, does this make sense? The newest module might not have the best code.
+  //       Maybe we should use a baseline version (from the first compilation) and stick with that.
+  //       Alternatively, we could try to update the code with the current best version.
+  int NumRemoved = 0;
+  for (auto& ValueName : JITCtx.ReplaceOnRecompilation) {
+    auto GV = RunningMod->getNamedValue(ValueName);
+    if (GV) {
+      GV->removeFromParent();
+      NumRemoved++;
+      // TODO: Make sure that there are no remaining dependencies
+      // TODO: A function marked as emitted may possibly be removed during optimization and therefore not reintroduced
+      //       into the running module. Find out if that can happen and is problematic.
+    }/* else {
+        outs() << "Global not found: " << ValueName << "\n";
+      }*/
+
+  }
+  outs() << "Removed " << NumRemoved << " globals" << "\n";
+
+  return finalizeModule(std::move(BaseMod), JITCtx, ID);
+}
+
+//#define DUMP_MOD
+//#define DUMP_MOD_ONCE
+//#define DUMP_MOD_OPTIMIZED
+//#define DUMP_MOD_INSTRUMENTED
+#define PRINT_MOD_STATS
+
+JITInstantiation CompilerData::resolveFunction(const void *NTTPValues, const char **TypeStrings,
+                                 unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID) {
+  std::string SMName = instantiateTemplate(NTTPValues, TypeStrings, Idx);
+
+  auto* FDecl = Consumer->getCodeGenerator()->GetDeclForMangledName(SMName);
+
+  // Now we know the name of the symbol, check to see if we already have it.
+  if (auto SpecSymbol = CJ->findSymbol(SMName))
+    if (SpecSymbol.getAddress())
+      // FIXME: Figure out how to handle this.
+      return JITInstantiation();
+  //return (void *) llvm::cantFail(SpecSymbol.getAddress());
+
+  if (DevCD)
+    DevCD->instantiateTemplate(NTTPValues, TypeStrings, Idx);
+
+  emitAllNeeded();
+
+  if (DevCD)
+    DevCD->emitAllNeeded(false);
+
+  // Before anything gets optimized, mark the top-level symbol we're
+  // generating so that it doesn't get eliminated by the optimizer.
+
+  auto *TopGV =
+      cast<GlobalObject>(Consumer->getModule()->getNamedValue(SMName));
+  assert(TopGV && "Didn't generate the desired top-level symbol?");
+
+  TopGV->setLinkage(llvm::GlobalValue::ExternalLinkage);
+  TopGV->setComdat(nullptr);
+
+  // Finalize the module, generate module-level metadata, etc.
+
+  if (DevCD) {
+    DevCD->Consumer->HandleTranslationUnit(*DevCD->Ctx);
+    DevCD->Consumer->EmitOptimized();
+
+    // We have now created the PTX output, but what we really need as a
+    // fatbin that the CUDA runtime will recognize.
+
+    // The outer header of the fat binary is documented in the CUDA
+    // fatbinary.h header. As mentioned there, the overall size must be a
+    // multiple of eight, and so we must make sure that the PTX is.
+    while (DevCD->DevAsm.size() % 7)
+      DevCD->DevAsm += ' ';
+    DevCD->DevAsm += '\0';
+
+    // NVIDIA, unfortunatly, does not provide full documentation on their
+    // fatbin format. There is some information on the outer header block in
+    // the CUDA fatbinary.h header. Also, it is possible to figure out more
+    // about the format by creating fatbins using the provided utilities
+    // and then observing what cuobjdump reports about the resulting files.
+    // There are some other online references which shed light on the format,
+    // including https://reviews.llvm.org/D8397 and FatBinaryContext.{cpp,h}
+    // from the GPU Ocelot project (https://github.com/gtcasl/gpuocelot).
+
+    SmallString<128> FatBin;
+    llvm::raw_svector_ostream FBOS(FatBin);
+
+    struct FatBinHeader {
+      uint32_t Magic;      // 0x00
+      uint16_t Version;    // 0x04
+      uint16_t HeaderSize; // 0x06
+      uint32_t DataSize;   // 0x08
+      uint32_t unknown0c;  // 0x0c
+    public:
+      FatBinHeader(uint32_t DataSize)
+          : Magic(0xba55ed50), Version(1),
+            HeaderSize(sizeof(*this)), DataSize(DataSize), unknown0c(0) {}
+    };
+
+    enum FatBinFlags {
+      AddressSize64 = 0x01,
+      HasDebugInfo = 0x02,
+      ProducerCuda = 0x04,
+      HostLinux = 0x10,
+      HostMac = 0x20,
+      HostWindows = 0x40
+    };
+
+    struct FatBinFileHeader {
+      uint16_t Kind;             // 0x00
+      uint16_t unknown02;        // 0x02
+      uint32_t HeaderSize;       // 0x04
+      uint32_t DataSize;         // 0x08
+      uint32_t unknown0c;        // 0x0c
+      uint32_t CompressedSize;   // 0x10
+      uint32_t SubHeaderSize;    // 0x14
+      uint16_t VersionMinor;     // 0x18
+      uint16_t VersionMajor;     // 0x1a
+      uint32_t CudaArch;         // 0x1c
+      uint32_t unknown20;        // 0x20
+      uint32_t unknown24;        // 0x24
+      uint32_t Flags;            // 0x28
+      uint32_t unknown2c;        // 0x2c
+      uint32_t unknown30;        // 0x30
+      uint32_t unknown34;        // 0x34
+      uint32_t UncompressedSize; // 0x38
+      uint32_t unknown3c;        // 0x3c
+      uint32_t unknown40;        // 0x40
+      uint32_t unknown44;        // 0x44
+      FatBinFileHeader(uint32_t DataSize, uint32_t CudaArch, uint32_t Flags)
+          : Kind(1 /*PTX*/), unknown02(0x0101), HeaderSize(sizeof(*this)),
+            DataSize(DataSize), unknown0c(0), CompressedSize(0),
+            SubHeaderSize(HeaderSize - 8), VersionMinor(2), VersionMajor(4),
+            CudaArch(CudaArch), unknown20(0), unknown24(0), Flags(Flags), unknown2c(0),
+            unknown30(0), unknown34(0), UncompressedSize(0), unknown3c(0),
+            unknown40(0), unknown44(0) {}
+    };
+
+    uint32_t CudaArch;
+    StringRef(DevCD->Invocation->getTargetOpts().CPU)
+        .drop_front(3 /*sm_*/).getAsInteger(10, CudaArch);
+
+    uint32_t Flags = ProducerCuda;
+    if (DevCD->Invocation->getCodeGenOpts().getDebugInfo() >=
+        codegenoptions::LimitedDebugInfo)
+      Flags |= HasDebugInfo;
+
+    if (Triple(DevCD->Invocation->getTargetOpts().Triple).getArch() ==
+        Triple::nvptx64)
+      Flags |= AddressSize64;
+
+    if (Triple(Invocation->getTargetOpts().Triple).isOSWindows())
+      Flags |= HostWindows;
+    else if (Triple(Invocation->getTargetOpts().Triple).isOSDarwin())
+      Flags |= HostMac;
+    else
+      Flags |= HostLinux;
+
+    FatBinFileHeader FBFHdr(DevCD->DevAsm.size(), CudaArch, Flags);
+    FatBinHeader FBHdr(DevCD->DevAsm.size() + FBFHdr.HeaderSize);
+
+    FBOS.write((char *) &FBHdr, FBHdr.HeaderSize);
+    FBOS.write((char *) &FBFHdr, FBFHdr.HeaderSize);
+    FBOS << DevCD->DevAsm;
+
+    if (::getenv("CLANG_JIT_CUDA_DUMP_DYNAMIC_FATBIN")) {
+      SmallString<128> Path;
+      auto EC = llvm::sys::fs::createUniqueFile(
+          llvm::Twine("clang-jit-") +
+          llvm::sys::path::filename(Invocation->getCodeGenOpts().
+              MainFileName) +
+          llvm::Twine("-%%%%.fatbin"), Path,
+          llvm::sys::fs::owner_read | llvm::sys::fs::owner_write);
+      if (!EC) {
+        raw_fd_ostream DOS(Path, EC);
+        if (!EC)
+          DOS << FatBin;
+      }
+    }
+
+    Consumer->getCodeGenerator()->CGM().getCodeGenOpts().GPUBinForJIT =
+        FatBin;
+    DevCD->DevAsm.clear();
+  }
+
+  // Finalize translation unit. No optimization yet.
+  Consumer->HandleTranslationUnit(*Ctx);
+
+  // First, mark everything we've newly generated with external linkage. When
+  // we generate additional modules, we'll mark these functions as available
+  // externally, and so we're likely to inline them, but if not, we'll need
+  // to link with the ones generated here.
+
+  for (auto &F : Consumer->getModule()->functions()) {
+    F.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    F.setComdat(nullptr);
+
+    if (!F.isDeclaration())
+      JITCtx.ReplaceOnRecompilation.push_back(F.getName());
+  }
+
+  auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
+    if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
+      return false;
+
+    auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
+    if (!GVar || !GVar->isConstant())
+      return false;
+
+    return true;
+  };
+
+  for (auto &GV : Consumer->getModule()->global_values()) {
+    if (IsLocalUnnamedConst(GV) || GV.hasAppendingLinkage())
+      continue;
+
+    GV.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
+      GO->setComdat(nullptr);
+
+  }
+
+
+  auto GenMod = Consumer->takeModule();
+  // Reset for next instantiation
+  Consumer->Initialize(*Ctx);
+
+  auto Opt = llvm::make_unique<tuner::Optimizer>(*Diagnostics,
+                                                 *HSOpts,
+                                                 Invocation->getCodeGenOpts(),
+                                                 *TargetOpts,
+                                                 *Invocation->getLangOpts(),
+                                                 CJ->getTargetMachine());
+  Opt->init(GenMod.get());
+
+#ifdef DUMP_MOD
+  outs() << "*****************************\n";
+     outs() << "Initial Running Module:\n";
+     outs() << "*****************************\n";
+
+     outs().flush();
+     RunningMod->dump();
+     errs().flush();
+#endif
+
+
+#if defined(DUMP_MOD) || defined(DUMP_MOD_ONCE)
+  outs() << "*****************************\n";
+    outs() << "Module saved for recompilation:\n";
+    outs() << "*****************************\n";
+
+    outs().flush();
+    GenMod->dump();
+    errs().flush();
+#endif
+
+
+  JITCtx.DeclName = SMName;
+  JITCtx.Mod = llvm::CloneModule(*GenMod);
+  JITCtx.Opt = std::move(Opt);
+
+  auto Inst = finalizeModule(std::move(GenMod), JITCtx, ID);
+  JITCtx.Emitted = true;
+  JITCtx.PrimaryVersion = Inst.ID;
+  return Inst;
+}
+
+
+void CompilerData::prepareForLinking(llvm::Module* DstMod, const llvm::Module* SrcMod) {
+
+  // During linking, all named metadata (except llvm.module.flags) from the source module will be appended to the
+  // existing MD in the destination module (see IRLinker::linkNamedMDNodes).
+  // This causes llvm.ident to double in size every time its recompiled.
+  // To prevent this, we just clear all named metadata of the destination module that already exists in the source module.
+  // TODO: Will this possibly destroy important information? If yes, fall back to clearing llvm.ident directly.
+
+  const NamedMDNode *ModFlags = DstMod->getModuleFlagsMetadata();
+  for (NamedMDNode &NMD : DstMod->named_metadata()) {
+    // Ignore module flags
+    if (&NMD == ModFlags)
+      continue;
+    if (SrcMod->getNamedMetadata(NMD.getName())) {
+      NMD.clearOperands();
+    }
+  }
+}
+
+JITInstantiation CompilerData::finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx, JITContext::VersionID ID) {
+
+  StringRef SMName = JITCtx.DeclName;
+
+  auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
+    if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
+      return false;
+
+    auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
+    if (!GVar || !GVar->isConstant())
+      return false;
+
+    return true;
+  };
+
+  // Global variables that have been emitted during a previous compilation run must not be re-emitted.
+  // We therefore need to change the linkage of all globals to common linkage for every recompilation.
+  // TODO: Probably more efficient to this once after the initial compilation
+  if (JITCtx.Emitted) {
+    for (auto &GV : Mod->global_values()) {
+
+      if (isa<Function>(GV))
+        continue;
+      if (GV.hasLocalLinkage())
+        continue;
+
+      GV.setLinkage(GlobalValue::CommonLinkage); // TODO: Is this the correct linkage type?
+    }
+
+#ifdef DUMP_MOD
+    outs() << "*****************************\n";
+      outs() << "After adjusting linkage\n";
+      outs() << "*****************************\n";
+      outs().flush();
+      Mod->dump();
+      errs().flush();
+#endif
+
+  }
+
+  // Here we link our previous cache of definitions, etc. into this module.
+  // This includes all of our previously-generated functions (marked as
+  // available externally). We prefer our previously-generated versions to
+  // our current versions should both modules contain the same entities (as
+  // the previously-generated versions have already been optimized).
+
+  // We need to be specifically careful about constants in our module,
+  // however. Clang will generate all string literals as .str (plus a
+  // number), and these from previously-generated code will conflict with the
+  // names chosen for string literals in this module.
+
+  for (auto &GV : Mod->global_values()) {
+    if (!IsLocalUnnamedConst(GV) && !GV.getName().startswith("__cuda_"))
+      continue;
+
+    if (!RunningMod->getNamedValue(GV.getName()))
+      continue;
+
+    llvm::SmallString<16> UniqueName(GV.getName());
+    unsigned BaseSize = UniqueName.size();
+    do {
+      // Trim any suffix off and append the next number.
+      UniqueName.resize(BaseSize);
+      llvm::raw_svector_ostream S(UniqueName);
+      S << "." << ++LastUnique;
+    } while (RunningMod->getNamedValue(UniqueName));
+
+    GV.setName(UniqueName);
+  }
+
+  // Clang will generate local init/deinit functions for variable
+  // initialization, CUDA registration, etc. and these can't be shared with
+  // the base part of the module (as they specifically initialize variables,
+  // etc. that we just generated).
+
+  for (auto &F : Mod->functions()) {
+    // FIXME: This likely covers the set of TU-local init/deinit functions
+    // that can't be shared with the base module. There should be a better
+    // way to do this (e.g., we could record all functions that
+    // CreateGlobalInitOrDestructFunction creates? - ___cuda_ would still be
+    // a special case).
+    if (!F.getName().startswith("__cuda_") &&
+        !F.getName().startswith("_GLOBAL_") &&
+        !F.getName().startswith("__GLOBAL_") &&
+        !F.getName().startswith("__cxx_"))
+      continue;
+
+    if (!RunningMod->getFunction(F.getName()))
+      continue;
+
+    llvm::SmallString<16> UniqueName(F.getName());
+    unsigned BaseSize = UniqueName.size();
+    do {
+      // Trim any suffix off and append the next number.
+      UniqueName.resize(BaseSize);
+      llvm::raw_svector_ostream S(UniqueName);
+      S << "." << ++LastUnique;
+    } while (RunningMod->getFunction(UniqueName));
+
+    F.setName(UniqueName);
+  }
+
+  prepareForLinking(Mod.get(), RunningMod.get());
+  if (Linker::linkModules(*Mod, llvm::CloneModule(*RunningMod),
+                          Linker::Flags::OverrideFromSrc))
+    fatal();
+
+//    outs() << "*****************************\n";
+//    outs() << "After linking with RunningMod, before optimizing\n";
+//    outs() << "*****************************\n";
+//    Consumer->getModule()->dump();
+//    errs().flush();
+
+  // Optimize the merged module, containing both the newly generated IR as well as
+  // previously emitted code marked available_externally.
+  // NOTE: Nothing to do here for device, since tuning is currently only implemented for host code.
+  // CUDA code is optimized/emitted during the initial function resolution.
+
+  auto& Opt = JITCtx.Opt;
+  auto Request = Opt->optimize(Mod.get(), !JITCtx.Emitted);
+  //Consumer->EmitOptimized();
+
+  std::unique_ptr<llvm::Module> ToRunMod =
+      llvm::CloneModule(*Mod);
+
+#if defined(DUMP_MOD) || defined(DUMP_MOD_OPTIMIZED)
+  outs() << "*****************************\n";
+    outs() << "After optimization\n";
+    outs() << "*****************************\n";
+    outs().flush();
+    ToRunMod->dump();
+    errs().flush();
+#endif
+
+#ifdef PRINT_MOD_STATS
+// TODO
+  unsigned InstCount = 0;
+  for (auto& F : *ToRunMod) {
+    InstCount += F.getInstructionCount();
+  }
+  unsigned GlobalCount = ToRunMod->getGlobalList().size();
+
+  outs() << "Optimized module stats: " << InstCount << " instructions, " << GlobalCount << " globals\n";
+#endif
+
+  // Instrument optimized function for tuning
+  auto SMF = ToRunMod->getFunction(SMName);
+
+  tuner::TimingHelper TH(SMF);
+  TH.createTimingWrapper();
+
+  //auto* Wrapper = instrumentFunction(SMF);
+
+#ifdef DUMP_MOD_INSTRUMENTED
+  outs() << "*****************************\n";
+    outs() << "After instrumentation\n";
+    outs() << "*****************************\n";
+    outs().flush();
+    ToRunMod->dump();
+    errs().flush();
+#endif
+
+
+  auto ModKey = CJ->addModule(std::move(ToRunMod));
+
+  // Now that we've generated code for this module, take them optimized code
+  // and mark the definitions as available externally. We'll link them into
+  // future modules this way so that they can be inlined.
+
+  // Linker does not link definitions marked as available_externally by default,
+  // that's why we need to specify OverrideFromSource.
+
+
+  for (auto &F : Mod->functions())
+    if (!F.isDeclaration())
+      F.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+
+  for (auto &GV : Mod->global_values())
+    if (!GV.isDeclaration()) {
+      if (GV.hasAppendingLinkage())
+        cast<GlobalVariable>(GV).setInitializer(nullptr);
+      else if (isa<GlobalAlias>(GV))
+        // Aliases cannot have externally-available linkage, so give them
+        // private linkage.
+        GV.setLinkage(llvm::GlobalValue::PrivateLinkage);
+      else
+        GV.setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+    }
+
+
+  prepareForLinking(RunningMod.get(), Mod.get());
+
+  if (Linker::linkModules(*RunningMod, std::move(Mod),
+                          Linker::Flags::OverrideFromSrc))
+    fatal();
+
+#ifdef DUMP_MOD
+  outs() << "*****************************\n";
+    outs() << "New Running Module\n";
+    outs() << "*****************************\n";
+    outs().flush();
+    RunningMod->dump();
+    errs().flush();
+#endif
+
+
+  auto SpecSymbol = CJ->findSymbol(SMName);
+  assert(SpecSymbol && "Can't find the specialization just generated?");
+
+  if (auto Err = SpecSymbol.takeError()) {
+    errs() << "JIT Error: " << Err << "\n";
+    fatal();
+  }
+
+  if (!SpecSymbol.getAddress())
+    fatal();
+
+  auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
+
+  // Look up addresses of timing globals
+  auto* CJPtr = CJ.get();
+  auto Globals = TH.lookupGlobals([CJPtr] (StringRef SymName) -> void* {
+    auto Sym = CJPtr->findSymbol(SymName);
+    if (auto Err = Sym.takeError()) {
+      llvm::errs() << "Can't find symbol " << SymName << ": " << Err << "\n";
+      return nullptr;
+    }
+    auto Addr = Sym.getAddress();
+    if (!Addr) {
+      llvm::errs() << "Unable to find address of global " << SymName << "\n";
+      return nullptr;
+    }
+    return reinterpret_cast<void*>(Addr.get());
+  });
+  //auto Globals = PerfMonitor->lookupGlobals(SMName);
+
+
+  return {ID, ModKey, FPtr, Globals, Request};
+}
+
+}
+}
+
 extern "C"
 #ifdef _MSC_VER
 __declspec(dllexport)
@@ -2613,13 +2019,3 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
 
   return Inst.FPtr;
 }
-
-extern "C" void __clang_jit_print_cycles(int64_t cycles) {
-  printf("Cycles: %lu \n", cycles);
-}
-
-//extern "C" void __clang_jit_update_stats(void* TrackerPtr, unsigned VersionID, unsigned CallCount, double MeanCycles, double VarN) {
-//  auto& Tracker = *static_cast<StatsTracker*>(TrackerPtr);
-//  auto Stats = TimingStats(CallCount, MeanCycles, VarN * CallCount);
-//  Tracker.update(VersionID, Stats);
-//}

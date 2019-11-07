@@ -5,18 +5,18 @@
 #ifndef CLANG_JIT_H
 #define CLANG_JIT_H
 
-
+namespace clang {
 namespace jit {
 
-  template<typename T>
-  struct tunable_range {
-    tunable_range(T Min, T Max) : Min(Min), Max(Max) {};
+template<typename T>
+struct tunable_range {
+  tunable_range(T Min, T Max) : Min(Min), Max(Max) {};
 
-    T Min;
-    T Max;
-  };
+  T Min;
+  T Max;
+};
 
-
+}
 
 }
 

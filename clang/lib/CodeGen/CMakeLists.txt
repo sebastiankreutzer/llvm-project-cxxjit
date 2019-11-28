@@ -111,6 +111,8 @@ add_clang_library(clangCodeGen
   Tuner/LoopKnob.cpp
   Tuner/TimingHelper.cpp
   Tuner/SimplexTuner.cpp
+  Tuner/TunerDriver.cpp
+  Driver.cpp
 
   DEPENDS
   ${codegen_deps}

@@ -121,6 +121,11 @@
 namespace clang {
 namespace jit {
 
+inline void fatal() {
+  report_fatal_error("Clang JIT failed!");
+}
+
+
 // This is a variant of ORC's LegacyLookupFnResolver with a cutomized
 // getResponsibilitySet behavior allowing us to claim responsibility for weak
 // symbols in the loaded modules that we don't otherwise have.
@@ -264,79 +269,6 @@ private:
 
 
 
-struct StatsTracker {
-  bool HasBest{false};
-  unsigned BestVersion;
-  tuner::TimingStats BestStats;
-
-  void update(unsigned ID, tuner::TimingStats Stats) {
-    if (!HasBest || Stats.betterThan(BestStats)) {
-      BestVersion = ID;
-      BestStats = Stats;
-      HasBest = true;
-    }
-  }
-
-};
-
-
-struct JITContext {
-
-  using VersionID = unsigned;
-
-  JITContext() = default;
-
-//  JITContext(bool Emitted, std::unique_ptr<llvm::Module> Mod,  StringRef DeclName)
-//    : Emitted(Emitted), Mod(std::move(Mod)), DeclName(DeclName)
-//    {
-//
-//    }
-
-
-  // Whether the function currently available in the JIT engine
-  bool Emitted{false};
-  // The unoptimized module
-  std::unique_ptr<llvm::Module> Mod{nullptr};
-  // Mangled function name
-  SmallString<32> DeclName{""};
-  // Symbols emitted during instantiation (also mangled) that need to be replaced in the running module on recompilation.
-  SmallVector<SmallString<16>, 16> ReplaceOnRecompilation{};
-  // Version ID of the initial compilation. This module must not be deleted since it contains the global definitions which
-  // all subsequent recompilations depend on.
-  VersionID PrimaryVersion{0};
-  // Optimizer instance for this module
-  std::unique_ptr<tuner::Optimizer> Opt{nullptr};
-
-};
-
-struct JITInstantiation {
-
-  JITInstantiation() = default;
-
-  JITInstantiation(JITContext::VersionID ID, orc::VModuleKey ModKey, void* FPtr, tuner::TimingGlobals Globals, tuner::ConfigEvalRequest Request)
-      : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals), Request(std::move(Request))
-  {}
-
-  tuner::TimingStats updateStats() {
-    if (!Globals.Valid()) {
-      return {};
-    }
-    auto CallCount = *Globals.CallCount;
-    auto Mean = *Globals.MeanCycles;
-    auto Var = *Globals.VarN / CallCount;
-    auto NewStats = tuner::TimingStats(CallCount, Mean, Var);
-    *Request.Stats = NewStats;
-    return NewStats;
-  }
-
-  JITContext::VersionID ID{0};
-  orc::VModuleKey ModKey{0};
-  void* FPtr{nullptr};
-  tuner::TimingGlobals Globals;
-  tuner::ConfigEvalRequest Request;
-  //TimingStats Stats;
-  // TODO: Place info about instantiation specific optimization here
-};
 
 
 struct DevFileData {
@@ -507,10 +439,16 @@ struct CompilerData {
 
   void restoreFuncDeclContext(FunctionDecl *FunD);
 
-  std::string instantiateTemplate(const void *NTTPValues, const char **TypeStrings,
-                                  unsigned Idx);
+//  std::string instantiateTemplate(const void *NTTPValues, const char **TypeStrings,
+//                                  unsigned Idx);
 
   void emitAllNeeded(bool CheckExisting = true);
+
+  std::unique_ptr<llvm::Module> createModule(StringRef Name);
+
+  void linkInAvailableDefs(llvm::Module& Mod, bool InvokeDefaultOpt = false);
+
+  void makeDefsAvailable(std::unique_ptr<llvm::Module> NewMod);
 
 
 //  Function* instrumentFunction(Function* F/*, StatsTracker& Tracker, JITContext::VersionID ID*/) {
@@ -525,19 +463,133 @@ struct CompilerData {
 //    return PerfMonitor->createInstrumentedWrapper(F/*, dyn_cast<Function>(CBFn.getCallee()), Tracker, ID*/);
 //  }
 
-  JITInstantiation recompileFunction(const void *NTTPValues, const char **TypeStrings,
-                                     unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID);
+//  TunedCodeVersion recompileFunction(const void *NTTPValues, const char **TypeStrings,
+//                                     unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID);
 
 
-  JITInstantiation resolveFunction(const void *NTTPValues, const char **TypeStrings,
-                                   unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID);
+//  TunedCodeVersion resolveFunction(const void *NTTPValues, const char **TypeStrings,
+//                                   unsigned Idx, JITContext& JITCtx, JITContext::VersionID ID);
 
 private:
 
   void prepareForLinking(llvm::Module* DstMod, const llvm::Module* SrcMod);
 
-  JITInstantiation finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx, JITContext::VersionID ID);
+//  TunedCodeVersion finalizeModule(std::unique_ptr<llvm::Module> Mod, JITContext& JITCtx, JITContext::VersionID ID);
 };
+
+struct InstInfo {
+  InstInfo(const char *InstKey, const void *NTTPValues,
+           unsigned NTTPValuesSize, const char **TypeStrings,
+           unsigned TypeStringsCnt)
+      : Key(InstKey),
+        NTArgs(StringRef((const char *) NTTPValues, NTTPValuesSize)) {
+    for (unsigned i = 0, e = TypeStringsCnt; i != e; ++i)
+      TArgs.push_back(StringRef(TypeStrings[i]));
+  }
+
+  InstInfo(const StringRef &R) : Key(R) { }
+
+  // The instantiation key (these are always constants, so we don't need to
+  // allocate storage for them).
+  StringRef Key;
+
+  // The buffer of non-type arguments (this is packed).
+  SmallString<16> NTArgs;
+
+  // Vector of string type names.
+  SmallVector<SmallString<32>, 1> TArgs;
+};
+
+struct InstData {
+  void* FPtr;
+  bool UseFastLookup;
+};
+
+struct ThisInstInfo {
+  ThisInstInfo(const char *InstKey, const void *NTTPValues,
+               unsigned NTTPValuesSize, const char **TypeStrings,
+               unsigned TypeStringsCnt)
+      : InstKey(InstKey), NTTPValues(NTTPValues), NTTPValuesSize(NTTPValuesSize),
+        TypeStrings(TypeStrings), TypeStringsCnt(TypeStringsCnt) { }
+
+  const char *InstKey;
+
+  const void *NTTPValues;
+  unsigned NTTPValuesSize;
+
+  const char **TypeStrings;
+  unsigned TypeStringsCnt;
+};
+
+
+struct InstMapInfo {
+  static inline InstInfo getEmptyKey() {
+    return InstInfo(DenseMapInfo<StringRef>::getEmptyKey());
+  }
+
+  static inline InstInfo getTombstoneKey() {
+    return InstInfo(DenseMapInfo<StringRef>::getTombstoneKey());
+  }
+
+  static unsigned getHashValue(const InstInfo &II) {
+    using llvm::hash_code;
+    using llvm::hash_combine;
+    using llvm::hash_combine_range;
+
+    hash_code h = hash_combine_range(II.Key.begin(), II.Key.end());
+    h = hash_combine(h, hash_combine_range(II.NTArgs.begin(),
+                                           II.NTArgs.end()));
+    for (auto &TA : II.TArgs)
+      h = hash_combine(h, hash_combine_range(TA.begin(), TA.end()));
+
+    return (unsigned) h;
+  }
+
+  static unsigned getHashValue(const ThisInstInfo &TII) {
+    using llvm::hash_code;
+    using llvm::hash_combine;
+    using llvm::hash_combine_range;
+
+    hash_code h =
+        hash_combine_range(TII.InstKey, TII.InstKey + std::strlen(TII.InstKey));
+    h = hash_combine(h, hash_combine_range((const char *) TII.NTTPValues,
+                                           ((const char *) TII.NTTPValues) +
+                                           TII.NTTPValuesSize));
+    for (unsigned int i = 0, e = TII.TypeStringsCnt; i != e; ++i)
+      h = hash_combine(h,
+                       hash_combine_range(TII.TypeStrings[i],
+                                          TII.TypeStrings[i] +
+                                          std::strlen(TII.TypeStrings[i])));
+
+    return (unsigned) h;
+  }
+
+  static bool isEqual(const InstInfo &LHS, const InstInfo &RHS) {
+    return LHS.Key    == RHS.Key &&
+           LHS.NTArgs == RHS.NTArgs &&
+           LHS.TArgs  == RHS.TArgs;
+  }
+
+  static bool isEqual(const ThisInstInfo &LHS, const InstInfo &RHS) {
+    return isEqual(RHS, LHS);
+  }
+
+  static bool isEqual(const InstInfo &II, const ThisInstInfo &TII) {
+    if (II.Key != StringRef(TII.InstKey))
+      return false;
+    if (II.NTArgs != StringRef((const char *) TII.NTTPValues,
+                               TII.NTTPValuesSize))
+      return false;
+    if (II.TArgs.size() != TII.TypeStringsCnt)
+      return false;
+    for (unsigned int i = 0, e = TII.TypeStringsCnt; i != e; ++i)
+      if (II.TArgs[i] != StringRef(TII.TypeStrings[i]))
+        return false;
+
+    return true;
+  }
+};
+
 
 }
 }

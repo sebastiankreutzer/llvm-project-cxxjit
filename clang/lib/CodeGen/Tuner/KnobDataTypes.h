@@ -29,10 +29,11 @@ struct LoopTransformConfig {
 //  static constexpr unsigned UNROLL_COUNT_MIN = 0;
 //  static constexpr unsigned UNROLL_COUNT_MAX = 6;
 
+  // TODO: Figure out how determine sensible bounds for unrolling and interleaving on a per-loop basis
   static constexpr unsigned MIN_VALS[NUM_PARAMS] = {0, 0, 0, 0, 0, 0, 0, 0};
-  static constexpr unsigned MAX_VALS[NUM_PARAMS] = {5, 1, 5, 1, 1, 1, 6, 1};
+  static constexpr unsigned MAX_VALS[NUM_PARAMS] = {3, 1, 5, 1, 1, 1, 3, 1};
 
-  unsigned Vals[NUM_PARAMS] = {3, 1, 3, 0, 0, 1, 4, 1};
+  unsigned Vals[NUM_PARAMS] = {3, 1, 3, 0, 0, 1, 3, 1};
 
   bool DisableLoopTransform{false};
 

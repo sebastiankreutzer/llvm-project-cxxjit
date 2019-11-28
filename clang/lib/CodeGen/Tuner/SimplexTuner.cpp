@@ -15,6 +15,12 @@ void SimplexTuner::init() {
 
 }
 
+void SimplexTuner::reset(tuner::KnobSet Knobs) {
+  this->Knobs = std::move(Knobs);
+  Mapping.remap(Knobs);
+  Initialized = false;
+  State = REFLECT;
+}
 
 
 // TODO: Requires modification for multiple threads - next config may be requested before last one has been evaluated.

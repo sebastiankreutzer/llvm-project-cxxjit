@@ -114,13 +114,15 @@ public:
     REFLECT, EVAL_REFLECTED, EVAL_EXPANDED, EVAL_CONTRACTED
   };
 
-  explicit SimplexTuner(KnobSet& Knobs)
-  : Knobs(Knobs), Mapping(Knobs) {
+  explicit SimplexTuner(KnobSet Knobs)
+  : Knobs(std::move(Knobs)), Mapping(Knobs) {
     //Dimension = Knobs.
     State = REFLECT;
   }
 
   void init();
+
+  void reset(KnobSet Knobs) override;
 
   ConfigEvalRequest generateNextConfig() override;
 
@@ -129,7 +131,7 @@ private:
 
 private:
   Params P;
-  KnobSet& Knobs;
+  KnobSet Knobs;
   VectorMapping<float> Mapping;
   //unsigned Dimension;
   std::vector<ConfigEvalRequest> Simplex;

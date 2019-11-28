@@ -126,6 +126,7 @@ void Optimizer::init(Module* M) {
   legacy::PassManager PM;
   PM.add(createLoopKnobCreatorPass(Knobs));
   PM.run(*M);
+  OptTuner->reset(Knobs);
 }
 
 //#define DUMP_MOD_WITH_ATTRIBUTES

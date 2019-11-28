@@ -2496,8 +2496,7 @@ llvm::Value *CodeGenFunction::EmitJITStubCall(const FunctionDecl *FD) {
         BaseType.dump();
         RecordDecl->dump();
       }
-      if (/*Expr->getType().getUnqualifiedType().getAsString() == "jit::tunable_range<int>" ||*/
-          Expr->getType().getCanonicalType().getAsString() == "struct jit::tunable_range<int>") { // TODO: String comparison really the best way?
+      if (Expr->getType().getCanonicalType().getAsString() == "struct clang::jit::tunable_range<int>") { // TODO: String comparison really the best way?
 
         llvm::errs() << "Encountered tunable TA\n";
         TA.dump();

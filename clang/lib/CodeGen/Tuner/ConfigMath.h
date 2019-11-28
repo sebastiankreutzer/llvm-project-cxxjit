@@ -119,6 +119,12 @@ Vector<T> centroid(Iterator Begin, Iterator End) {
 template<typename T>
 struct VectorMapping {
   explicit VectorMapping(KnobSet& Knobs) : Knobs(Knobs){
+    remap(Knobs);
+  }
+
+  void remap(KnobSet& Knobs) {
+    this->Knobs = Knobs;
+    KnobToIndex.clear();
     size_t Index = 0;
     for (auto& K : Knobs.IntKnobs) {
       KnobToIndex[K.first] = Index++;

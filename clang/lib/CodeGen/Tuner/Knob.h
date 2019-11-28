@@ -13,12 +13,30 @@ constexpr KnobID InvalidKnobID = 0;
 
 template<typename ValT>
 class Knob;
-class KnobRegistry;
+struct KnobRegistry;
 struct KnobConfig;
 
 class KnobBase {
 public:
   inline KnobBase();
+  // Copies are not allowed to avoid confusion with IDs.
+  // Also, we don't want two knobs with the same ID to be able to have different properties.
+  KnobBase(const KnobBase&) = delete;
+  KnobBase& operator=(const KnobBase&) = delete;
+
+  KnobBase(KnobBase&& Other) {
+    ID = Other.ID;
+    Other.ID = InvalidKnobID;
+  }
+
+  KnobBase& operator=(KnobBase&& Other) {
+    if (this != &Other) {
+      ID = Other.ID;
+      Other.ID = InvalidKnobID;
+    }
+    return *this;
+  }
+
   virtual ~KnobBase() {};
 
   KnobID getID() const {

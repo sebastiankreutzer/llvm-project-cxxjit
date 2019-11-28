@@ -12,6 +12,8 @@
 #include "KnobSet.h"
 #include "Util.h"
 
+
+
 namespace tuner {
 
 using TunerRNE = std::mt19937_64;
@@ -88,6 +90,9 @@ struct CompareConfigEval {
 class Tuner {
 public:
   virtual ~Tuner() {};
+
+  virtual void reset(KnobSet Knobs) = 0;
+
   virtual ConfigEvalRequest generateNextConfig() = 0;
 };
 
@@ -145,21 +150,82 @@ inline KnobConfig createDefaultConfig(KnobSet& Set) {
 
 class RandomTuner: public Tuner {
 public:
-  explicit RandomTuner(KnobSet& Knobs):
-    Knobs(Knobs), RNE(TunerRNE(util::genSeed())) {}
+  explicit RandomTuner(KnobSet Knobs):
+    Knobs(std::move(Knobs)), RNE(TunerRNE(util::genSeed())) {}
 
-  // TODO : Here, change to EvaluationResult
+  void reset(KnobSet Knobs) override {
+    this->Knobs = std::move(Knobs);
+  }
+
   ConfigEvalRequest generateNextConfig() override {
+    for (auto It : Knobs.IntKnobs)
+      outs() << It.first << ": " << It.second->getName() << "\n";
+    for (auto It : Knobs.LoopKnobs)
+      outs() << It.first << ": " << It.second->getName() << "\n";
     CurrentConfig = createRandomConfig(RNE, Knobs);
     return ConfigEvalRequest(CurrentConfig);
   }
 
 private:
-  KnobSet& Knobs;
+  KnobSet Knobs;
   TunerRNE RNE;
   KnobConfig CurrentConfig;
 
 };
+
+
+class TunerFactory {
+public:
+  virtual std::unique_ptr<Tuner> createTuner() = 0;
+};
+
+class BilevelTuner {
+public:
+
+  explicit BilevelTuner(Tuner& L1Tuner) : L1Tuner(L1Tuner) {};
+
+  virtual bool updatePartialConfig() = 0;
+
+
+  KnobConfig getPartialConfig() const {
+    return PartialConfig;
+  }
+
+  ConfigEvalRequest generateNextL2Config(Tuner& L2Tuner) {
+    auto EvalRequest = L2Tuner.generateNextConfig();
+    CurrentL2Configs.push_back(EvalRequest);
+    return EvalRequest;
+  }
+
+protected:
+  void changeL1Config(KnobConfig L1Cfg) {
+    PartialConfig = std::move(L1Cfg);
+    CurrentL2Configs.clear();
+  }
+
+protected:
+  Tuner& L1Tuner;
+
+  KnobConfig PartialConfig;
+
+  SmallVector<ConfigEvalRequest, 8> CurrentL2Configs;
+};
+
+class SimpleBilevelTuner : public BilevelTuner {
+public:
+  explicit SimpleBilevelTuner(Tuner& L1Tuner) : BilevelTuner(L1Tuner) {};
+
+  bool updatePartialConfig() override {
+    if (CurrentL2Configs.size() >= 8) {
+      changeL1Config(L1Tuner.generateNextConfig().Cfg);
+    }
+    return false;
+  }
+
+
+
+};
+
 
 //struct CostFunction {
 //public:

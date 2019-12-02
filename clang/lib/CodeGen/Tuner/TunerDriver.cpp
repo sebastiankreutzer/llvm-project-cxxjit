@@ -4,8 +4,10 @@
 
 #include "TunerDriver.h"
 
+#include "llvm/Support/Debug.h"
 #include "Tuner.h"
 
+#define DEBUG_TYPE "clang-jit"
 
 namespace clang {
 namespace jit {
@@ -47,7 +49,7 @@ void printReport(JITTemplateInstantiation& TemplateInst) {
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
-void printFullReport(TemplateTuningData& Data) {
+void printFullReport(TemplateTuningData& Data, llvm::raw_ostream& OS = dbgs()) {
   if (!Data.Initialized || Data.Specializations.empty()) {
     return;
   }
@@ -55,14 +57,13 @@ void printFullReport(TemplateTuningData& Data) {
   auto FirstName = Data.Specializations.begin()->second.Context.DeclName;
   auto MaxNameLen = FirstName.size() + 4; // This does not always work.
 
-  outs() << "Timing Report:\n";
   auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, MaxNameLen), "ID", "#Called", "Mean", "RSD", "RSE").str();
-  outs() << Header << "\n";
-  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  OS << Header << "\n";
+  OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
   for (auto& It : Data.Specializations) {
     auto& TemplateInst = It.second;
     auto FName = TemplateInst.Context.DeclName;
-    outs() << FName << "\n";
+    OS << FName << "\n";
     // Iterate over IDs to display in order. Not very robust, but works for debugging.
     for (unsigned i = 1; i <= TemplateInst.Instantiations.size(); i++) {
       auto It = TemplateInst.Instantiations.find(i);
@@ -76,21 +77,21 @@ void printFullReport(TemplateTuningData& Data) {
       }
       auto Stats = Inst.updateStats();
       if (!Stats.Valid()) {
-        outs() << "No data collected\n";
+        OS << "No data collected\n";
         return;
       }
-      outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", fmt_repeat(" ", MaxNameLen), Inst.ID, Stats.N, formatv("{0:f1}", Stats.Mean), formatv("{0:p}", Stats.getRSD()), formatv("{0:p}", Stats.getRelativeStdErr()));
+      OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", fmt_repeat(" ", MaxNameLen), Inst.ID, Stats.N, formatv("{0:f1}", Stats.Mean), formatv("{0:p}", Stats.getRSD()), formatv("{0:p}", Stats.getRelativeStdErr()));
     }
-    outs() << formatv("{0}\n", fmt_repeat("-", Header.size()));
+    OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     auto BestID = TemplateInst.getCurrentBest()->ID;
     auto Best = TemplateInst.Instantiations[BestID];
     // TODO: We assume here that the first version is the baseline, make this explicit
     auto BaseLine = TemplateInst.Instantiations[1];
-    outs() << formatv("Best version: {0} ({1:p} speedup)\n", BestID, BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
-    outs() << formatv("{0}\n", fmt_repeat("-", Header.size()));
+    OS << formatv("Best version: {0} ({1:p} speedup)\n", BestID, BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
+    OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
 
   }
-  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
 void printReport(TemplateTuningData& Data) {
@@ -137,30 +138,31 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   TemplateTuningData* TTD;
   auto It = TuningDataMap.find_as(Inst);
   if (It == TuningDataMap.end()) {
+    LLVM_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
 
     // TODO: move to fdata (?)
     SmallVector<std::unique_ptr<TemplateArgKnob>, 4> TAKnobs;
 
     llvm::SmallVector<TemplateArgument, 8> BaseArgs;
 
-    JITTemplateInstantiationHelper InstHelper(CD, Idx);
+    TemplateInstantiationHelper InstHelper(CD, Idx);
     InstHelper.processTemplateArgs(Inst.NTTPValues, Inst.TypeStrings, BaseArgs, [this, &TAKnobs](QualType CanonType, unsigned Pos,
                                                             const SmallVectorImpl<uint64_t> &IntWords) -> Optional<TemplateArgument> {
       //errs() << "Instantiating NTTA with " << Size << " bytes: \n";
-      CanonType.dump();
+      //CanonType.dump();
       //Fld->dump();
-
       //errs() << "Data: " << IntVal << "\n";
 
-      errs() << "Type as string: " << CanonType.getAsString() << "\n";
+      LLVM_DEBUG(dbgs() << "Processing argument of type: " << CanonType.getAsString() << "\n");
+
       if (CanonType.getAsString() == "struct clang::jit::tunable_range<int>") {
         auto FieldDecl = CanonType.getTypePtr()->getAsRecordDecl();
         auto TemplateDecl = dyn_cast<ClassTemplateSpecializationDecl>(FieldDecl);
         assert(TemplateDecl && "clang::jit::tunable_range must be template");
         // TODO: How to handle template arg other than int? Should we even use templated range?
-        errs() << "is template specialization\n";
         auto Range = *reinterpret_cast<const jit::tunable_range<int> *>(&IntWords[0]);
-        errs() << "Range is [" << Range.Min << ";" << Range.Max << "]\n";
+        LLVM_DEBUG(dbgs() << "Type is tunable: Range is [" << Range.Min << "; " << Range.Max << "]\n");
+
         llvm::APSInt SIntVal(32); // TODO allow varying bit widths
         SIntVal = Range.Min;
 
@@ -172,13 +174,14 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       return {};
     });
 
+    LLVM_DEBUG(dbgs() << "Looking for tunable template arguments...");
     TunableArgList TAL(BaseArgs);
     for (auto &Knob : TAKnobs) {
+      LLVM_DEBUG(dbgs() << "Template argument marked tunable: " << Knob->getArgIndex());
       TAL.add(std::move(Knob));
     }
 
     KnobSet TAKnobSet = TAL.getKnobSet();
-
     auto TATuner = llvm::make_unique<RandomTuner>(TAKnobSet);
     auto NewTuningData = llvm::make_unique<TemplateTuningData>(CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();
@@ -187,8 +190,6 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   } else {
     TTD = It->second.get();
   }
-
-  //printReport(*TTD);
 
   // Select a template specialization by either using an existing one or instantiating a new one.
   auto& TemplateInst = TTD->selectSpecialization();
@@ -213,15 +214,19 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     if (!Recompile)
       return {CurrentVersion->FPtr, false};
 
-    outs() << "Recompiling " << TemplateInst.Context.DeclName << "\n";
-    outs() << "Performance of previous configurations:\n";
-
-    printFullReport(*TTD);
+    LLVM_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName << "\n");
+#define TUNER_PRINT_REPORT // TODO: Expose to user
+#ifdef TUNER_PRINT_REPORT
+    outs() << "Tuner report:\n";
+    printFullReport(*TTD, outs());
+#endif
   }
 
   auto Mod = llvm::CloneModule(*TemplateInst.Context.Mod);
 
   auto EvalRequest = TemplateInst.Context.Opt->optimize(Mod.get(), !TemplateInst.Context.Emitted);
+
+  DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Module after optimization"));
 
   // Instrument optimized function for tuning
   auto SMF = Mod->getFunction(FName);
@@ -246,7 +251,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
   auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
 
-  // Look up addresses of timing globals
+  // Look up addresses of timing globals.
   auto* CJPtr = CD.CJ.get();
   auto Globals = TH.lookupGlobals([CJPtr] (StringRef SymName) -> void* {
     auto Sym = CJPtr->findSymbol(SymName);
@@ -270,113 +275,5 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
 }
 
-
-
-
 }
 }
-
-//// FIXME: Old copy
-//void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
-//                  const void *ASTBuffer, size_t ASTBufferSize,
-//                  const void *IRBuffer, size_t IRBufferSize,
-//                  const void **LocalPtrs, unsigned LocalPtrsCnt,
-//                  const void **LocalDbgPtrs, unsigned LocalDbgPtrsCnt,
-//                  const DevData *DeviceData, unsigned DevCnt,
-//                  const void *NTTPValues, unsigned NTTPValuesSize,
-//                  const char **TypeStrings, unsigned TypeStringsCnt,
-//                  const char *InstKey, unsigned Idx) {
-//
-//  // Unfortunately, because we need to check if we need to recompile each time a JIT function is requested,
-//  // we probably can't use a separate mutex just for instantiation lookup.
-//  // TODO: Find out how to make this faster in multithreaded environments
-//
-//  llvm::MutexGuard Guard(Mutex);
-//
-//  auto II =
-//      Instantiations.find_as(ThisInstInfo(InstKey, NTTPValues, NTTPValuesSize,
-//                                          TypeStrings, TypeStringsCnt));
-//  if (II == Instantiations.end()) {
-//    // First time compiling this template instantiation.
-//    // Make sure the target is initialized and a CompilerData instance for the translation unit exists.
-//
-//    if (!InitializedTarget) {
-//      llvm::InitializeNativeTarget();
-//      llvm::InitializeNativeTargetAsmPrinter();
-//      llvm::InitializeNativeTargetAsmParser();
-//
-//      LCtx.reset(new LLVMContext);
-//
-//      InitializedTarget = true;
-//    }
-//
-//    CompilerData *CD;
-//    auto TUCDI = TUCompilerData.find(ASTBuffer);
-//    if (TUCDI == TUCompilerData.end()) {
-//      CD = new CompilerData(CmdArgs, CmdArgsLen, ASTBuffer, ASTBufferSize,
-//                            IRBuffer, IRBufferSize, LocalPtrs, LocalPtrsCnt,
-//                            LocalDbgPtrs, LocalDbgPtrsCnt, DeviceData, DevCnt);
-//      TUCompilerData[ASTBuffer].reset(CD);
-//    } else {
-//      CD = TUCDI->second.get();
-//    }
-//
-//    JITTemplateInstantiation TemplateInst;
-//
-//    // Compile and populate the JITContext
-//    auto Inst = CD->resolveFunction(NTTPValues, TypeStrings, Idx, TemplateInst.Context, TemplateInst.nextVersionID());
-//
-//    TemplateInst.add(Inst);
-//
-//
-//    Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings, TypeStringsCnt)] = std::move(TemplateInst);
-//
-//    return Inst.FPtr;
-//
-//  }
-//
-//  // The template has been instantiated before. Recompile if necessary.
-//
-//  auto& TemplateInst = II->second;
-//  if (!TemplateInst.Context.Emitted && !TemplateInst.Instantiations.empty()) {
-//    // We assume that if the function can be found in our map, it has been compiled before.
-//    // TODO: Make this an assertion in the future
-//    fatal();
-//  }
-//
-//  // Update timing statistics
-//  TemplateInst.updateStats();
-//
-//  auto Current = TemplateInst.getActiveVersion();
-//  assert(Current && "No active compiled version found!");
-//
-//  auto Stats = Current->updateStats();
-//
-//  const unsigned MinSamples = 3;
-//  const double MaxRelStdErr = 0.05;
-//
-//  bool Recompile = false;
-//  if (Stats.Valid()) {
-//    // Recompile if the function has been called enough times and the relative standard error of mean is below a certain threshold.
-//    Recompile = Stats.N >= MinSamples && Stats.getRelativeStdErr() < MaxRelStdErr;
-//  }
-//
-//  if (!Recompile)
-//    return Current->FPtr;
-//
-//  outs() << "Recompiling " << TemplateInst.Context.DeclName << "\n";
-//  outs() << "Performance of previous configurations:\n";
-//
-//  printReport(TemplateInst);
-//
-//  // We assume that the target is initialized and a CompilerData instance exists for the current TU
-//  assert(InitializedTarget && "Target is not initialized");
-//  auto TUCDI = TUCompilerData.find(ASTBuffer);
-//  assert(TUCDI != TUCompilerData.end() && "No CompilerData for TU found");
-//  auto CD = TUCDI->second.get();
-//
-//  auto Inst = CD->recompileFunction(NTTPValues, TypeStrings, Idx, TemplateInst.Context, TemplateInst.nextVersionID());
-//  TemplateInst.add(Inst);
-//
-//  return Inst.FPtr;
-//}

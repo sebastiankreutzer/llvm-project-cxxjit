@@ -2165,7 +2165,7 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
       auto DriverStr = std::getenv("CJ_DRIVER");
       if (DriverStr && std::strcmp(DriverStr, "tuner") == 0) {
         TUD.CompilerDriver = llvm::make_unique<TunerDriver>(*CD);
-        llvm::outs() << "JIT Tuning enabled\n";
+        LLVM_DEBUG(llvm::dbgs() << "JIT Tuning enabled\n");
       } else {
         TUD.CompilerDriver = llvm::make_unique<SimpleDriver>(*CD);
       }

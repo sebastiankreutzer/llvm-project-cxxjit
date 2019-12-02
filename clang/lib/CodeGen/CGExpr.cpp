@@ -2489,28 +2489,28 @@ llvm::Value *CodeGenFunction::EmitJITStubCall(const FunctionDecl *FD) {
           /*Ignore*/ false));
       EmitStoreThroughLValue(RV, FieldLV);
     } else {
-      auto ExprTy = Expr->getType().getCanonicalType().getTypePtr();
-      if (auto RecordDecl = ExprTy->getAsRecordDecl() ) {
-        auto SpecDecl = cast<ClassTemplateSpecializationDecl>(RecordDecl);
-        auto BaseType = SpecDecl->getTemplateArgs()[0].getNonTypeTemplateArgumentType();
-        BaseType.dump();
-        RecordDecl->dump();
-      }
+//      auto ExprTy = Expr->getType().getCanonicalType().getTypePtr();
+//      if (auto RecordDecl = ExprTy->getAsRecordDecl() ) {
+//        auto SpecDecl = cast<ClassTemplateSpecializationDecl>(RecordDecl);
+//        auto BaseType = SpecDecl->getTemplateArgs()[0].getNonTypeTemplateArgumentType();
+//        BaseType.dump();
+//        RecordDecl->dump();
+//      }
       if (Expr->getType().getCanonicalType().getAsString() == "struct clang::jit::tunable_range<int>") { // TODO: String comparison really the best way?
 
-        llvm::errs() << "Encountered tunable TA\n";
-        TA.dump();
-        llvm::errs() << "\n";
-        Expr->getType().getCanonicalType().dump();
+//        llvm::errs() << "Encountered tunable TA\n";
+//        TA.dump();
+//        llvm::errs() << "\n";
+//        Expr->getType().getCanonicalType().dump();
 
         LValue FieldLV = EmitLValueForField(Base, *Fields++);
         EmitAnyExprToMem(Expr, FieldLV.getAddress(), Expr->getType().getQualifiers(), false); // TODO: Correct?
 
         //RV.getAggregatePointer()->dump();
-        FieldLV.getPointer()->dump();
-        if (auto I = dyn_cast<llvm::Instruction>(FieldLV.getPointer())){
-          I->getParent()->dump();
-        }
+//        FieldLV.getPointer()->dump();
+//        if (auto I = dyn_cast<llvm::Instruction>(FieldLV.getPointer())){
+//          I->getParent()->dump();
+//        }
 
       } else {
         llvm::errs() << "Type not recognized: " << Expr->getType().getUnqualifiedType().getAsString() << "\n";

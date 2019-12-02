@@ -10,7 +10,7 @@ namespace clang {
 
 namespace jit {
 
-std::string JITTemplateInstantiationHelper::instantiate(CompilerData* TargetCD, const SmallVectorImpl<TemplateArgument>& ArgList) {
+std::string TemplateInstantiationHelper::instantiate(CompilerData* TargetCD, const SmallVectorImpl<TemplateArgument>& ArgList) {
   auto& Ctx = TargetCD->Ctx;
   auto& S = TargetCD->S;
   auto& Consumer = TargetCD->Consumer;
@@ -53,7 +53,7 @@ std::string JITTemplateInstantiationHelper::instantiate(CompilerData* TargetCD, 
 }
 
 
-std::string JITTemplateInstantiationHelper::instantiate(const SmallVectorImpl<TemplateArgument>& ArgList) {
+std::string TemplateInstantiationHelper::instantiate(const SmallVectorImpl<TemplateArgument>& ArgList) {
   std::string SMName = instantiate(&CD, ArgList);
   if (CD.DevCD) {
     instantiate(CD.DevCD.get(), ArgList);
@@ -63,7 +63,7 @@ std::string JITTemplateInstantiationHelper::instantiate(const SmallVectorImpl<Te
 
 std::string SimpleDriver::instantiateTemplate(const void *NTTPValues, const char **TypeStrings,
                                               unsigned Idx) {
-  JITTemplateInstantiationHelper InstHelper(CD, Idx);
+  TemplateInstantiationHelper InstHelper(CD, Idx);
   SmallVector<TemplateArgument, 8> TAs;
   InstHelper.processTemplateArgs(NTTPValues, TypeStrings, TAs, [](QualType CanonType, unsigned Pos, const SmallVectorImpl<uint64_t>& IntWords) -> Optional<TemplateArgument> {return {};});
   return InstHelper.instantiate(TAs);
@@ -79,8 +79,10 @@ InstData SimpleDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
   // Emit IR for generated template specialization.
   auto Mod = CD.createModule(SMName);
+  DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Initial module"));
   // Link in existing definitions for inlining, execute default optimization pipeline.
   CD.linkInAvailableDefs(*Mod, true);
+  DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Module after optimization"));
   // Make new functions available for future instantiations.
   auto ClonedMod = llvm::CloneModule(*Mod);
   CD.makeDefsAvailable(std::move(ClonedMod));

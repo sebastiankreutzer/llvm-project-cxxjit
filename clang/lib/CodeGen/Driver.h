@@ -12,9 +12,9 @@
 namespace clang {
 namespace jit {
 
-class JITTemplateInstantiationHelper {
+class TemplateInstantiationHelper {
 public:
-  JITTemplateInstantiationHelper(CompilerData& CD,
+  TemplateInstantiationHelper(CompilerData& CD,
                                  unsigned Idx) : CD(CD), Idx(Idx)
   {
     FD = CD.FuncMap[Idx];
@@ -77,9 +77,17 @@ private:
 
 };
 
+inline void dumpModule(const llvm::Module& M, llvm::StringRef Status) {
+  dbgs() << "*****************************\n";
+  dbgs() << Status << "\n";
+  dbgs() << "*****************************\n";
+  M.dump();
+  dbgs().flush();
+}
+
 
 template<typename SpecialArgHandler>
-void JITTemplateInstantiationHelper::processTemplateArgs(const void *NTTPValues, const char **TypeStrings, SmallVectorImpl<TemplateArgument>& ArgList, SpecialArgHandler&& HandleSpecialArg) {
+void TemplateInstantiationHelper::processTemplateArgs(const void *NTTPValues, const char **TypeStrings, SmallVectorImpl<TemplateArgument>& ArgList, SpecialArgHandler&& HandleSpecialArg) {
 
   auto& Ctx = CD.Ctx;
 

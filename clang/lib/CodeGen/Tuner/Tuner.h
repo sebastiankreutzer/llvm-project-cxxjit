@@ -158,10 +158,10 @@ public:
   }
 
   ConfigEvalRequest generateNextConfig() override {
-    for (auto It : Knobs.IntKnobs)
-      outs() << It.first << ": " << It.second->getName() << "\n";
-    for (auto It : Knobs.LoopKnobs)
-      outs() << It.first << ": " << It.second->getName() << "\n";
+//    for (auto It : Knobs.IntKnobs)
+//      outs() << It.first << ": " << It.second->getName() << "\n";
+//    for (auto It : Knobs.LoopKnobs)
+//      outs() << It.first << ": " << It.second->getName() << "\n";
     CurrentConfig = createRandomConfig(RNE, Knobs);
     return ConfigEvalRequest(CurrentConfig);
   }

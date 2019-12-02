@@ -3,9 +3,12 @@
 //
 
 #include "llvm/Analysis/LoopPass.h"
+#include "llvm/Support/Debug.h"
 #include "KnobSet.h"
 #include "LoopKnob.h"
 #include "LoopMD.h"
+
+#define DEBUG_TYPE "clang-jit"
 
 using namespace llvm;
 
@@ -44,7 +47,7 @@ public:
 
     //auto Name = LoopIDs++;
     auto LMD = assignLoopName(Loop, LK->getID());
-    outs() << "Loop knob created with ID=" << LK->getID() << ":\n";
+    LLVM_DEBUG(dbgs() << "Loop knob created with ID=" << LK->getID() << "\n");
 
     return true;
   }

@@ -5,8 +5,11 @@
 #ifndef CLANG_TUNERDRIVER_H
 #define CLANG_TUNERDRIVER_H
 
+#include "llvm/Support/Debug.h"
 #include "../Driver.h"
 #include "Tuner.h"
+
+#define DEBUG_TYPE "clang-jit"
 
 namespace clang {
 namespace jit {
@@ -16,7 +19,7 @@ class TemplateArgKnob: public tuner::IntKnob {
 public:
   TemplateArgKnob(unsigned Index, int Min, int Max, int Dflt) : tuner::IntKnob(Min, Max, Dflt, "Tunable Arg"), Index(Index) {};
 
-  unsigned getListIndex() const {
+  unsigned getArgIndex() const {
     return Index;
   }
 
@@ -189,8 +192,7 @@ public:
 
 
   void add(std::unique_ptr<TemplateArgKnob> Knob) {
-    unsigned Idx = Knob->getListIndex();
-//    outs() << "Marking argument tunable at index " << Idx << "\n";
+    unsigned Idx = Knob->getArgIndex();
     Knobs[Idx] = std::move(Knob);
     TAKnobSet.add(Knobs[Idx].get());
   }
@@ -199,21 +201,15 @@ public:
     return TAKnobSet;
   }
 
-//  llvm::SmallVector<TemplateArgument, 8>& getBaseArgs() {
-//    return BaseArgs;
-//  }
 
   llvm::SmallVector<TemplateArgument, 8> getArgsForConfig(ASTContext& Ctx, const tuner::KnobConfig& Cfg) {
     llvm::SmallVector<TemplateArgument, 8> Args(BaseArgs);
-//    outs() << "Setting Knobs:\n";
     for (auto& It : Knobs) {
       unsigned Idx = It.first;
-//      outs() << "Template knob set at " << Idx << ": ";
       auto Val = It.second->getVal(Cfg);
       APSInt APVal(32, Val >= 0);
       APVal = Val;
       Args[Idx] = TemplateArgument(Ctx, APVal, Args[Idx].getNonTypeTemplateArgumentType());
-//      outs() << Val << "\n";
     }
     return Args;
   }
@@ -317,15 +313,9 @@ struct TemplateTuningData {
       ActiveConfig = EvalRequest.Cfg;
 
       auto Set = TunableArgs.getKnobSet();
-      outs() << "Selected specialization:\n";
-      tuner::KnobState KS(Set, ActiveConfig);
-      KS.dump();
+      LLVM_DEBUG(dbgs() << "Selected specialization:\n");
+      LLVM_DEBUG(tuner::KnobState(Set, ActiveConfig).dump());
 
-      outs() << "Existing specializations:\n";
-      for (auto& It : Specializations){
-        tuner::KnobState KS(Set, It.first);
-        KS.dump();
-      }
       if (Specializations.find(ActiveConfig) == Specializations.end()) {
         auto TAs = TunableArgs.getArgsForConfig(*CD.Ctx, ActiveConfig);
         Specializations[ActiveConfig] = instantiate(TAs, EvalRequest);
@@ -342,14 +332,18 @@ private:
 //      TA.dump();
 //      errs() << ", ";
 //    }
-    JITTemplateInstantiationHelper InstHelper(CD, Idx);
+    TemplateInstantiationHelper InstHelper(CD, Idx);
     auto Name = InstHelper.instantiate(TAs);
 
     auto Mod = CD.createModule(Name);
 
+    DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Initial module"));
+
     // TODO: Change module link time? This could be done for every reoptimization, which would allow new definitions to
     //       be linked in too. However, this also introduces dependencies on other JIT modules.
     CD.linkInAvailableDefs(*Mod, false);
+
+    DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Module after linking"));
 
     auto Opt = llvm::make_unique<tuner::Optimizer>(*CD.Diagnostics,
                                                    *CD.HSOpts,
@@ -388,6 +382,8 @@ private:
 
 }
 }
+
+#undef DEBUG_TYPE
 
 
 #endif //CLANG_TUNERDRIVER_H

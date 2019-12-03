@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/CodeGen/JIT.h"
-#include "JITCompiler.h"
+#include "clang/CodeGen/Tuning.h"
+#include "JIT.h"
 #include "Tuner/TunerDriver.h"
 #include "Tuner/Optimizer.h"
 #include "Tuner/TimingHelper.h"

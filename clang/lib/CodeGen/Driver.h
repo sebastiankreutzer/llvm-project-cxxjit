@@ -6,7 +6,7 @@
 #define CLANG_DRIVER_H
 
 #include "clang/CodeGen/JIT.h"
-#include "JITCompiler.h"
+#include "JIT.h"
 
 
 namespace clang {

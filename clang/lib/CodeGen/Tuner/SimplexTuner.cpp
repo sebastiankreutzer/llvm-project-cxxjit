@@ -17,7 +17,7 @@ void SimplexTuner::init() {
 
 void SimplexTuner::reset(tuner::KnobSet Knobs) {
   this->Knobs = std::move(Knobs);
-  Mapping.remap(Knobs);
+  Mapping.remap(&this->Knobs);
   Initialized = false;
   State = REFLECT;
 }

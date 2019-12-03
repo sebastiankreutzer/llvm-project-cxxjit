@@ -201,6 +201,10 @@ public:
     return TAKnobSet;
   }
 
+  bool isTunable() {
+    return TAKnobSet.count() > 0;
+  }
+
 
   llvm::SmallVector<TemplateArgument, 8> getArgsForConfig(ASTContext& Ctx, const tuner::KnobConfig& Cfg) {
     llvm::SmallVector<TemplateArgument, 8> Args(BaseArgs);
@@ -233,7 +237,9 @@ public:
 
 struct ConfigMapInfo {
   static inline tuner::KnobConfig getEmptyKey() {
-    return tuner::KnobConfig();
+    auto Cfg = tuner::KnobConfig();
+    Cfg.IntCfg[tuner::InvalidKnobID] = DenseMapInfo<int>::getEmptyKey();
+    return Cfg;
   }
 
   static inline tuner::KnobConfig getTombstoneKey() {
@@ -306,7 +312,7 @@ struct TemplateTuningData {
     if (Initialized) {
       auto &TemplateInst = Specializations[ActiveConfig];
       TemplateInst.updateStats();
-      ShouldChange = Policy.shouldChangeBaseParams(TemplateInst);
+      ShouldChange = TunableArgs.isTunable() && Policy.shouldChangeBaseParams(TemplateInst);
     }
     if (ShouldChange) {
       auto EvalRequest = TATuner->generateNextConfig();

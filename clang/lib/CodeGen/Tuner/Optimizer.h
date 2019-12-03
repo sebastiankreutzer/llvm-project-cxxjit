@@ -51,8 +51,8 @@ public:
             : Diags(Diags), HSOpts(HeaderOpts), CodeGenOpts(CGOpts), TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr) {
     Knobs.add(&OptLvl);
     Knobs.add(&OptSizeLvl);
-    OptTuner = llvm::make_unique<RandomTuner>(Knobs);
-    //OptTuner = llvm::make_unique<SimplexTuner>(Knobs);
+    //OptTuner = llvm::make_unique<RandomTuner>(Knobs);
+    OptTuner = llvm::make_unique<SimplexTuner>(Knobs);
   }
 
   void init(llvm::Module* M);

@@ -115,7 +115,7 @@ public:
   };
 
   explicit SimplexTuner(KnobSet Knobs)
-  : Knobs(std::move(Knobs)), Mapping(Knobs) {
+  : Knobs(std::move(Knobs)), Mapping(&this->Knobs) {
     //Dimension = Knobs.
     State = REFLECT;
   }

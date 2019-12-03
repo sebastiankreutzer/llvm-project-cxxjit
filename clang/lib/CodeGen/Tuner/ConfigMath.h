@@ -118,18 +118,18 @@ Vector<T> centroid(Iterator Begin, Iterator End) {
 
 template<typename T>
 struct VectorMapping {
-  explicit VectorMapping(KnobSet& Knobs) : Knobs(Knobs){
+  explicit VectorMapping(KnobSet* Knobs) {
     remap(Knobs);
   }
 
-  void remap(KnobSet& Knobs) {
+  void remap(KnobSet* Knobs) {
     this->Knobs = Knobs;
     KnobToIndex.clear();
     size_t Index = 0;
-    for (auto& K : Knobs.IntKnobs) {
+    for (auto& K : Knobs->IntKnobs) {
       KnobToIndex[K.first] = Index++;
     }
-    for (auto& K : Knobs.LoopKnobs) {
+    for (auto& K : Knobs->LoopKnobs) {
       KnobToIndex[K.first] = Index;
       Index += LoopTransformConfig::NUM_PARAMS;
     }
@@ -151,10 +151,10 @@ struct VectorMapping {
 
   KnobConfig unmap(Vector<T>& Vec) {
     KnobConfig Cfg;
-    for (auto IK : Knobs.IntKnobs) {
+    for (auto IK : Knobs->IntKnobs) {
       Cfg.IntCfg[IK.first] = static_cast<int>(Vec[KnobToIndex[IK.first]]);
     }
-    for (auto LK : Knobs.LoopKnobs) {
+    for (auto LK : Knobs->LoopKnobs) {
       auto& LC = Cfg.LoopCfg[LK.first];
       auto i0 = KnobToIndex[LK.first];
       for (auto i = 0; i < LoopTransformConfig::NUM_PARAMS; i++) {
@@ -166,7 +166,7 @@ struct VectorMapping {
 
 private:
   SmallDenseMap<KnobID, size_t> KnobToIndex;
-  KnobSet& Knobs;
+  KnobSet* Knobs;
 };
 
 

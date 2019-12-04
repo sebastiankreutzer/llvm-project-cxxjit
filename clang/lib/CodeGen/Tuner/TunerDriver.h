@@ -5,11 +5,9 @@
 #ifndef CLANG_TUNERDRIVER_H
 #define CLANG_TUNERDRIVER_H
 
-#include "llvm/Support/Debug.h"
 #include "../Driver.h"
 #include "Tuner.h"
-
-#define DEBUG_TYPE "clang-jit"
+#include "Debug.h"
 
 namespace clang {
 namespace jit {
@@ -319,8 +317,8 @@ struct TemplateTuningData {
       ActiveConfig = EvalRequest.Cfg;
 
       auto Set = TunableArgs.getKnobSet();
-      LLVM_DEBUG(dbgs() << "Selected specialization:\n");
-      LLVM_DEBUG(tuner::KnobState(Set, ActiveConfig).dump());
+      JIT_DEBUG(dbgs() << "Selected specialization:\n");
+      JIT_DEBUG(tuner::KnobState(Set, ActiveConfig).dump());
 
       if (Specializations.find(ActiveConfig) == Specializations.end()) {
         auto TAs = TunableArgs.getArgsForConfig(*CD.Ctx, ActiveConfig);
@@ -343,13 +341,13 @@ private:
 
     auto Mod = CD.createModule(Name);
 
-    DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Initial module"));
+    JIT_DEBUG(dumpModule(*Mod, "Initial module"));
 
     // TODO: Change module link time? This could be done for every reoptimization, which would allow new definitions to
     //       be linked in too. However, this also introduces dependencies on other JIT modules.
     CD.linkInAvailableDefs(*Mod, false);
 
-    DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Module after linking"));
+    JIT_DEBUG(dumpModule(*Mod, "Module after linking"));
 
     auto Opt = llvm::make_unique<tuner::Optimizer>(*CD.Diagnostics,
                                                    *CD.HSOpts,

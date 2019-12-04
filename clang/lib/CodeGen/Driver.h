@@ -5,7 +5,6 @@
 #ifndef CLANG_DRIVER_H
 #define CLANG_DRIVER_H
 
-#include "clang/CodeGen/JIT.h"
 #include "JIT.h"
 
 

@@ -3,6 +3,7 @@
 //
 
 #include "Driver.h"
+#include "Tuner/Debug.h"
 
 using namespace llvm;
 
@@ -79,15 +80,15 @@ InstData SimpleDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
   // Emit IR for generated template specialization.
   auto Mod = CD.createModule(SMName);
-  DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Initial module"));
+  JIT_DEBUG(dumpModule(*Mod, "Initial module"));
   // Link in existing definitions for inlining, execute default optimization pipeline.
   CD.linkInAvailableDefs(*Mod, true);
-  DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Module after optimization"));
-  // Make new functions available for future instantiations.
+  JIT_DEBUG(dumpModule(*Mod, "Module after optimization"));
   auto ClonedMod = llvm::CloneModule(*Mod);
-  CD.makeDefsAvailable(std::move(ClonedMod));
   // Add to the JIT engine.
   CD.CJ->addModule(std::move(Mod));
+  // Make new functions available for future instantiations.
+  CD.makeDefsAvailable(std::move(ClonedMod));
 
   // Lookup the address of the generated function.
   auto SpecSymbol = CD.CJ->findSymbol(SMName);

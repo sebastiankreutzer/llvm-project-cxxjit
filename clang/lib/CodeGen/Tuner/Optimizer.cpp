@@ -9,15 +9,13 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/PrettyStackTrace.h"
-#include "llvm/Support/Debug.h"
+#include "Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO.h"
 
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include "Passes.h"
-
-#define DEBUG_TYPE "clang-jit"
 
 using namespace clang;
 using namespace llvm;
@@ -141,7 +139,7 @@ ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
   ConfigEvalRequest Request;
 
   if (UseDefault) {
-    LLVM_DEBUG(dbgs() << "Using default optimization config\n");
+    JIT_DEBUG(dbgs() << "Using default optimization config\n");
     auto Cfg = createDefaultConfig(Knobs);
     setEnableLoopTransform(Cfg, false);
     Request = ConfigEvalRequest(Cfg);
@@ -152,10 +150,10 @@ ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
   auto& Cfg = Request.Cfg;
 
   KnobState KS(Knobs, Cfg);
-  LLVM_DEBUG(dbgs() << "Optimizer Configuration: " << "\n");
-  LLVM_DEBUG(dbgs() << "-------------------- " << "\n");
-  LLVM_DEBUG(KS.dump());
-  LLVM_DEBUG(dbgs() << "-------------------- " << "\n");
+  JIT_DEBUG(dbgs() << "Optimizer Configuration: " << "\n");
+  JIT_DEBUG(dbgs() << "-------------------- " << "\n");
+  JIT_DEBUG(KS.dump());
+  JIT_DEBUG(dbgs() << "-------------------- " << "\n");
 
   legacy::PassManager KnobPasses;
   KnobPasses.add(createApplyLoopKnobPass(Cfg));

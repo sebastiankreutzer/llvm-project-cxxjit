@@ -9,8 +9,7 @@
 #include "clang/CodeGen/Tuning.h"
 #include "JIT.h"
 #include "Tuner/TunerDriver.h"
-#include "Tuner/Optimizer.h"
-#include "Tuner/TimingHelper.h"
+#include "Tuner/Debug.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "CodeGenModule.h"
 #include "CoverageMappingGen.h"
@@ -294,23 +293,6 @@ llvm::DenseMap<const void *, TUData> TUCompilerData;
 
 
 
-//struct RuntimeCost: public tuner::CostFunction {
-//
-//  llvm::DenseMap<JITContext::VersionID, TunedCodeVersion> Instantiations;
-//
-//  explicit RuntimeCost(llvm::DenseMap<JITContext::VersionID, TunedCodeVersion>& Instantiations)
-//    : Instantiations(Instantiations) {}
-//
-//  Optional<double> eval(unsigned ID) {
-//    auto It = Instantiations.find(ID);
-//    if (It == Instantiations.end())
-//      return {};
-//    auto Stats = It->second.getTimingStats();
-//    if (!Stats.Valid())
-//      return {};
-//    return Stats.Mean;
-//  }
-//};
 
 #if 0
 void printReport(JITTemplateInstantiation& TemplateInst) {
@@ -357,6 +339,8 @@ llvm::DenseMap<InstInfo, InstData, InstMapInfo> Instantiations;
 
 namespace clang {
 namespace jit {
+
+bool EnableDebugFlag = false;
 
 void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
 Gen->HandleTranslationUnit(C);
@@ -2125,6 +2109,10 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
                   const char **TypeStrings, unsigned TypeStringsCnt,
                   const char *InstKey, unsigned Idx) {
 
+#ifdef ENABLE_JIT_DEBUG
+  loadDebugFlag();
+#endif
+
   bool AssumeInitialized = false;
 
   {
@@ -2165,7 +2153,7 @@ void *__clang_jit(const void *CmdArgs, unsigned CmdArgsLen,
       auto DriverStr = std::getenv("CJ_DRIVER");
       if (DriverStr && std::strcmp(DriverStr, "tuner") == 0) {
         TUD.CompilerDriver = llvm::make_unique<TunerDriver>(*CD);
-        LLVM_DEBUG(llvm::dbgs() << "JIT Tuning enabled\n");
+        JIT_DEBUG(llvm::dbgs() << "JIT Tuning enabled\n");
       } else {
         TUD.CompilerDriver = llvm::make_unique<SimpleDriver>(*CD);
       }

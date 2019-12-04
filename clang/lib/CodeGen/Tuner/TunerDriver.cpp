@@ -4,10 +4,10 @@
 
 #include "TunerDriver.h"
 
-#include "llvm/Support/Debug.h"
+#include "clang/CodeGen/Tuning.h"
+#include "Debug.h"
 #include "Tuner.h"
 
-#define DEBUG_TYPE "clang-jit"
 
 namespace clang {
 namespace jit {
@@ -138,7 +138,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   TemplateTuningData* TTD;
   auto It = TuningDataMap.find_as(Inst);
   if (It == TuningDataMap.end()) {
-    LLVM_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
+    JIT_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
 
     // TODO: move to fdata (?)
     SmallVector<std::unique_ptr<TemplateArgKnob>, 4> TAKnobs;
@@ -153,7 +153,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       //Fld->dump();
       //errs() << "Data: " << IntVal << "\n";
 
-      LLVM_DEBUG(dbgs() << "Processing argument of type: " << CanonType.getAsString() << "\n");
+      JIT_DEBUG(dbgs() << "Processing argument of type: " << CanonType.getAsString() << "\n");
 
       if (CanonType.getAsString() == "struct clang::jit::tunable_range<int>") {
         auto FieldDecl = CanonType.getTypePtr()->getAsRecordDecl();
@@ -161,7 +161,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
         assert(TemplateDecl && "clang::jit::tunable_range must be template");
         // TODO: How to handle template arg other than int? Should we even use templated range?
         auto Range = *reinterpret_cast<const jit::tunable_range<int> *>(&IntWords[0]);
-        LLVM_DEBUG(dbgs() << "Type is tunable: Range is [" << Range.Min << "; " << Range.Max << "]\n");
+        JIT_DEBUG(dbgs() << "Type is tunable: Range is [" << Range.Min << "; " << Range.Max << "]\n");
 
         llvm::APSInt SIntVal(32); // TODO allow varying bit widths
         SIntVal = Range.Min;
@@ -174,10 +174,10 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       return {};
     });
 
-    LLVM_DEBUG(dbgs() << "Looking for tunable template arguments...");
+    JIT_DEBUG(dbgs() << "Looking for tunable template arguments...");
     TunableArgList TAL(BaseArgs);
     for (auto &Knob : TAKnobs) {
-      LLVM_DEBUG(dbgs() << "Template argument marked tunable: " << Knob->getArgIndex());
+      JIT_DEBUG(dbgs() << "Template argument marked tunable: " << Knob->getArgIndex());
       TAL.add(std::move(Knob));
     }
 
@@ -214,7 +214,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     if (!Recompile)
       return {CurrentVersion->FPtr, false};
 
-    LLVM_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName << "\n");
+    JIT_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName << "\n");
 #define TUNER_PRINT_REPORT // TODO: Expose to user
 #ifdef TUNER_PRINT_REPORT
     outs() << "Tuner report:\n";
@@ -226,7 +226,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
   auto EvalRequest = TemplateInst.Context.Opt->optimize(Mod.get(), !TemplateInst.Context.Emitted);
 
-  DEBUG_WITH_TYPE("clang-jit-dump", dumpModule(*Mod, "Module after optimization"));
+  JIT_DEBUG(dumpModule(*Mod, "Module after optimization"));
 
   // Instrument optimized function for tuning
   auto SMF = Mod->getFunction(FName);

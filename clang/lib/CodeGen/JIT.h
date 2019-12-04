@@ -6,6 +6,9 @@
 #define CLANG_JIT_COMPILER_H
 
 #include "Tuner/Tuner.h"
+#include "Tuner/Debug.h"
+#include "Tuner/Optimizer.h"
+#include "Tuner/TimingHelper.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "CodeGenModule.h"
 #include "CoverageMappingGen.h"
@@ -114,12 +117,19 @@
 #include <vector>
 #include <iomanip>
 #include <unordered_map>
-#include <Tuner/Optimizer.h>
-#include <Tuner/TimingHelper.h>
+
 
 
 namespace clang {
 namespace jit {
+
+inline void loadDebugFlag() {
+  auto DebugStr = std::getenv("CJ_DEBUG");
+  if (DebugStr && std::strcmp(DebugStr, "1") == 0)
+    EnableDebugFlag = true;
+  else
+    EnableDebugFlag = false;
+}
 
 inline void fatal() {
   report_fatal_error("Clang JIT failed!");

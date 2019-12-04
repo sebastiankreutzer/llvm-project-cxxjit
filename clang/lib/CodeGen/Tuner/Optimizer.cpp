@@ -4,14 +4,14 @@
 
 #include "Optimizer.h"
 
+#include "Debug.h"
 #include "clang/Basic/CodeGenOptions.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/PrettyStackTrace.h"
-#include "Debug.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -38,8 +38,7 @@ static void setCommandLineOpts(const CodeGenOptions &CodeGenOpts) {
     BackendArgs.push_back(CodeGenOpts.LimitFloatPrecision.c_str());
   }
   BackendArgs.push_back(nullptr);
-  llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1,
-                                    BackendArgs.data());
+  llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1, BackendArgs.data());
 }
 
 static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
@@ -56,14 +55,14 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
   }
 
   switch (CodeGenOpts.getVecLib()) {
-    case CodeGenOptions::Accelerate:
-      TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate);
-      break;
-    case CodeGenOptions::SVML:
-      TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML);
-      break;
-    default:
-      break;
+  case CodeGenOptions::Accelerate:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate);
+    break;
+  case CodeGenOptions::SVML:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML);
+    break;
+  default:
+    break;
   }
   return TLII;
 }
@@ -73,12 +72,14 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
 //
 
 TargetIRAnalysis Optimizer::getTargetIRAnalysis() {
-    return TM.getTargetIRAnalysis();
+  return TM.getTargetIRAnalysis();
 }
 
-void Optimizer::createPasses(const llvm::Module& M, legacy::PassManager &PM, legacy::FunctionPassManager &FPM, KnobConfig& Cfg) {
-  auto OptLevel = 3;// OptLvl.getVal(Cfg);
-  auto OptSizeLevel = 1;//OptSizeLvl.getVal(Cfg); // FIXME TODO
+void Optimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
+                             legacy::FunctionPassManager &FPM,
+                             KnobConfig &Cfg) {
+  auto OptLevel = 3;     // OptLvl.getVal(Cfg);
+  auto OptSizeLevel = 1; // OptSizeLvl.getVal(Cfg); // FIXME TODO
 
   PassManagerBuilder PMB;
 
@@ -91,12 +92,13 @@ void Optimizer::createPasses(const llvm::Module& M, legacy::PassManager &PM, leg
       createTLII(TargetTriple, CodeGenOpts));
 
   // Clang uses AlwaysInlinerPass for -00 and -O1 for speed.
-  // As we want to set the inlining threshold independently anyway, we always use the "default" inlinig pass.
+  // As we want to set the inlining threshold independently anyway, we always
+  // use the "default" inlinig pass.
   // TODO: Not sure about DisableInlineHotCallSite, see BackendUtil.cpp
-  PMB.Inliner = createFunctionInliningPass(
-      OptLevel, OptSizeLevel,
-      (!CodeGenOpts.SampleProfileFile.empty() &&
-       CodeGenOpts.PrepareForThinLTO));
+  PMB.Inliner =
+      createFunctionInliningPass(OptLevel, OptSizeLevel,
+                                 (!CodeGenOpts.SampleProfileFile.empty() &&
+                                  CodeGenOpts.PrepareForThinLTO));
 
   PMB.OptLevel = OptLevel;
   PMB.SizeLevel = OptSizeLevel;
@@ -116,10 +118,9 @@ void Optimizer::createPasses(const llvm::Module& M, legacy::PassManager &PM, leg
 
   PMB.populateModulePassManager(PM);
   PMB.populateFunctionPassManager(FPM);
-
 }
 
-void Optimizer::init(Module* M) {
+void Optimizer::init(Module *M) {
   this->ModToOptimize = M;
 
   // Create loop knobs
@@ -131,7 +132,7 @@ void Optimizer::init(Module* M) {
 }
 
 //#define DUMP_MOD_WITH_ATTRIBUTES
-ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
+ConfigEvalRequest Optimizer::optimize(Module *M, bool UseDefault) {
   assert(ModToOptimize && "Optimizer is not initialized!");
 
   setCommandLineOpts(CodeGenOpts);
@@ -147,13 +148,16 @@ ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
     Request = OptTuner->generateNextConfig();
   }
 
-  auto& Cfg = Request.Cfg;
+  auto &Cfg = Request.Cfg;
 
   KnobState KS(Knobs, Cfg);
-  JIT_DEBUG(dbgs() << "Optimizer Configuration: " << "\n");
-  JIT_DEBUG(dbgs() << "-------------------- " << "\n");
+  JIT_DEBUG(dbgs() << "Optimizer Configuration: "
+                   << "\n");
+  JIT_DEBUG(dbgs() << "-------------------- "
+                   << "\n");
   JIT_DEBUG(KS.dump());
-  JIT_DEBUG(dbgs() << "-------------------- " << "\n");
+  JIT_DEBUG(dbgs() << "-------------------- "
+                   << "\n");
 
   legacy::PassManager KnobPasses;
   KnobPasses.add(createApplyLoopKnobPass(Cfg));
@@ -165,7 +169,6 @@ ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
   legacy::FunctionPassManager PerFunctionPasses(M);
   PerFunctionPasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
-
 
   createPasses(*M, PerModulePasses, PerFunctionPasses, Cfg);
 
@@ -206,4 +209,4 @@ ConfigEvalRequest Optimizer::optimize(Module* M, bool UseDefault) {
   return Request;
 }
 
-}
+} // namespace tuner

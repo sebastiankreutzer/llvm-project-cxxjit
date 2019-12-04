@@ -8,8 +8,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "KnobDataTypes.h"
 #include "Knob.h"
+#include "KnobDataTypes.h"
 
 using namespace llvm;
 
@@ -21,74 +21,62 @@ class LoopKnob;
 // A KnobSet is a collection of tuning knobs.
 class KnobSet {
 public:
-
   // NOTE: Cannot be inlined because of circular dependency issues
-  void add(IntKnob* K);
+  void add(IntKnob *K);
 
-  void removeIntKnob(KnobID ID) {
-    IntKnobs.erase(ID);
-  }
+  void removeIntKnob(KnobID ID) { IntKnobs.erase(ID); }
 
-  void add(LoopKnob* K);
+  void add(LoopKnob *K);
 
-  void removeLoopKnob(KnobID ID) {
-    LoopKnobs.erase(ID);
-  }
+  void removeLoopKnob(KnobID ID) { LoopKnobs.erase(ID); }
 
-  unsigned count() const {
-    return IntKnobs.size() + LoopKnobs.size();
-  }
+  unsigned count() const { return IntKnobs.size() + LoopKnobs.size(); }
 
-  llvm::DenseMap<KnobID, IntKnob*> IntKnobs;
-  llvm::DenseMap<KnobID, LoopKnob*> LoopKnobs;
+  llvm::DenseMap<KnobID, IntKnob *> IntKnobs;
+  llvm::DenseMap<KnobID, LoopKnob *> LoopKnobs;
 };
 
 // A Knob holds the data corresponding to a KnobSet.
 struct KnobConfig {
-//  Knob(KnobSet* KS) : Knobs(KS) {}
-//
-//  KnobSet* Knobs;
+  //  Knob(KnobSet* KS) : Knobs(KS) {}
+  //
+  //  KnobSet* Knobs;
 
   llvm::DenseMap<KnobID, int> IntCfg;
-  llvm::DenseMap <KnobID, LoopTransformConfig> LoopCfg;
+  llvm::DenseMap<KnobID, LoopTransformConfig> LoopCfg;
 
   unsigned getNumDimensions() const {
     return IntCfg.size() + LoopCfg.size() * LoopTransformConfig::NUM_PARAMS;
   }
-
 };
 
 // Encapsulates the configuration of a given KnobSet.
 class KnobState {
 public:
-  KnobState(KnobSet& KS, KnobConfig& Cfg) :
-    KS(KS), Config(Cfg) {}
+  KnobState(KnobSet &KS, KnobConfig &Cfg) : KS(KS), Config(Cfg) {}
 
-  void dump() {
-    dump(outs());
-  }
+  void dump() { dump(outs()); }
 
-  void dump(raw_ostream& OS);
+  void dump(raw_ostream &OS);
 
-  KnobSet& KS;
-  KnobConfig& Config;
+  KnobSet &KS;
+  KnobConfig &Config;
 };
-
 
 struct KnobSetFn {
-  virtual void operator()(IntKnob&) = 0;
-  virtual void operator()(LoopKnob&) = 0;
+  virtual void operator()(IntKnob &) = 0;
+  virtual void operator()(LoopKnob &) = 0;
 };
 
-inline void apply(KnobSetFn& Fn, KnobSet& Set) {
-  for (auto& K : Set.IntKnobs) {
+inline void apply(KnobSetFn &Fn, KnobSet &Set) {
+  for (auto &K : Set.IntKnobs) {
     Fn(*K.second);
   }
-  for (auto& K : Set.LoopKnobs) {
+  for (auto &K : Set.LoopKnobs) {
     Fn(*K.second);
   }
 }
 
-}
+} // namespace tuner
 
-#endif //CLANG_KNOBSET_H
+#endif // CLANG_KNOBSET_H

@@ -12,11 +12,12 @@ namespace tuner {
 namespace util {
 
 inline unsigned genSeed() {
-  return static_cast<unsigned>(std::chrono::system_clock::now().time_since_epoch().count());
+  return static_cast<unsigned>(
+      std::chrono::system_clock::now().time_since_epoch().count());
 }
 
-}
+} // namespace util
 
-}
+} // namespace tuner
 
-#endif //CLANG_UTIL_H
+#endif // CLANG_UTIL_H

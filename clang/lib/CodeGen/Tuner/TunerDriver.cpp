@@ -4,10 +4,9 @@
 
 #include "TunerDriver.h"
 
-#include "clang/CodeGen/Tuning.h"
 #include "Debug.h"
 #include "Tuner.h"
-
+#include "clang/CodeGen/Tuning.h"
 
 namespace clang {
 namespace jit {
@@ -15,22 +14,28 @@ namespace jit {
 using namespace tuner;
 
 namespace {
-void printReport(JITTemplateInstantiation& TemplateInst) {
-  auto& FName = TemplateInst.Context.DeclName;
+void printReport(JITTemplateInstantiation &TemplateInst) {
+  auto &FName = TemplateInst.Context.DeclName;
 
   outs() << "JIT Timing Report:\n";
-  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Mean", "RSD", "RSE").str();
+  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}",
+                        fmt_align("Name", AlignStyle::Center, FName.size()),
+                        "ID", "#Called", "Mean", "RSD", "RSE")
+                    .str();
   outs() << Header << "\n";
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-  // Iterate over IDs to display in order. Not very robust, but works for debugging.
+  // Iterate over IDs to display in order. Not very robust, but works for
+  // debugging.
   for (unsigned i = 1; i <= TemplateInst.Instantiations.size(); i++) {
     auto It = TemplateInst.Instantiations.find(i);
     if (It == TemplateInst.Instantiations.end())
       continue;
-    auto& Inst = It->second;
-    auto& PG = Inst.Globals;
+    auto &Inst = It->second;
+    auto &PG = Inst.Globals;
     if (!PG.Valid()) {
-      errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
+      errs() << FName.str()
+             << " Performance tracking globals have not been registered "
+                "correctly\n";
       continue;
     }
     auto Stats = Inst.updateStats();
@@ -38,18 +43,24 @@ void printReport(JITTemplateInstantiation& TemplateInst) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
-    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", FName, Inst.ID, Stats.N, formatv("{0:f1}", Stats.Mean), formatv("{0:p}", Stats.getRSD()), formatv("{0:p}", Stats.getRelativeStdErr()));
+    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", FName,
+                      Inst.ID, Stats.N, formatv("{0:f1}", Stats.Mean),
+                      formatv("{0:p}", Stats.getRSD()),
+                      formatv("{0:p}", Stats.getRelativeStdErr()));
   }
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
   auto BestID = TemplateInst.getCurrentBest()->ID;
   auto Best = TemplateInst.Instantiations[BestID];
-  // TODO: We assume here that the first version is the baseline, make this explicit
+  // TODO: We assume here that the first version is the baseline, make this
+  // explicit
   auto BaseLine = TemplateInst.Instantiations[1];
-  outs() << formatv("Best version: {0} ({1:p} speedup)\n", BestID, BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
+  outs() << formatv("Best version: {0} ({1:p} speedup)\n", BestID,
+                    BaseLine.updateStats().Mean / Best.updateStats().Mean -
+                        1.0);
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
-void printFullReport(TemplateTuningData& Data, llvm::raw_ostream& OS = dbgs()) {
+void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
   if (!Data.Initialized || Data.Specializations.empty()) {
     return;
   }
@@ -57,22 +68,27 @@ void printFullReport(TemplateTuningData& Data, llvm::raw_ostream& OS = dbgs()) {
   auto FirstName = Data.Specializations.begin()->second.Context.DeclName;
   auto MaxNameLen = FirstName.size() + 4; // This does not always work.
 
-  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, MaxNameLen), "ID", "#Called", "Mean", "RSD", "RSE").str();
+  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}",
+                        fmt_align("Name", AlignStyle::Center, MaxNameLen), "ID",
+                        "#Called", "Mean", "RSD", "RSE")
+                    .str();
   OS << Header << "\n";
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
-  for (auto& It : Data.Specializations) {
-    auto& TemplateInst = It.second;
+  for (auto &It : Data.Specializations) {
+    auto &TemplateInst = It.second;
     auto FName = TemplateInst.Context.DeclName;
     OS << FName << "\n";
-    // Iterate over IDs to display in order. Not very robust, but works for debugging.
+    // Iterate over IDs to display in order. Not very robust, but works for
+    // debugging.
     for (unsigned i = 1; i <= TemplateInst.Instantiations.size(); i++) {
       auto It = TemplateInst.Instantiations.find(i);
       if (It == TemplateInst.Instantiations.end())
         continue;
-      auto& Inst = It->second;
-      auto& PG = Inst.Globals;
+      auto &Inst = It->second;
+      auto &PG = Inst.Globals;
       if (!PG.Valid()) {
-        errs() << "Performance tracking globals have not been registered correctly\n";
+        errs() << "Performance tracking globals have not been registered "
+                  "correctly\n";
         continue;
       }
       auto Stats = Inst.updateStats();
@@ -80,39 +96,50 @@ void printFullReport(TemplateTuningData& Data, llvm::raw_ostream& OS = dbgs()) {
         OS << "No data collected\n";
         return;
       }
-      OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", fmt_repeat(" ", MaxNameLen), Inst.ID, Stats.N, formatv("{0:f1}", Stats.Mean), formatv("{0:p}", Stats.getRSD()), formatv("{0:p}", Stats.getRelativeStdErr()));
+      OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n",
+                    fmt_repeat(" ", MaxNameLen), Inst.ID, Stats.N,
+                    formatv("{0:f1}", Stats.Mean),
+                    formatv("{0:p}", Stats.getRSD()),
+                    formatv("{0:p}", Stats.getRelativeStdErr()));
     }
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     auto BestID = TemplateInst.getCurrentBest()->ID;
     auto Best = TemplateInst.Instantiations[BestID];
-    // TODO: We assume here that the first version is the baseline, make this explicit
+    // TODO: We assume here that the first version is the baseline, make this
+    // explicit
     auto BaseLine = TemplateInst.Instantiations[1];
-    OS << formatv("Best version: {0} ({1:p} speedup)\n", BestID, BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
+    OS << formatv("Best version: {0} ({1:p} speedup)\n", BestID,
+                  BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
-
   }
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
-void printReport(TemplateTuningData& Data) {
+void printReport(TemplateTuningData &Data) {
   if (!Data.Initialized || Data.Specializations.empty()) {
     return;
   }
   auto FName = Data.Specializations.begin()->second.Context.DeclName;
   outs() << "JIT Timing Report:\n";
-  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}", fmt_align("Name", AlignStyle::Center, FName.size()), "ID", "#Called", "Mean", "RSD", "RSE").str();
+  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}",
+                        fmt_align("Name", AlignStyle::Center, FName.size()),
+                        "ID", "#Called", "Mean", "RSD", "RSE")
+                    .str();
   outs() << Header << "\n";
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-  // Iterate over IDs to display in order. Not very robust, but works for debugging.
-  for (auto& It : Data.Specializations) {
+  // Iterate over IDs to display in order. Not very robust, but works for
+  // debugging.
+  for (auto &It : Data.Specializations) {
     It.second.updateStats();
     if (!It.second.getCurrentBest())
       continue;
-    auto& Version = *It.second.getCurrentBest();
+    auto &Version = *It.second.getCurrentBest();
 
-    auto& PG = Version.Globals;
+    auto &PG = Version.Globals;
     if (!PG.Valid()) {
-      errs() << FName.str() <<  " Performance tracking globals have not been registered correctly\n";
+      errs() << FName.str()
+             << " Performance tracking globals have not been registered "
+                "correctly\n";
       continue;
     }
     auto Stats = Version.updateStats();
@@ -120,22 +147,26 @@ void printReport(TemplateTuningData& Data) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
-    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n", It.second.Context.DeclName, Version.ID, Stats.N, formatv("{0:f1}", Stats.Mean), formatv("{0:p}", Stats.getRSD()), formatv("{0:p}", Stats.getRelativeStdErr()));
+    outs() << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n",
+                      It.second.Context.DeclName, Version.ID, Stats.N,
+                      formatv("{0:f1}", Stats.Mean),
+                      formatv("{0:p}", Stats.getRSD()),
+                      formatv("{0:p}", Stats.getRelativeStdErr()));
   }
-//  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
-//  auto BestID = TemplateInst.getCurrentBest()->ID;
-//  auto Best = TemplateInst.Instantiations[BestID];
-//  // TODO: We assume here that the first version is the baseline, make this explicit
-//  auto BaseLine = TemplateInst.Instantiations[1];
-//  outs() << formatv("Best version: {0} ({1:p} speedup)\n", BestID, BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
+  //  outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  //  auto BestID = TemplateInst.getCurrentBest()->ID;
+  //  auto Best = TemplateInst.Instantiations[BestID];
+  //  // TODO: We assume here that the first version is the baseline, make this
+  //  explicit auto BaseLine = TemplateInst.Instantiations[1]; outs() <<
+  //  formatv("Best version: {0} ({1:p} speedup)\n", BestID,
+  //  BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
-}
-
+} // namespace
 
 InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
-  TemplateTuningData* TTD;
+  TemplateTuningData *TTD;
   auto It = TuningDataMap.find_as(Inst);
   if (It == TuningDataMap.end()) {
     JIT_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
@@ -146,53 +177,72 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     llvm::SmallVector<TemplateArgument, 8> BaseArgs;
 
     TemplateInstantiationHelper InstHelper(CD, Idx);
-    InstHelper.processTemplateArgs(Inst.NTTPValues, Inst.TypeStrings, BaseArgs, [this, &TAKnobs](QualType CanonType, unsigned Pos,
-                                                            const SmallVectorImpl<uint64_t> &IntWords) -> Optional<TemplateArgument> {
-      //errs() << "Instantiating NTTA with " << Size << " bytes: \n";
-      //CanonType.dump();
-      //Fld->dump();
-      //errs() << "Data: " << IntVal << "\n";
+    InstHelper.processTemplateArgs(
+        Inst.NTTPValues, Inst.TypeStrings, BaseArgs,
+        [this, &TAKnobs](QualType CanonType, unsigned Pos,
+                         const SmallVectorImpl<uint64_t> &IntWords)
+            -> Optional<TemplateArgument> {
+          // errs() << "Instantiating NTTA with " << Size << " bytes: \n";
+          // CanonType.dump();
+          // Fld->dump();
+          // errs() << "Data: " << IntVal << "\n";
 
-      JIT_DEBUG(dbgs() << "Processing argument of type: " << CanonType.getAsString() << "\n");
+          JIT_DEBUG(dbgs() << "Processing argument of type: "
+                           << CanonType.getAsString() << "\n");
 
-      if (CanonType.getAsString() == "struct clang::jit::tunable_range<int>") {
-        auto FieldDecl = CanonType.getTypePtr()->getAsRecordDecl();
-        auto TemplateDecl = dyn_cast<ClassTemplateSpecializationDecl>(FieldDecl);
-        assert(TemplateDecl && "clang::jit::tunable_range must be template");
-        // TODO: How to handle template arg other than int? Should we even use templated range?
-        auto Range = *reinterpret_cast<const jit::tunable_range<int> *>(&IntWords[0]);
-        JIT_DEBUG(dbgs() << "Type is tunable: Range is [" << Range.Min << "; " << Range.Max << "]\n");
+          if (CanonType.getAsString() ==
+              "struct clang::jit::tunable_range<int>") {
+            auto FieldDecl = CanonType.getTypePtr()->getAsRecordDecl();
+            auto TemplateDecl =
+                dyn_cast<ClassTemplateSpecializationDecl>(FieldDecl);
+            assert(TemplateDecl &&
+                   "clang::jit::tunable_range must be template");
+            // TODO: How to handle template arg other than int? Should we even
+            // use templated range?
+            auto Range = *reinterpret_cast<const jit::tunable_range<int> *>(
+                &IntWords[0]);
+            JIT_DEBUG(dbgs() << "Type is tunable: Range is [" << Range.Min
+                             << "; " << Range.Max << "]\n");
 
-        llvm::APSInt SIntVal(32); // TODO allow varying bit widths
-        SIntVal = Range.Min;
+            llvm::APSInt SIntVal(32); // TODO allow varying bit widths
+            SIntVal = Range.Min;
 
-        TAKnobs.push_back(llvm::make_unique<TemplateArgKnob>(Pos, Range.Min, Range.Max, Range.Min));
+            TAKnobs.push_back(llvm::make_unique<TemplateArgKnob>(
+                Pos, Range.Min, Range.Max, Range.Min));
 
-        return TemplateArgument(*CD.Ctx, SIntVal, CD.Ctx->getIntTypeForBitwidth(32,
-                                                                                false)); // TODO: Check if expected template params matches
-      }
-      return {};
-    });
+            return TemplateArgument(
+                *CD.Ctx, SIntVal,
+                CD.Ctx->getIntTypeForBitwidth(
+                    32,
+                    false)); // TODO: Check if expected template params matches
+          }
+          return {};
+        });
 
     JIT_DEBUG(dbgs() << "Looking for tunable template arguments...");
     TunableArgList TAL(BaseArgs);
     for (auto &Knob : TAKnobs) {
-      JIT_DEBUG(dbgs() << "Template argument marked tunable: " << Knob->getArgIndex());
+      JIT_DEBUG(dbgs() << "Template argument marked tunable: "
+                       << Knob->getArgIndex());
       TAL.add(std::move(Knob));
     }
 
     KnobSet TAKnobSet = TAL.getKnobSet();
     auto TATuner = llvm::make_unique<RandomTuner>(TAKnobSet);
-    auto NewTuningData = llvm::make_unique<TemplateTuningData>(CD, Idx, std::move(TATuner), std::move(TAL));
+    auto NewTuningData = llvm::make_unique<TemplateTuningData>(
+        CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();
 
-    TuningDataMap[InstInfo(Inst.InstKey, Inst.NTTPValues, Inst.NTTPValuesSize, Inst.TypeStrings, Inst.TypeStringsCnt)] = std::move(NewTuningData);
+    TuningDataMap[InstInfo(Inst.InstKey, Inst.NTTPValues, Inst.NTTPValuesSize,
+                           Inst.TypeStrings, Inst.TypeStringsCnt)] =
+        std::move(NewTuningData);
   } else {
     TTD = It->second.get();
   }
 
-  // Select a template specialization by either using an existing one or instantiating a new one.
-  auto& TemplateInst = TTD->selectSpecialization();
+  // Select a template specialization by either using an existing one or
+  // instantiating a new one.
+  auto &TemplateInst = TTD->selectSpecialization();
 
   auto FName = TemplateInst.Context.DeclName;
 
@@ -207,14 +257,17 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     bool Recompile = false;
     if (Stats.Valid()) {
-      // Recompile if the function has been called enough times and the relative standard error of mean is below a certain threshold.
-      Recompile = Stats.N >= MinSamples && Stats.getRelativeStdErr() < MaxRelStdErr;
+      // Recompile if the function has been called enough times and the relative
+      // standard error of mean is below a certain threshold.
+      Recompile =
+          Stats.N >= MinSamples && Stats.getRelativeStdErr() < MaxRelStdErr;
     }
 
     if (!Recompile)
       return {CurrentVersion->FPtr, false};
 
-    JIT_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName << "\n");
+    JIT_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName
+                     << "\n");
 #define TUNER_PRINT_REPORT // TODO: Expose to user
 #ifdef TUNER_PRINT_REPORT
     outs() << "Tuner report:\n";
@@ -224,7 +277,8 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
   auto Mod = llvm::CloneModule(*TemplateInst.Context.Mod);
 
-  auto EvalRequest = TemplateInst.Context.Opt->optimize(Mod.get(), !TemplateInst.Context.Emitted);
+  auto EvalRequest = TemplateInst.Context.Opt->optimize(
+      Mod.get(), !TemplateInst.Context.Emitted);
 
   JIT_DEBUG(dumpModule(*Mod, "Module after optimization"));
 
@@ -249,11 +303,11 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   if (!SpecSymbol.getAddress())
     fatal();
 
-  auto* FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
+  auto *FPtr = (void *)llvm::cantFail(SpecSymbol.getAddress());
 
   // Look up addresses of timing globals.
-  auto* CJPtr = CD.CJ.get();
-  auto Globals = TH.lookupGlobals([CJPtr] (StringRef SymName) -> void* {
+  auto *CJPtr = CD.CJ.get();
+  auto Globals = TH.lookupGlobals([CJPtr](StringRef SymName) -> void * {
     auto Sym = CJPtr->findSymbol(SymName);
     if (auto Err = Sym.takeError()) {
       llvm::errs() << "Can't find symbol " << SymName << ": " << Err << "\n";
@@ -264,16 +318,17 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       llvm::errs() << "Unable to find address of global " << SymName << "\n";
       return nullptr;
     }
-    return reinterpret_cast<void*>(Addr.get());
+    return reinterpret_cast<void *>(Addr.get());
   });
 
-  TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, Globals, std::move(EvalRequest));
+  TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, Globals,
+                           std::move(EvalRequest));
   TemplateInst.add(std::move(Version));
-  TemplateInst.Context.Emitted = true; // TODO: We probably don't need this anymore
+  TemplateInst.Context.Emitted =
+      true; // TODO: We probably don't need this anymore
 
   return {FPtr, false};
-
 }
 
-}
-}
+} // namespace jit
+} // namespace clang

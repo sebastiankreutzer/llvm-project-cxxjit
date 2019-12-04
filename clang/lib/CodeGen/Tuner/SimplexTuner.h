@@ -5,15 +5,14 @@
 #ifndef CLANG_SIMPLEXTUNER_H
 #define CLANG_SIMPLEXTUNER_H
 
-#include "Tuner.h"
 #include "ConfigMath.h"
+#include "Tuner.h"
 
 namespace tuner {
 
-struct GenInitialVerticesFn: public KnobSetFn {
+struct GenInitialVerticesFn : public KnobSetFn {
 
-  explicit GenInitialVerticesFn(KnobConfig X0) : X0(X0) {
-  }
+  explicit GenInitialVerticesFn(KnobConfig X0) : X0(X0) {}
 
   // Perturbs int, should work for boolean knobs
   int perturbInt(int X0Val, int Min, int Max) {
@@ -21,7 +20,8 @@ struct GenInitialVerticesFn: public KnobSetFn {
     if (Min == Max)
       return X0Val;
     int Dir = Max - X0Val > X0Val - Min ? 1 : -1;
-    int Delta = ((Max - Min) / 4); // TODO: Try out different values, maybe even randomize
+    int Delta = ((Max - Min) /
+                 4); // TODO: Try out different values, maybe even randomize
     if (Delta == 0) {
       Delta = 1;
     }
@@ -29,17 +29,19 @@ struct GenInitialVerticesFn: public KnobSetFn {
     return Val;
   }
 
-  void operator()(IntKnob& K) override {
+  void operator()(IntKnob &K) override {
     KnobConfig X(X0);
     int Val = perturbInt(K.getVal(X0), K.min(), K.max());
     K.setVal(X, Val);
     Vertices.push_back(X);
   }
 
-  void operator()(LoopKnob& K) override {
+  void operator()(LoopKnob &K) override {
 
     for (unsigned i = 0; i < LoopTransformConfig::NUM_PARAMS; i++) {
-      if (i != LoopTransformConfig::UNROLL_COUNT && i != LoopTransformConfig::VECTORIZE_WIDTH && i != LoopTransformConfig::INTERLEAVE_COUNT)
+      if (i != LoopTransformConfig::UNROLL_COUNT &&
+          i != LoopTransformConfig::VECTORIZE_WIDTH &&
+          i != LoopTransformConfig::INTERLEAVE_COUNT)
         continue;
       KnobConfig X(X0);
       auto LoopCfg = K.getVal(X0);
@@ -47,35 +49,35 @@ struct GenInitialVerticesFn: public KnobSetFn {
       auto Min = LoopTransformConfig::MIN_VALS[i];
       auto Max = LoopTransformConfig::MAX_VALS[i];
       auto Val = perturbInt(LoopCfg.Vals[i], Min, Max);
-      LoopCfg.Vals[i] = (unsigned) Val;
+      LoopCfg.Vals[i] = (unsigned)Val;
       K.setVal(X, LoopCfg);
-     // TODO: Just for testing
+      // TODO: Just for testing
       Vertices.push_back(X);
     }
-
   }
 
   std::vector<KnobConfig> Vertices;
   KnobConfig X0;
 };
 
-struct ComputeCentroidFn: public KnobSetFn {
-  explicit ComputeCentroidFn(std::vector<KnobConfig>& Configs) : Configs(Configs) {}
+struct ComputeCentroidFn : public KnobSetFn {
+  explicit ComputeCentroidFn(std::vector<KnobConfig> &Configs)
+      : Configs(Configs) {}
 
-  void operator()(IntKnob& K) override {
+  void operator()(IntKnob &K) override {
     int Val = 0;
-    for (auto& Cfg : Configs) {
+    for (auto &Cfg : Configs) {
       Val += K.getVal(Cfg);
     }
     K.setVal(Centroid, Val / Configs.size());
   }
 
-  void operator()(LoopKnob& K) override {
+  void operator()(LoopKnob &K) override {
     LoopTransformConfig Val;
 
     for (auto i = 0; i < LoopTransformConfig::NUM_PARAMS; i++) {
       int ParamVal = 0;
-      for (auto& Cfg : Configs) {
+      for (auto &Cfg : Configs) {
         ParamVal += K.getVal(Cfg).Vals[i];
       }
       Val.Vals[i] = ParamVal / Configs.size();
@@ -83,26 +85,26 @@ struct ComputeCentroidFn: public KnobSetFn {
     K.setVal(Centroid, Val);
   }
 
-  std::vector<KnobConfig>& Configs;
+  std::vector<KnobConfig> &Configs;
   KnobConfig Centroid;
 };
 
-inline std::vector<KnobConfig> createInitialVertices(KnobSet& Knobs, KnobConfig X0) {
+inline std::vector<KnobConfig> createInitialVertices(KnobSet &Knobs,
+                                                     KnobConfig X0) {
   GenInitialVerticesFn Fn(std::move(X0));
   apply(Fn, Knobs);
   return Fn.Vertices;
 }
 
-inline KnobConfig computeCentroid(KnobSet& Knobs, std::vector<KnobConfig>& Configs) {
+inline KnobConfig computeCentroid(KnobSet &Knobs,
+                                  std::vector<KnobConfig> &Configs) {
   ComputeCentroidFn Fn(Configs);
   apply(Fn, Knobs);
   return Fn.Centroid;
 }
 
-
 class SimplexTuner : public Tuner {
 public:
-
   struct Params {
     float Alpha{1};
     float Gamma{2};
@@ -110,17 +112,17 @@ public:
     float Sigma{0.5f};
   };
 
-  enum State {
-    REFLECT, EVAL_REFLECTED, EVAL_EXPANDED, EVAL_CONTRACTED
-  };
+  enum State { REFLECT, EVAL_REFLECTED, EVAL_EXPANDED, EVAL_CONTRACTED };
 
-  explicit SimplexTuner(KnobSet& Knobs)
-  : Knobs(Knobs), Mapping(Knobs) {
-    //Dimension = Knobs.
+  explicit SimplexTuner(KnobSet Knobs)
+      : Knobs(std::move(Knobs)), Mapping(&this->Knobs) {
+    // Dimension = Knobs.
     State = REFLECT;
   }
 
   void init();
+
+  void reset(KnobSet Knobs) override;
 
   ConfigEvalRequest generateNextConfig() override;
 
@@ -129,23 +131,21 @@ private:
 
 private:
   Params P;
-  KnobSet& Knobs;
+  KnobSet Knobs;
   VectorMapping<float> Mapping;
-  //unsigned Dimension;
+  // unsigned Dimension;
   std::vector<ConfigEvalRequest> Simplex;
   std::vector<KnobConfig> ToEval;
 
   State State;
 
   Vector<float> Centroid;
-  ConfigEvalRequest  Reflected, Expanded, Contracted;
+  ConfigEvalRequest Reflected, Expanded, Contracted;
 
   bool Initialized{false};
   unsigned IterCount;
-
 };
 
-}
+} // namespace tuner
 
-
-#endif //CLANG_SIMPLEXTUNER_H
+#endif // CLANG_SIMPLEXTUNER_H

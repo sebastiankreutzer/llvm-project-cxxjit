@@ -102,7 +102,7 @@ add_clang_library(clangCodeGen
   SwiftCallingConv.cpp
   TargetInfo.cpp
   VarBypassDetector.cpp
-  JIT.cpp
+        JIT.cpp
 
   Tuner/Optimizer.cpp
   Tuner/Tuner.cpp
@@ -111,6 +111,8 @@ add_clang_library(clangCodeGen
   Tuner/LoopKnob.cpp
   Tuner/TimingHelper.cpp
   Tuner/SimplexTuner.cpp
+  Tuner/TunerDriver.cpp
+  Driver.cpp
 
   DEPENDS
   ${codegen_deps}

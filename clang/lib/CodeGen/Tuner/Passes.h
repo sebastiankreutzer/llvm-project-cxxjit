@@ -6,14 +6,14 @@
 #define CLANG_PASSES_H
 
 namespace llvm {
-  class Pass;
+class Pass;
 }
 
 namespace tuner {
 
-  Pass* createLoopKnobCreatorPass(KnobSet& KS);
-  Pass* createApplyLoopKnobPass(KnobConfig& KnobCfg);
+Pass *createLoopKnobCreatorPass(KnobSet &KS);
+Pass *createApplyLoopKnobPass(KnobConfig &KnobCfg);
 
-}
+} // namespace tuner
 
-#endif //CLANG_PASSES_H
+#endif // CLANG_PASSES_H

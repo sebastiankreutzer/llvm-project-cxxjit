@@ -5,6 +5,8 @@
 #ifndef CLANG_KNOBCONFIG_H
 #define CLANG_KNOBCONFIG_H
 
+#include <string>
+
 namespace tuner {
 
 using KnobID = unsigned;

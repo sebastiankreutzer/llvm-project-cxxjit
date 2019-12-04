@@ -5,6 +5,10 @@
 #ifndef CLANG_LOOPMD_H
 #define CLANG_LOOPMD_H
 
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Metadata.h"
+
 namespace tuner {
 
 static const char *NameTag = "loop.name";

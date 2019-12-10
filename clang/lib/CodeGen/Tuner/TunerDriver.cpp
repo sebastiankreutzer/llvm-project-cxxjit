@@ -5,7 +5,7 @@
 #include "TunerDriver.h"
 
 #include "Debug.h"
-#include "Tuner.h"
+#include "Tuners.h"
 #include "clang/CodeGen/Tuning.h"
 
 namespace clang {
@@ -60,10 +60,51 @@ void printReport(JITTemplateInstantiation &TemplateInst) {
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
 }
 
+void printShortReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
+  if (!Data.Initialized || Data.Specializations.empty()) {
+    return;
+  }
+  auto OverallBest = Data.computeOverallBest();
+  if (!OverallBest) {
+    return;
+  }
+
+  auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}",
+                        fmt_align("Name", AlignStyle::Center, OverallBest.getValue().second->Context.DeclName.size()), "ID",
+                        "#Called", "Mean", "RSD", "RSE").str();
+  OS << "Best Configuration:\n";
+  OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  OS << Header << "\n";
+  OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
+
+
+  auto BestSpecialization = OverallBest.getValue().second;
+  auto BestVersion = BestSpecialization->getCurrentBest();
+  auto BestStats = BestVersion->updateStats();
+  auto BaseLine = BestSpecialization->Instantiations[1];
+  OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n",
+                BestSpecialization->Context.DeclName, BestVersion->ID, BestStats.N,
+                formatv("{0:f1}", BestStats.Mean),
+                formatv("{0:p}", BestStats.getRSD()),
+                formatv("{0:p}", BestStats.getRelativeStdErr()));
+  OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
+  OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
+  OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
+
+  auto TAKnobs = Data.TunableArgs.getKnobSet();
+  KnobState(TAKnobs, OverallBest.getValue().first).dump();
+  KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
+
+  OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
+
+}
+
 void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
   if (!Data.Initialized || Data.Specializations.empty()) {
     return;
   }
+
+  auto OverallBest = Data.computeOverallBest();
 
   auto FirstName = Data.Specializations.begin()->second.Context.DeclName;
   auto MaxNameLen = FirstName.size() + 4; // This does not always work.
@@ -71,13 +112,15 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
   auto Header = formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}",
                         fmt_align("Name", AlignStyle::Center, MaxNameLen), "ID",
                         "#Called", "Mean", "RSD", "RSE")
-                    .str();
+      .str();
   OS << Header << "\n";
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
   for (auto &It : Data.Specializations) {
     auto &TemplateInst = It.second;
     auto FName = TemplateInst.Context.DeclName;
     OS << FName << "\n";
+
+
     // Iterate over IDs to display in order. Not very robust, but works for
     // debugging.
     for (unsigned i = 1; i <= TemplateInst.Instantiations.size(); i++) {
@@ -102,6 +145,7 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
                     formatv("{0:p}", Stats.getRSD()),
                     formatv("{0:p}", Stats.getRelativeStdErr()));
     }
+
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     auto BestID = TemplateInst.getCurrentBest()->ID;
     auto Best = TemplateInst.Instantiations[BestID];
@@ -113,6 +157,26 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
   }
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
+
+  if (OverallBest) {
+    auto BestSpecialization = OverallBest.getValue().second;
+    auto BestVersion = BestSpecialization->getCurrentBest();
+    auto BestStats = BestVersion->updateStats();
+    auto BaseLine = BestSpecialization->Instantiations[1];
+    OS << "Overall best: \n";
+    OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n",
+                  BestSpecialization->Context.DeclName, BestVersion->ID, BestStats.N,
+                        formatv("{0:f1}", BestStats.Mean),
+                        formatv("{0:p}", BestStats.getRSD()),
+                        formatv("{0:p}", BestStats.getRelativeStdErr()));
+    OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
+    OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
+    OS << "Found configuration: \n";
+    auto TAKnobs = Data.TunableArgs.getKnobSet();
+    KnobState(TAKnobs, OverallBest.getValue().first).dump();
+    KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
+    OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
+  }
 }
 
 void printReport(TemplateTuningData &Data) {
@@ -219,16 +283,16 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
           return {};
         });
 
-    JIT_DEBUG(dbgs() << "Looking for tunable template arguments...");
+    JIT_INFO(dbgs() << "Looking for tunable template arguments..." << "\n");
     TunableArgList TAL(BaseArgs);
     for (auto &Knob : TAKnobs) {
-      JIT_DEBUG(dbgs() << "Template argument marked tunable: "
-                       << Knob->getArgIndex());
+      JIT_INFO(dbgs() << "Template argument marked tunable: "
+                       << Knob->getArgIndex() << "\n");
       TAL.add(std::move(Knob));
     }
 
     KnobSet TAKnobSet = TAL.getKnobSet();
-    auto TATuner = llvm::make_unique<RandomTuner>(TAKnobSet);
+    std::unique_ptr<Tuner> TATuner = createTuner(loadSearchAlgoEnv(), TAKnobSet);
     auto NewTuningData = llvm::make_unique<TemplateTuningData>(
         CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();
@@ -268,11 +332,8 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     JIT_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName
                      << "\n");
-#define TUNER_PRINT_REPORT // TODO: Expose to user
-#ifdef TUNER_PRINT_REPORT
-    outs() << "Tuner report:\n";
-    printFullReport(*TTD, outs());
-#endif
+    JIT_REPORT({outs() << "Tuner report:\n"; printFullReport(*TTD, outs());});
+    JIT_INFO({if (clang::jit::LogLvl < LOG_REPORT) {outs() << "Tuner report:\n"; printShortReport(*TTD, outs());};});
   }
 
   auto Mod = llvm::CloneModule(*TemplateInst.Context.Mod);

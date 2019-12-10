@@ -5,11 +5,12 @@
 #ifndef CLANG_CONFIGMATH_H
 #define CLANG_CONFIGMATH_H
 
+#include "KnobSet.h"
+#include "LoopKnob.h"
+#include "SimpleKnobs.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
 #include <vector>
-
-#include "KnobSet.h"
 
 namespace tuner {
 
@@ -122,7 +123,7 @@ template <typename T> struct VectorMapping {
     }
     for (auto &K : Knobs->LoopKnobs) {
       KnobToIndex[K.first] = Index;
-      Index += LoopTransformConfig::NUM_PARAMS;
+      Index += K.second->getTunableDimension(); // TODO: check
     }
   }
 
@@ -153,6 +154,24 @@ template <typename T> struct VectorMapping {
       }
     }
     return Cfg;
+  }
+
+  Vector<T>&  legalize(Vector<T>& Vec) {
+
+    auto Restrict = [&Vec](unsigned Idx, unsigned Min, unsigned Max) {
+      Vec[Idx] = std::min(Max, std::max(Min, Vec[Idx]));
+    };
+
+    for (auto IK : Knobs->IntKnobs) {
+      Restrict(KnobToIndex[IK.first], IK.second->min(), IK.second->max());
+    }
+    for (auto LK : Knobs->LoopKnobs) {
+      auto i0 = KnobToIndex[LK.first];
+      for (auto i = 0; i < LoopTransformConfig::NUM_PARAMS; i++) {
+        auto Param = (LoopTransformConfig::Parameter) i;
+        Restrict(i0 + i, LK.second->getMin(Param), LK.second->getMax(Param));
+      }
+    }
   }
 
 private:

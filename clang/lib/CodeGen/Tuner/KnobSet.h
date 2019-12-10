@@ -32,6 +32,8 @@ public:
 
   unsigned count() const { return IntKnobs.size() + LoopKnobs.size(); }
 
+  unsigned countTunable() const;
+
   llvm::DenseMap<KnobID, IntKnob *> IntKnobs;
   llvm::DenseMap<KnobID, LoopKnob *> LoopKnobs;
 };
@@ -53,13 +55,13 @@ struct KnobConfig {
 // Encapsulates the configuration of a given KnobSet.
 class KnobState {
 public:
-  KnobState(KnobSet &KS, KnobConfig &Cfg) : KS(KS), Config(Cfg) {}
+  KnobState(const KnobSet &KS, KnobConfig &Cfg) : KS(KS), Config(Cfg) {}
 
   void dump() { dump(outs()); }
 
   void dump(raw_ostream &OS);
 
-  KnobSet &KS;
+  const KnobSet &KS;
   KnobConfig &Config;
 };
 

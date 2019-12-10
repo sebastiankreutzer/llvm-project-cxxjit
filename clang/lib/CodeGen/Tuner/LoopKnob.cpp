@@ -133,7 +133,8 @@ private:
       LoopMD = addTagMD(LoopMD, LICM_VERSIONING_DISABLE_TAG);
     }
 
-    LoopMD = addTaggedBool(LoopMD, DISTRIBUTE_ENABLE_TAG, Cfg.getDistribute());
+    // TODO: This seems to always fail anyway, so it is disabled for now
+    //LoopMD = addTaggedBool(LoopMD, DISTRIBUTE_ENABLE_TAG, Cfg.getDistribute());
 
     if (Cfg.getDisableLICM()) {
       LoopMD = addTagMD(LoopMD, LICM_DISABLE_TAG);
@@ -180,6 +181,42 @@ void LoopTransformConfig::dump(llvm::raw_ostream &OS, unsigned Indent) const {
   OS << I << VECTORIZE_PREDICATE_ENABLE_TAG << ": "
      << getVectorizePredicateEnabled() << "\n";
 }
+
+void LoopTransformConfig::dump(llvm::raw_ostream &OS, const LoopKnob& Knob, unsigned Indent) const {
+  auto I = llvm::formatv("{0}", llvm::fmt_repeat(" ", Indent));
+  if (DisableLoopTransform) {
+    OS << I << "Explicit loop transform disabled"
+       << "\n";
+    return;
+  }
+  if (Knob.isTunable(DISTRIBUTE)) {
+    OS << I << DISTRIBUTE_ENABLE_TAG << ": " << getDistribute() << "\n";
+  }
+  if (Knob.isTunable(VECTORIZE_WIDTH)) {
+    OS << I << VECTORIZE_WIDTH_TAG << ": " << getVectorizeWidth() << "\n";
+  }
+  if (Knob.isTunable(INTERLEAVE_COUNT)) {
+    OS << I << INTERLEAVE_COUNT_TAG << ": " << getInterleaveCount() << "\n";
+  }
+  if (Knob.isTunable(UNROLL_COUNT)) {
+    OS << I << UNROLL_COUNT_TAG << ": " << getUnrollCount() << "\n";
+  }
+  if (Knob.isTunable(UNROLL_AND_JAM)) {
+    OS << I << UNROLL_AND_JAM_DISABLE_TAG << ": " << !getUnrollAndJam() << "\n";
+  }
+  if (Knob.isTunable(DISABLE_LICM_VERSIONING)) {
+    OS << I << LICM_VERSIONING_DISABLE_TAG << ": " << getDisableLICMVersioning()
+       << "\n";
+  }
+  if (Knob.isTunable(DISABLE_LICM)) {
+    OS << I << LICM_DISABLE_TAG << ": " << getDisableLICM() << "\n";
+  }
+  if (Knob.isTunable(VECTORIZE_PREDICATE_ENABLE)) {
+    OS << I << VECTORIZE_PREDICATE_ENABLE_TAG << ": "
+       << getVectorizePredicateEnabled() << "\n";
+  }
+}
+
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
                               const LoopTransformConfig &Cfg) {

@@ -102,7 +102,7 @@ template <typename RNETy> struct GenRandomConfigFn : public KnobSetFn {
   }
 
   void operator()(LoopKnob &K) override {
-    auto LCfg = createRandomLoopConfig(RNE);
+    auto LCfg = createRandomLoopConfig(K, RNE);
     K.setVal(Cfg, LCfg);
   }
 

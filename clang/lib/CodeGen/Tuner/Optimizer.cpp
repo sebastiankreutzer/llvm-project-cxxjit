@@ -129,6 +129,8 @@ void Optimizer::init(Module *M) {
   PM.add(createLoopKnobCreatorPass(Knobs));
   PM.run(*M);
   OptTuner->reset(Knobs);
+  JIT_INFO(dbgs() << "Search space dimension: " << Knobs.countTunable() << "\n");
+
 }
 
 //#define DUMP_MOD_WITH_ATTRIBUTES

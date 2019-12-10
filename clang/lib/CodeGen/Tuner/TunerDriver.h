@@ -319,6 +319,31 @@ struct TemplateTuningData {
     return Specializations[ActiveConfig];
   }
 
+  JITTemplateInstantiation* getSpecialization(const KnobConfig& Cfg) {
+    auto It = Specializations.find(Cfg);
+    if (It != Specializations.end())
+      return &It->second;
+    return nullptr;
+  }
+
+  llvm::Optional<std::pair<tuner::KnobConfig, JITTemplateInstantiation*>> computeOverallBest() {
+    std::pair<tuner::KnobConfig, JITTemplateInstantiation*> CurrentBest;
+    TimingStats BestStats;
+    for (auto& It : Specializations) {
+      auto& Inst = It.second;
+      Inst.updateStats();
+      auto Stats = Inst.getCurrentBest()->updateStats();
+      if (Stats.betterThan(BestStats)) {
+        BestStats = Stats;
+        CurrentBest = {It.first, &Inst};
+      }
+    }
+    if (BestStats.Valid()) {
+      return CurrentBest;
+    }
+    return {};
+  }
+
 private:
   JITTemplateInstantiation instantiate(TAList TAs,
                                        tuner::ConfigEvalRequest Request) {

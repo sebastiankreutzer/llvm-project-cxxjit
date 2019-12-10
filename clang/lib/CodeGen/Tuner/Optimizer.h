@@ -10,8 +10,7 @@
 #include "llvm/Target/TargetMachine.h"
 
 #include "CodeGenKnobs.h"
-#include "SimplexTuner.h"
-#include "Tuner.h"
+#include "Tuners.h"
 
 namespace llvm {
 namespace legacy {
@@ -50,8 +49,10 @@ public:
         TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr) {
     Knobs.add(&OptLvl);
     Knobs.add(&OptSizeLvl);
+
     // OptTuner = llvm::make_unique<RandomTuner>(Knobs);
-    OptTuner = llvm::make_unique<SimplexTuner>(Knobs);
+    OptTuner = clang::jit::createTuner(clang::jit::loadSearchAlgoEnv(), Knobs);
+
   }
 
   void init(llvm::Module *M);
@@ -60,6 +61,10 @@ public:
   // It is assumed that the module is a (slightly modified) clone of the module
   // that init() was called with.
   ConfigEvalRequest optimize(llvm::Module *M, bool UseDefault);
+
+  const KnobSet& getKnobs() {
+    return Knobs;
+  }
 
 private:
   llvm::TargetIRAnalysis getTargetIRAnalysis();

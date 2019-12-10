@@ -38,7 +38,7 @@ public:
 
   void setVal(KnobConfig &Cfg, int Val) override { Cfg.IntCfg[getID()] = Val; }
 
-  std::string getName() override {
+  std::string getName() const override {
     return Name + " (id=" + std::to_string(getID()) + ")";
   }
 

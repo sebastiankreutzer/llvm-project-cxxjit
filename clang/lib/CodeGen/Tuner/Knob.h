@@ -71,7 +71,7 @@ public:
   virtual ValTy getVal(const KnobConfig &Cfg) const = 0;
   virtual void setVal(KnobConfig &Cfg, ValTy) = 0;
 
-  virtual std::string getName() {
+  virtual std::string getName() const {
     return "Knob (id=" + std::to_string(getID()) + ")";
   }
 };

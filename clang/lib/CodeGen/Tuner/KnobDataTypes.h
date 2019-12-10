@@ -11,6 +11,8 @@ struct raw_ostream;
 
 namespace tuner {
 
+class LoopKnob;
+
 // NOTE: Using "Name" here instead of "ID" to differentiate from Loop::getID()
 // which returns the loop MDNode.
 using LoopName = unsigned;
@@ -18,7 +20,7 @@ using LoopName = unsigned;
 struct LoopTransformConfig {
 
   // DisableLoopTransform and DisableNonForced are not tuned, thus not counted
-  enum Params {
+  enum Parameter {
     INTERLEAVE_COUNT,
     VECTORIZE_PREDICATE_ENABLE,
     VECTORIZE_WIDTH,
@@ -37,8 +39,7 @@ struct LoopTransformConfig {
   //  static constexpr unsigned UNROLL_COUNT_MIN = 0;
   //  static constexpr unsigned UNROLL_COUNT_MAX = 6;
 
-  // TODO: Figure out how determine sensible bounds for unrolling and
-  // interleaving on a per-loop basis
+  // These are the default min and max values
   static constexpr unsigned MIN_VALS[NUM_PARAMS] = {0, 0, 0, 0, 0, 0, 0, 0};
   static constexpr unsigned MAX_VALS[NUM_PARAMS] = {3, 1, 5, 1, 1, 1, 3, 1};
 
@@ -90,6 +91,8 @@ struct LoopTransformConfig {
   unsigned getUnrollCount() const { return (unsigned)1 << Vals[UNROLL_COUNT]; }
 
   void dump(llvm::raw_ostream &OS, unsigned Indent = 0) const;
+  void dump(llvm::raw_ostream &OS, const LoopKnob& Knob, unsigned Indent = 0) const;
+
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,

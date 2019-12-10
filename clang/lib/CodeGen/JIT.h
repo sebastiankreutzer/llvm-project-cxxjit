@@ -125,10 +125,13 @@ namespace jit {
 
 inline void loadDebugFlag() {
   auto DebugStr = std::getenv("CJ_DEBUG");
-  if (DebugStr && std::strcmp(DebugStr, "1") == 0)
-    EnableDebugFlag = true;
-  else
-    EnableDebugFlag = false;
+  unsigned Lvl = LOG_NONE;
+  if (DebugStr) {
+    int StrInt = std::atoi(DebugStr);
+    if (StrInt >= 0 && StrInt <= LOG_DEBUG)
+      Lvl = StrInt;
+  }
+  LogLvl = Lvl;
 }
 
 inline void fatal() {
@@ -276,8 +279,6 @@ private:
   std::vector<llvm::orc::LegacyCtorDtorRunner<CompileLayerT>>
       IRStaticDestructorRunners;
 };
-
-
 
 
 

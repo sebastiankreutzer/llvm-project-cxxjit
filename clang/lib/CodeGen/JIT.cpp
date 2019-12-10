@@ -295,7 +295,7 @@ llvm::DenseMap<InstInfo, InstData, InstMapInfo> Instantiations;
 namespace clang {
 namespace jit {
 
-bool EnableDebugFlag = false;
+unsigned LogLvl = LOG_NONE;
 
 void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
   Gen->HandleTranslationUnit(C);
@@ -1170,7 +1170,7 @@ extern "C"
       auto DriverStr = std::getenv("CJ_DRIVER");
       if (DriverStr && std::strcmp(DriverStr, "tuner") == 0) {
         TUD.CompilerDriver = llvm::make_unique<TunerDriver>(*CD);
-        JIT_DEBUG(llvm::dbgs() << "JIT Tuning enabled\n");
+        JIT_INFO(llvm::dbgs() << "JIT Tuning enabled\n");
       } else {
         TUD.CompilerDriver = llvm::make_unique<SimpleDriver>(*CD);
       }

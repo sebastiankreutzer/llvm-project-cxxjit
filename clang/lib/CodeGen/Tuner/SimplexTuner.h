@@ -38,20 +38,21 @@ struct GenInitialVerticesFn : public KnobSetFn {
 
   void operator()(LoopKnob &K) override {
 
+    outs() << "Generating vertices for knob: " <<  K.getName() << ":\n";
     for (unsigned i = 0; i < LoopTransformConfig::NUM_PARAMS; i++) {
-      if (i != LoopTransformConfig::UNROLL_COUNT &&
-          i != LoopTransformConfig::VECTORIZE_WIDTH &&
-          i != LoopTransformConfig::INTERLEAVE_COUNT)
+      auto Param = (LoopTransformConfig::Parameter) i;
+      if (!K.isTunable(Param))
         continue;
+
       KnobConfig X(X0);
       auto LoopCfg = K.getVal(X0);
 
-      auto Min = LoopTransformConfig::MIN_VALS[i];
-      auto Max = LoopTransformConfig::MAX_VALS[i];
+      auto Min = K.getMin(Param);
+      auto Max = K.getMax(Param);
       auto Val = perturbInt(LoopCfg.Vals[i], Min, Max);
+      outs() << "Attribute " << Param << " is tunable: min=" << Min << ", max=" << Max << ", val=" << Val << "\n";
       LoopCfg.Vals[i] = (unsigned)Val;
       K.setVal(X, LoopCfg);
-      // TODO: Just for testing
       Vertices.push_back(X);
     }
   }

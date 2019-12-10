@@ -366,7 +366,7 @@ private:
 
     JIT_DEBUG(dumpModule(*Mod, "Module after linking"));
 
-    auto Opt = llvm::make_unique<tuner::Optimizer>(
+    auto Opt = std::make_unique<tuner::Optimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
         *CD.TargetOpts, *CD.Invocation->getLangOpts(),
         CD.CJ->getTargetMachine());

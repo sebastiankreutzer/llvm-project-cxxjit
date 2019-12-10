@@ -435,39 +435,12 @@ public:
   }
 };
 
-struct ExitLimitQuery {
-  ExitLimitQuery(const Loop *L, BasicBlock *ExitingBlock, bool AllowPredicates)
-      : L(L), ExitingBlock(ExitingBlock), AllowPredicates(AllowPredicates) {}
-
-  const Loop *L;
-  BasicBlock *ExitingBlock;
-  bool AllowPredicates;
-};
-
-template <> struct DenseMapInfo<ExitLimitQuery> {
-  static inline ExitLimitQuery getEmptyKey() {
-    return ExitLimitQuery(nullptr, nullptr, true);
-  }
-
-  static inline ExitLimitQuery getTombstoneKey() {
-    return ExitLimitQuery(nullptr, nullptr, false);
-  }
-
-  static unsigned getHashValue(ExitLimitQuery Val) {
-    return hash_combine(hash_combine(Val.L, Val.ExitingBlock),
-                        Val.AllowPredicates);
-  }
-
-  static bool isEqual(ExitLimitQuery LHS, ExitLimitQuery RHS) {
-    return LHS.L == RHS.L && LHS.ExitingBlock == RHS.ExitingBlock &&
-           LHS.AllowPredicates == RHS.AllowPredicates;
-  }
-};
-
 /// The main scalar evolution driver. Because client code (intentionally)
 /// can't do much with the SCEV objects directly, they must ask this class
 /// for services.
 class ScalarEvolution {
+  friend class ScalarEvolutionsTest;
+
 public:
   /// An enum describing the relationship between a SCEV and a loop.
   enum LoopDisposition {
@@ -537,7 +510,7 @@ public:
   const SCEV *getConstant(ConstantInt *V);
   const SCEV *getConstant(const APInt &Val);
   const SCEV *getConstant(Type *Ty, uint64_t V, bool isSigned = false);
-  const SCEV *getTruncateExpr(const SCEV *Op, Type *Ty);
+  const SCEV *getTruncateExpr(const SCEV *Op, Type *Ty, unsigned Depth = 0);
   const SCEV *getZeroExtendExpr(const SCEV *Op, Type *Ty, unsigned Depth = 0);
   const SCEV *getSignExtendExpr(const SCEV *Op, Type *Ty, unsigned Depth = 0);
   const SCEV *getAnyExtendExpr(const SCEV *Op, Type *Ty);
@@ -598,6 +571,8 @@ public:
   /// \p IndexExprs The expressions for the indices.
   const SCEV *getGEPExpr(GEPOperator *GEP,
                          const SmallVectorImpl<const SCEV *> &IndexExprs);
+  const SCEV *getMinMaxExpr(unsigned Kind,
+                            SmallVectorImpl<const SCEV *> &Operands);
   const SCEV *getSMaxExpr(const SCEV *LHS, const SCEV *RHS);
   const SCEV *getSMaxExpr(SmallVectorImpl<const SCEV *> &Operands);
   const SCEV *getUMaxExpr(const SCEV *LHS, const SCEV *RHS);
@@ -635,11 +610,13 @@ public:
 
   /// Return a SCEV corresponding to a conversion of the input value to the
   /// specified type.  If the type must be extended, it is zero extended.
-  const SCEV *getTruncateOrZeroExtend(const SCEV *V, Type *Ty);
+  const SCEV *getTruncateOrZeroExtend(const SCEV *V, Type *Ty,
+                                      unsigned Depth = 0);
 
   /// Return a SCEV corresponding to a conversion of the input value to the
   /// specified type.  If the type must be extended, it is sign extended.
-  const SCEV *getTruncateOrSignExtend(const SCEV *V, Type *Ty);
+  const SCEV *getTruncateOrSignExtend(const SCEV *V, Type *Ty,
+                                      unsigned Depth = 0);
 
   /// Return a SCEV corresponding to a conversion of the input value to the
   /// specified type.  If the type must be extended, it is zero extended.  The
@@ -742,10 +719,26 @@ public:
   unsigned getSmallConstantTripMultiple(const Loop *L,
                                         BasicBlock *ExitingBlock);
 
-  /// Get the expression for the number of loop iterations for which this loop
-  /// is guaranteed not to exit via ExitingBlock. Otherwise return
-  /// SCEVCouldNotCompute.
-  const SCEV *getExitCount(const Loop *L, BasicBlock *ExitingBlock);
+
+  /// The terms "backedge taken count" and "exit count" are used
+  /// interchangeably to refer to the number of times the backedge of a loop 
+  /// has executed before the loop is exited.
+  enum ExitCountKind {
+    /// An expression exactly describing the number of times the backedge has
+    /// executed when a loop is exited.
+    Exact,
+    /// A constant which provides an upper bound on the exact trip count.
+    ConstantMaximum,
+  };
+
+  /// Return the number of times the backedge executes before the given exit
+  /// would be taken; if not exactly computable, return SCEVCouldNotCompute. 
+  /// For a single exit loop, this value is equivelent to the result of
+  /// getBackedgeTakenCount.  The loop is guaranteed to exit (via *some* exit)
+  /// before the backedge is executed (ExitCount + 1) times.  Note that there
+  /// is no guarantee about *which* exit is taken on the exiting iteration.  
+  const SCEV *getExitCount(const Loop *L, BasicBlock *ExitingBlock,
+                           ExitCountKind Kind = Exact);
 
   /// If the specified loop has a predictable backedge-taken count, return it,
   /// otherwise return a SCEVCouldNotCompute object. The backedge-taken count is
@@ -757,7 +750,7 @@ public:
   /// Note that it is not valid to call this method on a loop without a
   /// loop-invariant backedge-taken count (see
   /// hasLoopInvariantBackedgeTakenCount).
-  const SCEV *getBackedgeTakenCount(const Loop *L);
+  const SCEV *getBackedgeTakenCount(const Loop *L, ExitCountKind Kind = Exact);
 
   /// Similar to getBackedgeTakenCount, except it will add a set of
   /// SCEV predicates to Predicates that are required to be true in order for
@@ -770,15 +763,24 @@ public:
   /// to (i.e. a "conservative over-approximation") of the value returend by
   /// getBackedgeTakenCount.  If such a value cannot be computed, it returns the
   /// SCEVCouldNotCompute object.
-  const SCEV *getMaxBackedgeTakenCount(const Loop *L);
+  const SCEV *getConstantMaxBackedgeTakenCount(const Loop *L) {
+    return getBackedgeTakenCount(L, ConstantMaximum);
+  } 
 
   /// Return true if the backedge taken count is either the value returned by
-  /// getMaxBackedgeTakenCount or zero.
+  /// getConstantMaxBackedgeTakenCount or zero.
   bool isBackedgeTakenCountMaxOrZero(const Loop *L);
 
   /// Return true if the specified loop has an analyzable loop-invariant
   /// backedge-taken count.
   bool hasLoopInvariantBackedgeTakenCount(const Loop *L);
+
+  // This method should be called by the client when it made any change that
+  // would invalidate SCEV's answers, and the client wants to remove all loop
+  // information held internally by ScalarEvolution. This is intended to be used
+  // when the alternative to forget a loop is too expensive (i.e. large loop
+  // bodies).
+  void forgetAllLoops();
 
   /// This method should be called by the client when it has changed a loop in
   /// a way that may effect ScalarEvolution's ability to compute a trip count,
@@ -1211,6 +1213,9 @@ private:
       Predicates.insert(P);
     }
 
+    /// Construct either an exact exit limit from a constant, or an unknown
+    /// one from a SCEVCouldNotCompute.  No other types of SCEVs are allowed
+    /// as arguments and asserts enforce that internally.
     /*implicit*/ ExitLimit(const SCEV *E);
 
     ExitLimit(
@@ -1242,13 +1247,15 @@ private:
   struct ExitNotTakenInfo {
     PoisoningVH<BasicBlock> ExitingBlock;
     const SCEV *ExactNotTaken;
+    const SCEV *MaxNotTaken;
     std::unique_ptr<SCEVUnionPredicate> Predicate;
 
     explicit ExitNotTakenInfo(PoisoningVH<BasicBlock> ExitingBlock,
                               const SCEV *ExactNotTaken,
+                              const SCEV *MaxNotTaken,
                               std::unique_ptr<SCEVUnionPredicate> Predicate)
-        : ExitingBlock(ExitingBlock), ExactNotTaken(ExactNotTaken),
-          Predicate(std::move(Predicate)) {}
+      : ExitingBlock(ExitingBlock), ExactNotTaken(ExactNotTaken),
+        MaxNotTaken(ExactNotTaken), Predicate(std::move(Predicate)) {}
 
     bool hasAlwaysTruePredicate() const {
       return !Predicate || Predicate->isAlwaysTrue();
@@ -1330,6 +1337,9 @@ private:
 
     /// Get the max backedge taken count for the loop.
     const SCEV *getMax(ScalarEvolution *SE) const;
+
+    /// Get the max backedge taken count for the particular loop exit.
+    const SCEV *getMax(BasicBlock *ExitingBlock, ScalarEvolution *SE) const;
 
     /// Return true if the number of times this backedge is taken is either the
     /// value returned by getMax or zero.
@@ -1868,6 +1878,16 @@ private:
   /// Try to match the pattern generated by getURemExpr(A, B). If successful,
   /// Assign A and B to LHS and RHS, respectively.
   bool matchURem(const SCEV *Expr, const SCEV *&LHS, const SCEV *&RHS);
+
+  /// Look for a SCEV expression with type `SCEVType` and operands `Ops` in
+  /// `UniqueSCEVs`.
+  ///
+  /// The first component of the returned tuple is the SCEV if found and null
+  /// otherwise.  The second component is the `FoldingSetNodeID` that was
+  /// constructed to look up the SCEV and the third component is the insertion
+  /// point.
+  std::tuple<const SCEV *, FoldingSetNodeID, void *>
+  findExistingSCEVInCache(int SCEVType, ArrayRef<const SCEV *> Ops);
 
   FoldingSet<SCEV> UniqueSCEVs;
   FoldingSet<SCEVPredicate> UniquePreds;

@@ -33,14 +33,14 @@ struct ELFNote {
   /// Parse an ELFNote entry from the given DataExtractor starting at position
   /// \p offset.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFRel entry was successfully read and false otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 
@@ -49,19 +49,14 @@ struct ELFNote {
   }
 };
 
-//------------------------------------------------------------------------------
-/// @class ObjectFileELF
+/// \class ObjectFileELF
 /// Generic ELF object file reader.
 ///
 /// This class provides a generic ELF (32/64 bit) reader plugin implementing
 /// the ObjectFile protocol.
 class ObjectFileELF : public lldb_private::ObjectFile {
 public:
-  ~ObjectFileELF() override;
-
-  //------------------------------------------------------------------
   // Static Functions
-  //------------------------------------------------------------------
   static void Initialize();
 
   static void Terminate();
@@ -89,16 +84,19 @@ public:
   static bool MagicBytesMatch(lldb::DataBufferSP &data_sp, lldb::addr_t offset,
                               lldb::addr_t length);
 
-  //------------------------------------------------------------------
   // PluginInterface protocol
-  //------------------------------------------------------------------
   lldb_private::ConstString GetPluginName() override;
 
   uint32_t GetPluginVersion() override;
 
-  //------------------------------------------------------------------
+  // LLVM RTTI support
+  static char ID;
+  bool isA(const void *ClassID) const override {
+    return ClassID == &ID || ObjectFile::isA(ClassID);
+  }
+  static bool classof(const ObjectFile *obj) { return obj->isA(&ID); }
+
   // ObjectFile Protocol.
-  //------------------------------------------------------------------
   bool ParseHeader() override;
 
   bool SetLoadAddress(lldb_private::Target &target, lldb::addr_t value,
@@ -124,7 +122,9 @@ public:
 
   lldb_private::UUID GetUUID() override;
 
-  lldb_private::FileSpecList GetDebugSymbolFilePaths() override;
+  /// Return the contents of the .gnu_debuglink section, if the object file
+  /// contains it. 
+  llvm::Optional<lldb_private::FileSpec> GetDebugLink();
 
   uint32_t GetDependentModules(lldb_private::FileSpecList &files) override;
 
@@ -197,7 +197,7 @@ private:
 
   /// ELF .gnu_debuglink file and crc data if available.
   std::string m_gnu_debuglink_file;
-  uint32_t m_gnu_debuglink_crc;
+  uint32_t m_gnu_debuglink_crc = 0;
 
   /// Collection of program headers.
   ProgramHeaderColl m_program_headers;
@@ -207,6 +207,10 @@ private:
 
   /// Collection of symbols from the dynamic table.
   DynamicSymbolColl m_dynamic_symbols;
+
+  /// Object file parsed from .gnu_debugdata section (\sa
+  /// GetGnuDebugDataObjectFile())
+  std::shared_ptr<ObjectFileELF> m_gnu_debug_data_object_file;
 
   /// List of file specifications corresponding to the modules (shared
   /// libraries) on which this object file depends.
@@ -330,7 +334,7 @@ private:
   /// Returns the section header with the given id or NULL.
   const ELFSectionHeaderInfo *GetSectionHeaderByIndex(lldb::user_id_t id);
 
-  /// @name  ELF header dump routines
+  /// \name  ELF header dump routines
   //@{
   static void DumpELFHeader(lldb_private::Stream *s,
                             const elf::ELFHeader &header);
@@ -342,7 +346,7 @@ private:
                                    elf::elf_half e_type);
   //@}
 
-  /// @name ELF program header dump routines
+  /// \name ELF program header dump routines
   //@{
   void DumpELFProgramHeaders(lldb_private::Stream *s);
 
@@ -356,7 +360,7 @@ private:
                                            elf::elf_word p_flags);
   //@}
 
-  /// @name ELF section header dump routines
+  /// \name ELF section header dump routines
   //@{
   void DumpELFSectionHeaders(lldb_private::Stream *s);
 
@@ -383,6 +387,14 @@ private:
                               lldb_private::UUID &uuid);
 
   bool AnySegmentHasPhysicalAddress();
+  
+  /// Takes the .gnu_debugdata and returns the decompressed object file that is
+  /// stored within that section.
+  ///
+  /// \returns either the decompressed object file stored within the
+  /// .gnu_debugdata section or \c nullptr if an error occured or if there's no
+  /// section with that name.
+  std::shared_ptr<ObjectFileELF> GetGnuDebugDataObjectFile();
 };
 
 #endif // liblldb_ObjectFileELF_h_

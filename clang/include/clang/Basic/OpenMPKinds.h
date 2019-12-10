@@ -33,9 +33,10 @@ enum OpenMPClauseKind {
 #define OPENMP_CLAUSE(Name, Class) \
   OMPC_##Name,
 #include "clang/Basic/OpenMPKinds.def"
-  OMPC_flush,
   OMPC_threadprivate,
   OMPC_uniform,
+  OMPC_device_type,
+  OMPC_match,
   OMPC_unknown
 };
 
@@ -105,6 +106,22 @@ enum OpenMPMapModifierKind {
   OMPC_MAP_MODIFIER_last
 };
 
+/// OpenMP modifier kind for 'to' clause.
+enum OpenMPToModifierKind {
+#define OPENMP_TO_MODIFIER_KIND(Name) \
+  OMPC_TO_MODIFIER_##Name,
+#include "clang/Basic/OpenMPKinds.def"
+  OMPC_TO_MODIFIER_unknown
+};
+
+/// OpenMP modifier kind for 'from' clause.
+enum OpenMPFromModifierKind {
+#define OPENMP_FROM_MODIFIER_KIND(Name) \
+  OMPC_FROM_MODIFIER_##Name,
+#include "clang/Basic/OpenMPKinds.def"
+  OMPC_FROM_MODIFIER_unknown
+};
+
 /// OpenMP attributes for 'dist_schedule' clause.
 enum OpenMPDistScheduleClauseKind {
 #define OPENMP_DIST_SCHEDULE_KIND(Name) OMPC_DIST_SCHEDULE_##Name,
@@ -135,6 +152,14 @@ enum OpenMPAtomicDefaultMemOrderClauseKind {
   OMPC_ATOMIC_DEFAULT_MEM_ORDER_##Name,
 #include "clang/Basic/OpenMPKinds.def"
   OMPC_ATOMIC_DEFAULT_MEM_ORDER_unknown
+};
+
+/// OpenMP device type for 'device_type' clause.
+enum OpenMPDeviceType {
+#define OPENMP_DEVICE_TYPE_KIND(Name) \
+  OMPC_DEVICE_TYPE_##Name,
+#include "clang/Basic/OpenMPKinds.def"
+  OMPC_DEVICE_TYPE_unknown
 };
 
 /// Scheduling data for loop-based OpenMP directives.
@@ -244,7 +269,8 @@ bool isOpenMPPrivate(OpenMPClauseKind Kind);
 bool isOpenMPThreadPrivate(OpenMPClauseKind Kind);
 
 /// Checks if the specified directive kind is one of tasking directives - task,
-/// taskloop or taksloop simd.
+/// taskloop, taksloop simd, master taskloop, parallel master taskloop, master
+/// taskloop simd, or parallel master taskloop simd.
 bool isOpenMPTaskingDirective(OpenMPDirectiveKind Kind);
 
 /// Checks if the specified directive kind is one of the composite or combined

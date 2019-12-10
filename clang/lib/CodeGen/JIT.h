@@ -394,7 +394,7 @@ public:
     EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
                       LangOpts, Context->getTargetInfo().getDataLayout(),
                       getModule(), Action,
-                      llvm::make_unique<llvm::buffer_ostream>(*AsmOutStream));
+                      std::make_unique<llvm::buffer_ostream>(*AsmOutStream));
   }
 };
 

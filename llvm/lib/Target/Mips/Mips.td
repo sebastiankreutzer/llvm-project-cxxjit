@@ -25,6 +25,8 @@ class PredicateControl {
   list<Predicate> GPRPredicates = [];
   // Predicates for the PTR size such as IsPTR64bit
   list<Predicate> PTRPredicates = [];
+  // Predicates for a symbol's size such as hasSym32.
+  list<Predicate> SYMPredicates = [];
   // Predicates for the FGR size and layout such as IsFP64bit
   list<Predicate> FGRPredicates = [];
   // Predicates for the instruction group membership such as ISA's.
@@ -38,6 +40,7 @@ class PredicateControl {
   list<Predicate> Predicates = !listconcat(EncodingPredicates,
                                            GPRPredicates,
                                            PTRPredicates,
+                                           SYMPredicates,
                                            FGRPredicates,
                                            InsnPredicates,
                                            HardFloatPredicate,
@@ -189,22 +192,26 @@ def FeatureGINV : SubtargetFeature<"ginv", "HasGINV", "true",
 def FeatureMicroMips  : SubtargetFeature<"micromips", "InMicroMipsMode", "true",
                                          "microMips mode">;
 
-def FeatureCnMips     : SubtargetFeature<"cnmips", "HasCnMips",
-                                "true", "Octeon cnMIPS Support",
-                                [FeatureMips64r2]>;
+def FeatureCnMips : SubtargetFeature<"cnmips", "HasCnMips",
+                                     "true", "Octeon cnMIPS Support",
+                                     [FeatureMips64r2]>;
 
 def FeatureUseTCCInDIV : SubtargetFeature<
                                "use-tcc-in-div",
                                "UseTCCInDIV", "false",
                                "Force the assembler to use trapping">;
 
-def FeatureMadd4 : SubtargetFeature<"nomadd4", "DisableMadd4", "true",
-                                    "Disable 4-operand madd.fmt and related instructions">;
+def FeatureMadd4
+    : SubtargetFeature<"nomadd4", "DisableMadd4", "true",
+                       "Disable 4-operand madd.fmt and related instructions">;
 
 def FeatureMT : SubtargetFeature<"mt", "HasMT", "true", "Mips MT ASE">;
 
 def FeatureLongCalls : SubtargetFeature<"long-calls", "UseLongCalls", "true",
                                         "Disable use of the jal instruction">;
+
+def FeatureXGOT
+    : SubtargetFeature<"xgot", "UseXGOT", "true", "Assume 32-bit GOT">;
 
 def FeatureUseIndirectJumpsHazard : SubtargetFeature<"use-indirect-jump-hazard",
                                                     "UseIndirectJumpsHazard",
@@ -257,3 +264,9 @@ def Mips : Target {
   let AssemblyParserVariants = [MipsAsmParserVariant];
   let AllowRegisterRenaming = 1;
 }
+
+//===----------------------------------------------------------------------===//
+// Pfm Counters
+//===----------------------------------------------------------------------===//
+
+include "MipsPfmCounters.td"

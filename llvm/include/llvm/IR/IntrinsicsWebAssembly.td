@@ -24,6 +24,17 @@ def int_wasm_memory_grow : Intrinsic<[llvm_anyint_ty],
                                      []>;
 
 //===----------------------------------------------------------------------===//
+// Trapping float-to-int conversions
+//===----------------------------------------------------------------------===//
+
+def int_wasm_trunc_signed : Intrinsic<[llvm_anyint_ty],
+                                      [llvm_anyfloat_ty],
+                                      [IntrNoMem]>;
+def int_wasm_trunc_unsigned : Intrinsic<[llvm_anyint_ty],
+                                        [llvm_anyfloat_ty],
+                                        [IntrNoMem]>;
+
+//===----------------------------------------------------------------------===//
 // Saturating float-to-int conversions
 //===----------------------------------------------------------------------===//
 
@@ -40,8 +51,8 @@ def int_wasm_trunc_saturate_unsigned : Intrinsic<[llvm_anyint_ty],
 
 // throw / rethrow
 def int_wasm_throw : Intrinsic<[], [llvm_i32_ty, llvm_ptr_ty],
-                               [Throws, IntrNoReturn]>;
-def int_wasm_rethrow : Intrinsic<[], [], [Throws, IntrNoReturn]>;
+                               [Throws, IntrNoReturn, ImmArg<0>]>;
+def int_wasm_rethrow_in_catch : Intrinsic<[], [], [Throws, IntrNoReturn]>;
 
 // Since wasm does not use landingpad instructions, these instructions return
 // exception pointer and selector values until we lower them in WasmEHPrepare.
@@ -58,7 +69,7 @@ def int_wasm_extract_exception : Intrinsic<[llvm_ptr_ty], [],
 // by WasmEHPrepare pass to generate landingpad table in EHStreamer. This is
 // used in order to give them the indices in WasmEHPrepare.
 def int_wasm_landingpad_index: Intrinsic<[], [llvm_token_ty, llvm_i32_ty],
-                                         [IntrNoMem]>;
+                                         [IntrNoMem, ImmArg<1>]>;
 
 // Returns LSDA address of the current function.
 def int_wasm_lsda : Intrinsic<[llvm_ptr_ty], [], [IntrNoMem]>;
@@ -89,6 +100,10 @@ def int_wasm_atomic_notify:
 // SIMD intrinsics
 //===----------------------------------------------------------------------===//
 
+def int_wasm_swizzle :
+  Intrinsic<[llvm_v16i8_ty],
+            [llvm_v16i8_ty, llvm_v16i8_ty],
+            [IntrNoMem, IntrSpeculatable]>;
 def int_wasm_sub_saturate_signed :
   Intrinsic<[llvm_anyvector_ty],
             [LLVMMatchType<0>, LLVMMatchType<0>],
@@ -97,6 +112,26 @@ def int_wasm_sub_saturate_unsigned :
   Intrinsic<[llvm_anyvector_ty],
             [LLVMMatchType<0>, LLVMMatchType<0>],
             [IntrNoMem, IntrSpeculatable]>;
+
+// TODO: Remove intrinsics and rely on codegen patterns once these are
+// officially merged to the spec proposal
+def int_wasm_min_signed :
+  Intrinsic<[llvm_anyvector_ty],
+            [LLVMMatchType<0>, LLVMMatchType<0>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_min_unsigned :
+  Intrinsic<[llvm_anyvector_ty],
+            [LLVMMatchType<0>, LLVMMatchType<0>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_max_signed :
+  Intrinsic<[llvm_anyvector_ty],
+            [LLVMMatchType<0>, LLVMMatchType<0>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_max_unsigned :
+  Intrinsic<[llvm_anyvector_ty],
+            [LLVMMatchType<0>, LLVMMatchType<0>],
+            [IntrNoMem, IntrSpeculatable]>;
+
 def int_wasm_bitselect :
   Intrinsic<[llvm_anyvector_ty],
             [LLVMMatchType<0>, LLVMMatchType<0>, LLVMMatchType<0>],
@@ -109,6 +144,43 @@ def int_wasm_alltrue :
   Intrinsic<[llvm_i32_ty],
             [llvm_anyvector_ty],
             [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_qfma :
+  Intrinsic<[llvm_anyvector_ty],
+            [LLVMMatchType<0>, LLVMMatchType<0>, LLVMMatchType<0>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_qfms :
+  Intrinsic<[llvm_anyvector_ty],
+            [LLVMMatchType<0>, LLVMMatchType<0>, LLVMMatchType<0>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_dot :
+  Intrinsic<[llvm_v4i32_ty],
+            [llvm_v8i16_ty, llvm_v8i16_ty],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_narrow_signed :
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyvector_ty, LLVMMatchType<1>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_narrow_unsigned :
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyvector_ty, LLVMMatchType<1>],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_widen_low_signed :
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyvector_ty],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_widen_high_signed :
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyvector_ty],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_widen_low_unsigned :
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyvector_ty],
+            [IntrNoMem, IntrSpeculatable]>;
+def int_wasm_widen_high_unsigned :
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyvector_ty],
+            [IntrNoMem, IntrSpeculatable]>;
+
 
 //===----------------------------------------------------------------------===//
 // Bulk memory intrinsics
@@ -118,10 +190,29 @@ def int_wasm_memory_init :
   Intrinsic<[],
             [llvm_i32_ty, llvm_i32_ty, llvm_ptr_ty, llvm_i32_ty, llvm_i32_ty],
             [IntrWriteMem, IntrInaccessibleMemOrArgMemOnly, WriteOnly<2>,
-             IntrHasSideEffects]>;
+             IntrHasSideEffects, ImmArg<0>, ImmArg<1>]>;
 def int_wasm_data_drop :
   Intrinsic<[],
             [llvm_i32_ty],
-            [IntrNoDuplicate, IntrHasSideEffects]>;
+            [IntrNoDuplicate, IntrHasSideEffects, ImmArg<0>]>;
+
+//===----------------------------------------------------------------------===//
+// Thread-local storage intrinsics
+//===----------------------------------------------------------------------===//
+
+def int_wasm_tls_size :
+  Intrinsic<[llvm_anyint_ty],
+            [],
+            [IntrNoMem, IntrSpeculatable]>;
+
+def int_wasm_tls_align :
+  Intrinsic<[llvm_anyint_ty],
+            [],
+            [IntrNoMem, IntrSpeculatable]>;
+
+def int_wasm_tls_base :
+  Intrinsic<[llvm_ptr_ty],
+            [],
+            [IntrReadMem]>;
 
 } // TargetPrefix = "wasm"

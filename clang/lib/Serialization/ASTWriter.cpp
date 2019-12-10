@@ -65,6 +65,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/Weak.h"
 #include "clang/Serialization/ASTReader.h"
+#include "clang/Serialization/InMemoryModuleCache.h"
 #include "clang/Serialization/Module.h"
 #include "clang/Serialization/ModuleFileExtension.h"
 #include "clang/Serialization/SerializationDiagnostic.h"
@@ -83,8 +84,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Bitcode/BitCodes.h"
-#include "llvm/Bitcode/BitstreamWriter.h"
+#include "llvm/Bitstream/BitCodes.h"
+#include "llvm/Bitstream/BitstreamWriter.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/DJB.h"
@@ -166,7 +167,7 @@ namespace clang {
 #define TYPE(Class, Base) \
         case Type::Class: Visit##Class##Type(cast<Class##Type>(T)); break;
 #define ABSTRACT_TYPE(Class, Base)
-#include "clang/AST/TypeNodes.def"
+#include "clang/AST/TypeNodes.inc"
         }
       }
     }
@@ -177,7 +178,7 @@ namespace clang {
 
 #define TYPE(Class, Base) void Visit##Class##Type(const Class##Type *T);
 #define ABSTRACT_TYPE(Class, Base)
-#include "clang/AST/TypeNodes.def"
+#include "clang/AST/TypeNodes.inc"
   };
 
 } // namespace clang
@@ -238,6 +239,7 @@ void ASTTypeWriter::VisitArrayType(const ArrayType *T) {
 void ASTTypeWriter::VisitConstantArrayType(const ConstantArrayType *T) {
   VisitArrayType(T);
   Record.AddAPInt(T->getSize());
+  Record.AddStmt(const_cast<Expr*>(T->getSizeExpr()));
   Code = TYPE_CONSTANT_ARRAY;
 }
 
@@ -369,7 +371,8 @@ void ASTTypeWriter::VisitAutoType(const AutoType *T) {
   Record.AddTypeRef(T->getDeducedType());
   Record.push_back((unsigned)T->getKeyword());
   if (T->getDeducedType().isNull())
-    Record.push_back(T->isDependentType());
+    Record.push_back(T->containsUnexpandedParameterPack() ? 2 :
+                     T->isDependentType() ? 1 : 0);
   Code = TYPE_AUTO;
 }
 
@@ -514,6 +517,12 @@ void ASTTypeWriter::VisitPackExpansionType(const PackExpansionType *T) {
 void ASTTypeWriter::VisitParenType(const ParenType *T) {
   Record.AddTypeRef(T->getInnerType());
   Code = TYPE_PAREN;
+}
+
+void ASTTypeWriter::VisitMacroQualifiedType(const MacroQualifiedType *T) {
+  Record.AddTypeRef(T->getUnderlyingType());
+  Record.AddIdentifierRef(T->getMacroIdentifier());
+  Code = TYPE_MACRO_QUALIFIED;
 }
 
 void ASTTypeWriter::VisitElaboratedType(const ElaboratedType *T) {
@@ -807,6 +816,10 @@ void TypeLocWriter::VisitParenTypeLoc(ParenTypeLoc TL) {
   Record.AddSourceLocation(TL.getRParenLoc());
 }
 
+void TypeLocWriter::VisitMacroQualifiedTypeLoc(MacroQualifiedTypeLoc TL) {
+  Record.AddSourceLocation(TL.getExpansionLoc());
+}
+
 void TypeLocWriter::VisitElaboratedTypeLoc(ElaboratedTypeLoc TL) {
   Record.AddSourceLocation(TL.getElaboratedKeywordLoc());
   Record.AddNestedNameSpecifierLoc(TL.getQualifierLoc());
@@ -1021,6 +1034,7 @@ static void AddStmtsExprs(llvm::BitstreamWriter &Stream,
   RECORD(STMT_CXX_FOR_RANGE);
   RECORD(EXPR_CXX_OPERATOR_CALL);
   RECORD(EXPR_CXX_MEMBER_CALL);
+  RECORD(EXPR_CXX_REWRITTEN_BINARY_OPERATOR);
   RECORD(EXPR_CXX_CONSTRUCT);
   RECORD(EXPR_CXX_TEMPORARY_OBJECT);
   RECORD(EXPR_CXX_STATIC_CAST);
@@ -1096,6 +1110,7 @@ void ASTWriter::WriteBlockInfoBlock() {
 
   BLOCK(INPUT_FILES_BLOCK);
   RECORD(INPUT_FILE);
+  RECORD(INPUT_FILE_HASH);
 
   // AST Top-Level Block.
   BLOCK(AST_BLOCK);
@@ -1228,6 +1243,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(TYPE_DEPENDENT_TEMPLATE_SPECIALIZATION);
   RECORD(TYPE_DEPENDENT_SIZED_ARRAY);
   RECORD(TYPE_PAREN);
+  RECORD(TYPE_MACRO_QUALIFIED);
   RECORD(TYPE_PACK_EXPANSION);
   RECORD(TYPE_ATTRIBUTED);
   RECORD(TYPE_SUBST_TEMPLATE_TYPE_PARM_PACK);
@@ -1275,7 +1291,6 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(DECL_CXX_RECORD);
   RECORD(DECL_CXX_METHOD);
   RECORD(DECL_CXX_CONSTRUCTOR);
-  RECORD(DECL_CXX_INHERITED_CONSTRUCTOR);
   RECORD(DECL_CXX_DESTRUCTOR);
   RECORD(DECL_CXX_CONVERSION);
   RECORD(DECL_ACCESS_SPEC);
@@ -1291,6 +1306,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(DECL_TEMPLATE_TYPE_PARM);
   RECORD(DECL_NON_TYPE_TEMPLATE_PARM);
   RECORD(DECL_TEMPLATE_TEMPLATE_PARM);
+  RECORD(DECL_CONCEPT);
   RECORD(DECL_TYPE_ALIAS_TEMPLATE);
   RECORD(DECL_STATIC_ASSERT);
   RECORD(DECL_CXX_BASE_SPECIFIERS);
@@ -1307,6 +1323,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(DECL_PRAGMA_COMMENT);
   RECORD(DECL_PRAGMA_DETECT_MISMATCH);
   RECORD(DECL_OMP_DECLARE_REDUCTION);
+  RECORD(DECL_OMP_ALLOCATE);
 
   // Statements and Exprs can occur in the Decls and Types block.
   AddStmtsExprs(Stream, Record);
@@ -1443,7 +1460,7 @@ ASTFileSignature ASTWriter::writeUnhashedControlBlock(Preprocessor &PP,
   Stream.EmitRecord(DIAGNOSTIC_OPTIONS, Record);
 
   // Write out the diagnostic/pragma mappings.
-  WritePragmaDiagnosticMappings(Diags, /* IsModule = */ WritingModule);
+  WritePragmaDiagnosticMappings(Diags, /* isModule = */ WritingModule);
 
   // Leave the options block.
   Stream.ExitBlock();
@@ -1759,6 +1776,7 @@ struct InputFileEntry {
   bool IsTransient;
   bool BufferOverridden;
   bool IsTopLevelModuleMap;
+  uint32_t ContentHash[2];
 };
 
 } // namespace
@@ -1782,6 +1800,13 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr,
   IFAbbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // File name
   unsigned IFAbbrevCode = Stream.EmitAbbrev(std::move(IFAbbrev));
 
+  // Create input file hash abbreviation.
+  auto IFHAbbrev = std::make_shared<BitCodeAbbrev>();
+  IFHAbbrev->Add(BitCodeAbbrevOp(INPUT_FILE_HASH));
+  IFHAbbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  IFHAbbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 32));
+  unsigned IFHAbbrevCode = Stream.EmitAbbrev(std::move(IFHAbbrev));
+
   // Get all ContentCache objects for files, sorted by whether the file is a
   // system one or not. System files go at the back, users files at the front.
   std::deque<InputFileEntry> SortedFiles;
@@ -1800,7 +1825,7 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr,
 
     InputFileEntry Entry;
     Entry.File = Cache->OrigEntry;
-    Entry.IsSystemFile = Cache->IsSystemFile;
+    Entry.IsSystemFile = isSystem(File.getFileCharacteristic());
     Entry.IsTransient = Cache->IsTransient || TreatAllFilesAsTransient;
     Entry.BufferOverridden = Cache->BufferOverridden;
     Entry.IsTopLevelModuleMap = isModuleMap(File.getFileCharacteristic()) &&
@@ -2301,8 +2326,7 @@ void ASTWriter::WriteSourceManagerBlock(SourceManager &SourceMgr,
 
         Stream.EmitRecordWithAbbrev(SLocFileAbbrv, Record);
 
-        if (Content->BufferOverridden || Content->IsTransient ||
-            TreatAllFilesAsTransient)
+        if (Content->BufferOverridden || Content->IsTransient)
           EmitBlob = true;
       } else {
         // The source location entry is a buffer. The blob associated
@@ -4577,12 +4601,12 @@ void ASTWriter::SetSelectorOffset(Selector Sel, uint32_t Offset) {
 }
 
 ASTWriter::ASTWriter(llvm::BitstreamWriter &Stream,
-                     SmallVectorImpl<char> &Buffer, MemoryBufferCache &PCMCache,
+                     SmallVectorImpl<char> &Buffer,
+                     InMemoryModuleCache &ModuleCache,
                      ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
-                     bool IncludeTimestamps, bool TreatAllFilesAsTransient)
-    : Stream(Stream), Buffer(Buffer), PCMCache(PCMCache),
-      IncludeTimestamps(IncludeTimestamps),
-      TreatAllFilesAsTransient(TreatAllFilesAsTransient) {
+                     bool IncludeTimestamps)
+    : Stream(Stream), Buffer(Buffer), ModuleCache(ModuleCache),
+      IncludeTimestamps(IncludeTimestamps) {
   for (const auto &Ext : Extensions) {
     if (auto Writer = Ext->createExtensionWriter(*this))
       ModuleFileExtensionWriters.push_back(std::move(Writer));
@@ -4605,7 +4629,8 @@ time_t ASTWriter::getTimestampForOutput(const FileEntry *E) const {
 ASTFileSignature ASTWriter::WriteAST(Sema &SemaRef,
                                      const std::string &OutputFile,
                                      Module *WritingModule, StringRef isysroot,
-                                     bool hasErrors) {
+                                     bool hasErrors,
+                                     bool ShouldCacheASTInMemory) {
   WritingAST = true;
 
   ASTHasCompilerErrors = hasErrors;
@@ -4629,11 +4654,11 @@ ASTFileSignature ASTWriter::WriteAST(Sema &SemaRef,
   this->BaseDirectory.clear();
 
   WritingAST = false;
-  if (SemaRef.Context.getLangOpts().ImplicitModules && WritingModule) {
+  if (ShouldCacheASTInMemory) {
     // Construct MemoryBuffer and update buffer manager.
-    PCMCache.addBuffer(OutputFile,
-                       llvm::MemoryBuffer::getMemBufferCopy(
-                           StringRef(Buffer.begin(), Buffer.size())));
+    ModuleCache.addBuiltPCM(OutputFile,
+                            llvm::MemoryBuffer::getMemBufferCopy(
+                                StringRef(Buffer.begin(), Buffer.size())));
   }
   return Signature;
 }
@@ -4882,7 +4907,7 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
         IIs.push_back(II);
     }
     // Sort the identifiers to visit based on their name.
-    llvm::sort(IIs, llvm::less_ptr<IdentifierInfo>());
+    llvm::sort(IIs, llvm::deref<std::less<>>());
     for (const IdentifierInfo *II : IIs) {
       for (IdentifierResolver::iterator D = SemaRef.IdResolver.begin(II),
                                      DEnd = SemaRef.IdResolver.end();
@@ -5298,6 +5323,14 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
             D->getAttr<OMPThreadPrivateDeclAttr>()->getRange());
         break;
 
+      case UPD_DECL_MARKED_OPENMP_ALLOCATE: {
+        auto *A = D->getAttr<OMPAllocateDeclAttr>();
+        Record.push_back(A->getAllocatorType());
+        Record.AddStmt(A->getAllocator());
+        Record.AddSourceRange(A->getRange());
+        break;
+      }
+
       case UPD_DECL_MARKED_OPENMP_DECLARETARGET:
         Record.push_back(D->getAttr<OMPDeclareTargetDeclAttr>()->getMapType());
         Record.AddSourceRange(
@@ -5350,6 +5383,61 @@ void ASTRecordWriter::AddAPSInt(const llvm::APSInt &Value) {
 
 void ASTRecordWriter::AddAPFloat(const llvm::APFloat &Value) {
   AddAPInt(Value.bitcastToAPInt());
+}
+
+static void WriteFixedPointSemantics(ASTRecordWriter &Record,
+                                     FixedPointSemantics FPSema) {
+  Record.push_back(FPSema.getWidth());
+  Record.push_back(FPSema.getScale());
+  Record.push_back(FPSema.isSigned() | FPSema.isSaturated() << 1 |
+                   FPSema.hasUnsignedPadding() << 2);
+}
+
+void ASTRecordWriter::AddAPValue(const APValue &Value) {
+  APValue::ValueKind Kind = Value.getKind();
+  push_back(static_cast<uint64_t>(Kind));
+  switch (Kind) {
+  case APValue::None:
+  case APValue::Indeterminate:
+    return;
+  case APValue::Int:
+    AddAPSInt(Value.getInt());
+    return;
+  case APValue::Float:
+    push_back(static_cast<uint64_t>(
+        llvm::APFloatBase::SemanticsToEnum(Value.getFloat().getSemantics())));
+    AddAPFloat(Value.getFloat());
+    return;
+  case APValue::FixedPoint: {
+    WriteFixedPointSemantics(*this, Value.getFixedPoint().getSemantics());
+    AddAPSInt(Value.getFixedPoint().getValue());
+    return;
+  }
+  case APValue::ComplexInt: {
+    AddAPSInt(Value.getComplexIntReal());
+    AddAPSInt(Value.getComplexIntImag());
+    return;
+  }
+  case APValue::ComplexFloat: {
+    push_back(static_cast<uint64_t>(llvm::APFloatBase::SemanticsToEnum(
+        Value.getComplexFloatReal().getSemantics())));
+    AddAPFloat(Value.getComplexFloatReal());
+    push_back(static_cast<uint64_t>(llvm::APFloatBase::SemanticsToEnum(
+        Value.getComplexFloatImag().getSemantics())));
+    AddAPFloat(Value.getComplexFloatImag());
+    return;
+  }
+  case APValue::LValue:
+  case APValue::Vector:
+  case APValue::Array:
+  case APValue::Struct:
+  case APValue::Union:
+  case APValue::MemberPointer:
+  case APValue::AddrLabelDiff:
+    // TODO : Handle all these APValue::ValueKind.
+    return;
+  }
+  llvm_unreachable("Invalid APValue::ValueKind");
 }
 
 void ASTWriter::AddIdentifierRef(const IdentifierInfo *II, RecordDataImpl &Record) {
@@ -5605,7 +5693,7 @@ void ASTWriter::associateDeclWithFile(const Decl *D, DeclID ID) {
   }
 
   LocDeclIDsTy::iterator I =
-      std::upper_bound(Decls.begin(), Decls.end(), LocDecl, llvm::less_first());
+      llvm::upper_bound(Decls, LocDecl, llvm::less_first());
 
   Decls.insert(I, LocDecl);
 }
@@ -5830,6 +5918,12 @@ void ASTRecordWriter::AddTemplateName(TemplateName Name) {
     break;
   }
 
+  case TemplateName::AssumedTemplate: {
+    AssumedTemplateStorage *ADLT = Name.getAsAssumedTemplateName();
+    AddDeclarationName(ADLT->getDeclName());
+    break;
+  }
+
   case TemplateName::QualifiedTemplate: {
     QualifiedTemplateName *QualT = Name.getAsQualifiedTemplateName();
     AddNestedNameSpecifier(QualT->getQualifier());
@@ -5913,10 +6007,16 @@ void ASTRecordWriter::AddTemplateParameterList(
   AddSourceLocation(TemplateParams->getTemplateLoc());
   AddSourceLocation(TemplateParams->getLAngleLoc());
   AddSourceLocation(TemplateParams->getRAngleLoc());
-  // TODO: Concepts
+
   Record->push_back(TemplateParams->size());
   for (const auto &P : *TemplateParams)
     AddDeclRef(P);
+  if (const Expr *RequiresClause = TemplateParams->getRequiresClause()) {
+    Record->push_back(true);
+    AddStmt(const_cast<Expr*>(RequiresClause));
+  } else {
+    Record->push_back(false);
+  }
 }
 
 /// Emit a template argument list.
@@ -6021,54 +6121,10 @@ void ASTRecordWriter::AddCXXCtorInitializers(
 void ASTRecordWriter::AddCXXDefinitionData(const CXXRecordDecl *D) {
   auto &Data = D->data();
   Record->push_back(Data.IsLambda);
-  Record->push_back(Data.UserDeclaredConstructor);
-  Record->push_back(Data.UserDeclaredSpecialMembers);
-  Record->push_back(Data.Aggregate);
-  Record->push_back(Data.PlainOldData);
-  Record->push_back(Data.Empty);
-  Record->push_back(Data.Polymorphic);
-  Record->push_back(Data.Abstract);
-  Record->push_back(Data.IsStandardLayout);
-  Record->push_back(Data.IsCXX11StandardLayout);
-  Record->push_back(Data.HasBasesWithFields);
-  Record->push_back(Data.HasBasesWithNonStaticDataMembers);
-  Record->push_back(Data.HasPrivateFields);
-  Record->push_back(Data.HasProtectedFields);
-  Record->push_back(Data.HasPublicFields);
-  Record->push_back(Data.HasMutableFields);
-  Record->push_back(Data.HasVariantMembers);
-  Record->push_back(Data.HasOnlyCMembers);
-  Record->push_back(Data.HasInClassInitializer);
-  Record->push_back(Data.HasUninitializedReferenceMember);
-  Record->push_back(Data.HasUninitializedFields);
-  Record->push_back(Data.HasInheritedConstructor);
-  Record->push_back(Data.HasInheritedAssignment);
-  Record->push_back(Data.NeedOverloadResolutionForCopyConstructor);
-  Record->push_back(Data.NeedOverloadResolutionForMoveConstructor);
-  Record->push_back(Data.NeedOverloadResolutionForMoveAssignment);
-  Record->push_back(Data.NeedOverloadResolutionForDestructor);
-  Record->push_back(Data.DefaultedCopyConstructorIsDeleted);
-  Record->push_back(Data.DefaultedMoveConstructorIsDeleted);
-  Record->push_back(Data.DefaultedMoveAssignmentIsDeleted);
-  Record->push_back(Data.DefaultedDestructorIsDeleted);
-  Record->push_back(Data.HasTrivialSpecialMembers);
-  Record->push_back(Data.HasTrivialSpecialMembersForCall);
-  Record->push_back(Data.DeclaredNonTrivialSpecialMembers);
-  Record->push_back(Data.DeclaredNonTrivialSpecialMembersForCall);
-  Record->push_back(Data.HasIrrelevantDestructor);
-  Record->push_back(Data.HasConstexprNonCopyMoveConstructor);
-  Record->push_back(Data.HasDefaultedDefaultConstructor);
-  Record->push_back(Data.DefaultedDefaultConstructorIsConstexpr);
-  Record->push_back(Data.HasConstexprDefaultConstructor);
-  Record->push_back(Data.HasNonLiteralTypeFieldsOrBases);
-  Record->push_back(Data.ComputedVisibleConversions);
-  Record->push_back(Data.UserProvidedDefaultConstructor);
-  Record->push_back(Data.DeclaredSpecialMembers);
-  Record->push_back(Data.ImplicitCopyConstructorCanHaveConstParamForVBase);
-  Record->push_back(Data.ImplicitCopyConstructorCanHaveConstParamForNonVBase);
-  Record->push_back(Data.ImplicitCopyAssignmentHasConstParam);
-  Record->push_back(Data.HasDeclaredCopyConstructorWithConstParam);
-  Record->push_back(Data.HasDeclaredCopyAssignmentWithConstParam);
+
+  #define FIELD(Name, Width, Merge) \
+  Record->push_back(Data.Name);
+  #include "clang/AST/CXXRecordDeclDefinitionBits.def"
 
   // getODRHash will compute the ODRHash if it has not been previously computed.
   Record->push_back(D->getODRHash());
@@ -6090,7 +6146,9 @@ void ASTRecordWriter::AddCXXDefinitionData(const CXXRecordDecl *D) {
     AddCXXBaseSpecifiers(Data.vbases());
 
   AddUnresolvedSet(Data.Conversions.get(*Writer->Context));
-  AddUnresolvedSet(Data.VisibleConversions.get(*Writer->Context));
+  Record->push_back(Data.ComputedVisibleConversions);
+  if (Data.ComputedVisibleConversions)
+    AddUnresolvedSet(Data.VisibleConversions.get(*Writer->Context));
   // Data.Definition is the owning decl, no need to write it.
   AddDeclRef(D->getFirstFriend());
 
@@ -6102,6 +6160,7 @@ void ASTRecordWriter::AddCXXDefinitionData(const CXXRecordDecl *D) {
     Record->push_back(Lambda.CaptureDefault);
     Record->push_back(Lambda.NumCaptures);
     Record->push_back(Lambda.NumExplicitCaptures);
+    Record->push_back(Lambda.HasKnownInternalLinkage);
     Record->push_back(Lambda.ManglingNumber);
     AddDeclRef(D->getLambdaContextDecl());
     AddTypeSourceInfo(Lambda.MethodTyInfo);
@@ -6415,6 +6474,15 @@ void ASTWriter::DeclarationMarkedOpenMPThreadPrivate(const Decl *D) {
   DeclUpdates[D].push_back(DeclUpdate(UPD_DECL_MARKED_OPENMP_THREADPRIVATE));
 }
 
+void ASTWriter::DeclarationMarkedOpenMPAllocate(const Decl *D, const Attr *A) {
+  if (Chain && Chain->isProcessingUpdateRecords()) return;
+  assert(!WritingAST && "Already writing the AST!");
+  if (!D->isFromASTFile())
+    return;
+
+  DeclUpdates[D].push_back(DeclUpdate(UPD_DECL_MARKED_OPENMP_ALLOCATE, A));
+}
+
 void ASTWriter::DeclarationMarkedOpenMPDeclareTarget(const Decl *D,
                                                      const Attr *Attr) {
   if (Chain && Chain->isProcessingUpdateRecords()) return;
@@ -6509,6 +6577,7 @@ void OMPClauseWriter::VisitOMPIfClause(OMPIfClause *C) {
 }
 
 void OMPClauseWriter::VisitOMPFinalClause(OMPFinalClause *C) {
+  VisitOMPClauseWithPreInit(C);
   Record.AddStmt(C->getCondition());
   Record.AddSourceLocation(C->getLParenLoc());
 }
@@ -6526,6 +6595,11 @@ void OMPClauseWriter::VisitOMPSafelenClause(OMPSafelenClause *C) {
 
 void OMPClauseWriter::VisitOMPSimdlenClause(OMPSimdlenClause *C) {
   Record.AddStmt(C->getSimdlen());
+  Record.AddSourceLocation(C->getLParenLoc());
+}
+
+void OMPClauseWriter::VisitOMPAllocatorClause(OMPAllocatorClause *C) {
+  Record.AddStmt(C->getAllocator());
   Record.AddSourceLocation(C->getLParenLoc());
 }
 
@@ -6723,6 +6797,8 @@ void OMPClauseWriter::VisitOMPLinearClause(OMPLinearClause *C) {
   }
   Record.AddStmt(C->getStep());
   Record.AddStmt(C->getCalcStep());
+  for (auto *VE : C->used_expressions())
+    Record.AddStmt(VE);
 }
 
 void OMPClauseWriter::VisitOMPAlignedClause(OMPAlignedClause *C) {
@@ -6817,6 +6893,15 @@ void OMPClauseWriter::VisitOMPMapClause(OMPMapClause *C) {
   }
 }
 
+void OMPClauseWriter::VisitOMPAllocateClause(OMPAllocateClause *C) {
+  Record.push_back(C->varlist_size());
+  Record.AddSourceLocation(C->getLParenLoc());
+  Record.AddSourceLocation(C->getColonLoc());
+  Record.AddStmt(C->getAllocator());
+  for (auto *VE : C->varlists())
+    Record.AddStmt(VE);
+}
+
 void OMPClauseWriter::VisitOMPNumTeamsClause(OMPNumTeamsClause *C) {
   VisitOMPClauseWithPreInit(C);
   Record.AddStmt(C->getNumTeams());
@@ -6830,16 +6915,19 @@ void OMPClauseWriter::VisitOMPThreadLimitClause(OMPThreadLimitClause *C) {
 }
 
 void OMPClauseWriter::VisitOMPPriorityClause(OMPPriorityClause *C) {
+  VisitOMPClauseWithPreInit(C);
   Record.AddStmt(C->getPriority());
   Record.AddSourceLocation(C->getLParenLoc());
 }
 
 void OMPClauseWriter::VisitOMPGrainsizeClause(OMPGrainsizeClause *C) {
+  VisitOMPClauseWithPreInit(C);
   Record.AddStmt(C->getGrainsize());
   Record.AddSourceLocation(C->getLParenLoc());
 }
 
 void OMPClauseWriter::VisitOMPNumTasksClause(OMPNumTasksClause *C) {
+  VisitOMPClauseWithPreInit(C);
   Record.AddStmt(C->getNumTasks());
   Record.AddSourceLocation(C->getLParenLoc());
 }
@@ -6872,7 +6960,11 @@ void OMPClauseWriter::VisitOMPToClause(OMPToClause *C) {
   Record.push_back(C->getTotalComponentListNum());
   Record.push_back(C->getTotalComponentsNum());
   Record.AddSourceLocation(C->getLParenLoc());
+  Record.AddNestedNameSpecifierLoc(C->getMapperQualifierLoc());
+  Record.AddDeclarationNameInfo(C->getMapperIdInfo());
   for (auto *E : C->varlists())
+    Record.AddStmt(E);
+  for (auto *E : C->mapperlists())
     Record.AddStmt(E);
   for (auto *D : C->all_decls())
     Record.AddDeclRef(D);
@@ -6892,7 +6984,11 @@ void OMPClauseWriter::VisitOMPFromClause(OMPFromClause *C) {
   Record.push_back(C->getTotalComponentListNum());
   Record.push_back(C->getTotalComponentsNum());
   Record.AddSourceLocation(C->getLParenLoc());
+  Record.AddNestedNameSpecifierLoc(C->getMapperQualifierLoc());
+  Record.AddDeclarationNameInfo(C->getMapperIdInfo());
   for (auto *E : C->varlists())
+    Record.AddStmt(E);
+  for (auto *E : C->mapperlists())
     Record.AddStmt(E);
   for (auto *D : C->all_decls())
     Record.AddDeclRef(D);

@@ -4,9 +4,9 @@
 # RUN: echo "LIBSAMPLE_2.0 { global: b; local: *; } LIBSAMPLE_1.0;" >> %t.script
 # RUN: echo "LIBSAMPLE_3.0 { global: c; } LIBSAMPLE_2.0;" >> %t.script
 # RUN: ld.lld --version-script %t.script -shared -soname shared %t.o -o %t.so
-# RUN: llvm-readobj -V -dyn-symbols %t.so | FileCheck --check-prefix=DSO %s
+# RUN: llvm-readobj -V --dyn-syms %t.so | FileCheck --check-prefix=DSO %s
 
-# DSO:      SHT_GNU_verdef {
+# DSO:      VersionDefinitions [
 # DSO-NEXT:   Definition {
 # DSO-NEXT:     Version: 1
 # DSO-NEXT:     Flags: Base
@@ -35,4 +35,4 @@
 # DSO-NEXT:     Hash: 98456672
 # DSO-NEXT:     Name: LIBSAMPLE_3.0
 # DSO-NEXT:   }
-# DSO-NEXT: }
+# DSO-NEXT: ]

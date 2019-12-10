@@ -726,26 +726,26 @@ void shared_bad_2() {
 }
 
 void shared_bad_3() {
-  sls_mu.Lock();
+  sls_mu.Lock();         // expected-note {{mutex acquired here}}
   sls_mu.ReaderUnlock(); // \
     // expected-warning {{releasing mutex 'sls_mu' using shared access, expected exclusive access}}
 }
 
 void shared_bad_4() {
-  sls_mu.ReaderLock();
+  sls_mu.ReaderLock();      // expected-note {{mutex acquired here}}
   sls_mu.ExclusiveUnlock(); // \
     // expected-warning {{releasing mutex 'sls_mu' using exclusive access, expected shared access}}
 }
 
 void shared_bad_5() {
-  sls_mu.Lock();
+  sls_mu.Lock();          // expected-note {{mutex acquired here}}
   sls_mu.PromoteShared(); // \
     // expected-warning {{releasing mutex 'sls_mu' using shared access, expected exclusive access}}
   sls_mu.ExclusiveUnlock();
 }
 
 void shared_bad_6() {
-  sls_mu.ReaderLock();
+  sls_mu.ReaderLock();      // expected-note {{mutex acquired here}}
   sls_mu.DemoteExclusive(); // \
     // expected-warning {{releasing mutex 'sls_mu' using exclusive access, expected shared access}}
   sls_mu.ReaderUnlock();
@@ -3050,6 +3050,20 @@ void Foo::test() {
   }
   int b = a;  // expected-warning {{reading variable 'a' requires holding mutex 'getMutexPtr()'}}
 }
+
+#ifdef __cpp_guaranteed_copy_elision
+
+void guaranteed_copy_elision() {
+  MutexLock lock = MutexLock{&sls_mu};
+  sls_guard_var = 0;
+}
+
+void guaranteed_copy_elision_const() {
+  const MutexLock lock = MutexLock{&sls_mu};
+  sls_guard_var = 0;
+}
+
+#endif
 
 } // end namespace TemporaryCleanupExpr
 

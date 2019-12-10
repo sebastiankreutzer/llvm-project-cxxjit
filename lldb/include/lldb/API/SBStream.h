@@ -23,6 +23,8 @@ public:
 
   ~SBStream();
 
+  explicit operator bool() const;
+
   bool IsValid() const;
 
   // If this stream is not redirected to a file, it will maintain a local cache
@@ -36,6 +38,10 @@ public:
   void Printf(const char *format, ...) __attribute__((format(printf, 2, 3)));
 
   void RedirectToFile(const char *path, bool append);
+
+  void RedirectToFile(lldb::SBFile file);
+
+  void RedirectToFile(lldb::FileSP file);
 
   void RedirectToFileHandle(FILE *fh, bool transfer_fh_ownership);
 

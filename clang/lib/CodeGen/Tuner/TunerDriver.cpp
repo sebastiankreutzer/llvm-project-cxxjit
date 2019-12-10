@@ -271,7 +271,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
             llvm::APSInt SIntVal(32); // TODO allow varying bit widths
             SIntVal = Range.Min;
 
-            TAKnobs.push_back(llvm::make_unique<TemplateArgKnob>(
+            TAKnobs.push_back(std::make_unique<TemplateArgKnob>(
                 Pos, Range.Min, Range.Max, Range.Min));
 
             return TemplateArgument(
@@ -293,7 +293,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     KnobSet TAKnobSet = TAL.getKnobSet();
     std::unique_ptr<Tuner> TATuner = createTuner(loadSearchAlgoEnv(), TAKnobSet);
-    auto NewTuningData = llvm::make_unique<TemplateTuningData>(
+    auto NewTuningData = std::make_unique<TemplateTuningData>(
         CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();
 

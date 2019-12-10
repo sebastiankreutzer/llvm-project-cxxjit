@@ -17,7 +17,7 @@ options and those options will be propagated to any SBBreakpoints currently
 using that name.  Adding a name to a breakpoint will also apply any of the
 set options to that breakpoint.
 
-You can also set permissions on a breakpoint name to disable listing, deleting 
+You can also set permissions on a breakpoint name to disable listing, deleting
 and disabling breakpoints.  That will disallow the given operation for breakpoints
 except when the breakpoint is mentioned by ID.  So for instance deleting all the
 breakpoints won't delete breakpoints so marked."
@@ -25,7 +25,7 @@ breakpoints won't delete breakpoints so marked."
 class LLDB_API SBBreakpointName {
 public:
   SBBreakpointName();
-  
+
   SBBreakpointName(SBTarget &target, const char *name);
 
   SBBreakpointName(SBBreakpoint &bkpt, const char *name);
@@ -34,16 +34,16 @@ public:
 
   ~SBBreakpointName();
 
-  const lldb::SBBreakpointName &operator=(const lldb::SBBreakpointName &rhs);
-
   // Tests to see if the opaque breakpoint object in this object matches the
   // opaque breakpoint object in "rhs".
   bool operator==(const lldb::SBBreakpointName &rhs);
 
   bool operator!=(const lldb::SBBreakpointName &rhs);
 
+  explicit operator bool() const;
+
   bool IsValid() const;
-  
+
   const char *GetName() const;
 
   void SetEnabled(bool enable);
@@ -84,6 +84,10 @@ public:
 
   void SetScriptCallbackFunction(const char *callback_function_name);
 
+  SBError
+  SetScriptCallbackFunction (const char *callback_function_name,
+                             SBStructuredData &extra_args);
+
   void SetCommandLineCommands(SBStringList &commands);
 
   bool GetCommandLineCommands(SBStringList &commands);
@@ -92,13 +96,13 @@ public:
 
   const char *GetHelpString() const;
   void SetHelpString(const char *help_string);
-  
+
   bool GetAllowList() const;
   void SetAllowList(bool value);
-    
+
   bool GetAllowDelete();
   void SetAllowDelete(bool value);
-    
+
   bool GetAllowDisable();
   void SetAllowDisable(bool value);
 

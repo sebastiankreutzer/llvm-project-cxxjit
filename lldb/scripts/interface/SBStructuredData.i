@@ -28,10 +28,10 @@ namespace lldb {
         bool
         IsValid() const;
 
+        explicit operator bool() const;
+
         void
         Clear();
-
-        lldb::SBStructuredData &operator=(const lldb::SBStructuredData &rhs);
 
         lldb::StructuredDataType GetType() const;
 

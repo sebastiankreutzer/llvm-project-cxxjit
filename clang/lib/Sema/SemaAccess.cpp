@@ -126,8 +126,7 @@ struct EffectiveContext {
 
   bool includesClass(const CXXRecordDecl *R) const {
     R = R->getCanonicalDecl();
-    return std::find(Records.begin(), Records.end(), R)
-             != Records.end();
+    return llvm::find(Records, R) != Records.end();
   }
 
   /// Retrieves the innermost "useful" context.  Can be null if we're
@@ -1552,7 +1551,7 @@ Sema::AccessResult Sema::CheckUnresolvedMemberAccess(UnresolvedMemberExpr *E,
 
   QualType BaseType = E->getBaseType();
   if (E->isArrow())
-    BaseType = BaseType->getAs<PointerType>()->getPointeeType();
+    BaseType = BaseType->castAs<PointerType>()->getPointeeType();
 
   AccessTarget Entity(Context, AccessTarget::Member, E->getNamingClass(),
                       Found, BaseType);
@@ -1835,8 +1834,8 @@ Sema::AccessResult Sema::CheckBaseClassAccess(SourceLocation AccessLoc,
     return AR_accessible;
 
   CXXRecordDecl *BaseD, *DerivedD;
-  BaseD = cast<CXXRecordDecl>(Base->getAs<RecordType>()->getDecl());
-  DerivedD = cast<CXXRecordDecl>(Derived->getAs<RecordType>()->getDecl());
+  BaseD = cast<CXXRecordDecl>(Base->castAs<RecordType>()->getDecl());
+  DerivedD = cast<CXXRecordDecl>(Derived->castAs<RecordType>()->getDecl());
 
   AccessTarget Entity(Context, AccessTarget::Base, BaseD, DerivedD,
                       Path.Access);

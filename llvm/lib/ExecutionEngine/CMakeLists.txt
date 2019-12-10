@@ -19,7 +19,9 @@ if(BUILD_SHARED_LIBS)
 endif()
 
 add_subdirectory(Interpreter)
+add_subdirectory(JITLink)
 add_subdirectory(MCJIT)
+add_subdirectory(OrcError)
 add_subdirectory(Orc)
 add_subdirectory(RuntimeDyld)
 

@@ -15,19 +15,14 @@
 #define __OMPTARGET_NVPTX_H
 
 // std includes
-#include <stdint.h>
+#include <inttypes.h>
+#include <math.h>
 #include <stdlib.h>
 
-#include <inttypes.h>
-
-// cuda includes
-#include <cuda.h>
-#include <math.h>
-
 // local includes
+#include "target_impl.h"
 #include "debug.h"     // debug
 #include "interface.h" // interfaces with omp, compiler, and user
-#include "option.h"    // choices we have
 #include "state-queue.h"
 #include "support.h"
 
@@ -44,24 +39,6 @@
 
 #define BARRIER_COUNTER 0
 #define ORDERED_COUNTER 1
-
-// Macros for Cuda intrinsics
-// In Cuda 9.0, the *_sync() version takes an extra argument 'mask'.
-// Also, __ballot(1) in Cuda 8.0 is replaced with __activemask().
-#if defined(CUDART_VERSION) && CUDART_VERSION >= 9000
-#define __SHFL_SYNC(mask, var, srcLane) __shfl_sync((mask), (var), (srcLane))
-#define __SHFL_DOWN_SYNC(mask, var, delta, width)                              \
-  __shfl_down_sync((mask), (var), (delta), (width))
-#define __ACTIVEMASK() __activemask()
-#else
-#define __SHFL_SYNC(mask, var, srcLane) __shfl((var), (srcLane))
-#define __SHFL_DOWN_SYNC(mask, var, delta, width)                              \
-  __shfl_down((var), (delta), (width))
-#define __ACTIVEMASK() __ballot(1)
-#endif
-
-#define __SYNCTHREADS_N(n) asm volatile("bar.sync %0;" : : "r"(n) : "memory");
-#define __SYNCTHREADS() __SYNCTHREADS_N(0)
 
 // arguments needed for L0 parallelism only.
 class omptarget_nvptx_SharedArgs {
@@ -104,20 +81,6 @@ private:
 extern __device__ __shared__ omptarget_nvptx_SharedArgs
     omptarget_nvptx_globalArgs;
 
-// Data sharing related quantities, need to match what is used in the compiler.
-enum DATA_SHARING_SIZES {
-  // The maximum number of workers in a kernel.
-  DS_Max_Worker_Threads = 992,
-  // The size reserved for data in a shared memory slot.
-  DS_Slot_Size = 256,
-  // The slot size that should be reserved for a working warp.
-  DS_Worker_Warp_Slot_Size = WARPSIZE * DS_Slot_Size,
-  // The maximum number of warps in use
-  DS_Max_Warp_Number = 32,
-  // The size of the preallocated shared memory buffer per team
-  DS_Shared_Memory_Size = 128,
-};
-
 // Data structure to keep in shared memory that traces the current slot, stack,
 // and frame pointer as well as the active threads that didn't exit the current
 // environment.
@@ -125,7 +88,7 @@ struct DataSharingStateTy {
   __kmpc_data_sharing_slot *SlotPtr[DS_Max_Warp_Number];
   void *StackPtr[DS_Max_Warp_Number];
   void * volatile FramePtr[DS_Max_Warp_Number];
-  int32_t ActiveThreads[DS_Max_Warp_Number];
+  __kmpc_impl_lanemask_t ActiveThreads[DS_Max_Warp_Number];
 };
 // Additional worker slot type which is initialized with the default worker slot
 // size of 4*32 bytes.
@@ -164,25 +127,20 @@ public:
   }
   INLINE int IsTaskConstruct() const { return !IsParallelConstruct(); }
   // methods for other fields
-  INLINE uint16_t &NThreads() { return items.nthreads; }
-  INLINE uint16_t &ThreadLimit() { return items.threadlimit; }
   INLINE uint16_t &ThreadId() { return items.threadId; }
-  INLINE uint16_t &ThreadsInTeam() { return items.threadsInTeam; }
   INLINE uint64_t &RuntimeChunkSize() { return items.runtimeChunkSize; }
   INLINE omptarget_nvptx_TaskDescr *GetPrevTaskDescr() const { return prev; }
   INLINE void SetPrevTaskDescr(omptarget_nvptx_TaskDescr *taskDescr) {
     prev = taskDescr;
   }
   // init & copy
-  INLINE void InitLevelZeroTaskDescr(bool isSPMDExecutionMode);
-  INLINE void InitLevelOneTaskDescr(uint16_t tnum,
-                                    omptarget_nvptx_TaskDescr *parentTaskDescr);
+  INLINE void InitLevelZeroTaskDescr();
+  INLINE void InitLevelOneTaskDescr(omptarget_nvptx_TaskDescr *parentTaskDescr);
   INLINE void Copy(omptarget_nvptx_TaskDescr *sourceTaskDescr);
   INLINE void CopyData(omptarget_nvptx_TaskDescr *sourceTaskDescr);
   INLINE void CopyParent(omptarget_nvptx_TaskDescr *parentTaskDescr);
   INLINE void CopyForExplicitTask(omptarget_nvptx_TaskDescr *parentTaskDescr);
-  INLINE void CopyToWorkDescr(omptarget_nvptx_TaskDescr *masterTaskDescr,
-                              uint16_t tnum);
+  INLINE void CopyToWorkDescr(omptarget_nvptx_TaskDescr *masterTaskDescr);
   INLINE void CopyFromWorkDescr(omptarget_nvptx_TaskDescr *workTaskDescr);
   INLINE void CopyConvergentParent(omptarget_nvptx_TaskDescr *parentTaskDescr,
                                    uint16_t tid, uint16_t tnum);
@@ -212,10 +170,7 @@ private:
   struct TaskDescr_items {
     uint8_t flags; // 6 bit used (see flag above)
     uint8_t unused;
-    uint16_t nthreads;         // thread num for subsequent parallel regions
-    uint16_t threadlimit;      // thread limit ICV
     uint16_t threadId;         // thread id
-    uint16_t threadsInTeam;    // threads in current team
     uint64_t runtimeChunkSize; // runtime chunk size
   } items;
   omptarget_nvptx_TaskDescr *prev;
@@ -255,7 +210,7 @@ public:
   INLINE uint64_t *getLastprivateIterBuffer() { return &lastprivateIterBuffer; }
 
   // init
-  INLINE void InitTeamDescr(bool isSPMDExecutionMode);
+  INLINE void InitTeamDescr();
 
   INLINE __kmpc_data_sharing_slot *RootS(int wid, bool IsMasterThread) {
     // If this is invoked by the master thread of the master warp then intialize
@@ -369,11 +324,6 @@ private:
   uint64_t cnt;
 };
 
-/// Device envrionment data
-struct omptarget_device_environmentTy {
-  int32_t debug_level;
-};
-
 /// Memory manager for statically allocated memory.
 class omptarget_nvptx_SimpleMemoryManager {
 private:
@@ -391,12 +341,6 @@ public:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// global device envrionment
-////////////////////////////////////////////////////////////////////////////////
-
-extern __device__ omptarget_device_environmentTy omptarget_device_environment;
-
-////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
 // global data tables
@@ -406,7 +350,11 @@ extern __device__ omptarget_nvptx_SimpleMemoryManager
     omptarget_nvptx_simpleMemoryManager;
 extern __device__ __shared__ uint32_t usedMemIdx;
 extern __device__ __shared__ uint32_t usedSlotIdx;
-extern __device__ __shared__ uint8_t parallelLevel;
+extern __device__ __shared__ uint8_t
+    parallelLevel[MAX_THREADS_PER_TEAM / WARPSIZE];
+extern __device__ __shared__ uint16_t threadLimit;
+extern __device__ __shared__ uint16_t threadsInTeam;
+extern __device__ __shared__ uint16_t nThreads;
 extern __device__ __shared__
     omptarget_nvptx_ThreadPrivateContext *omptarget_nvptx_threadPrivateContext;
 
@@ -437,6 +385,5 @@ INLINE omptarget_nvptx_TaskDescr *getMyTopTaskDescriptor(int globalThreadId);
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "omptarget-nvptxi.h"
-#include "supporti.h"
 
 #endif

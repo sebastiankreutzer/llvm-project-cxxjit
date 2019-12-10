@@ -570,6 +570,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(align);
   KEYWORD(addrspace);
   KEYWORD(section);
+  KEYWORD(partition);
   KEYWORD(alias);
   KEYWORD(ifunc);
   KEYWORD(module);
@@ -584,6 +585,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(ccc);
   KEYWORD(fastcc);
   KEYWORD(coldcc);
+  KEYWORD(cfguard_checkcc);
   KEYWORD(x86_stdcallcc);
   KEYWORD(x86_fastcallcc);
   KEYWORD(x86_thiscallcc);
@@ -621,6 +623,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(amdgpu_ps);
   KEYWORD(amdgpu_cs);
   KEYWORD(amdgpu_kernel);
+  KEYWORD(tailcc);
 
   KEYWORD(cc);
   KEYWORD(c);
@@ -649,6 +652,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(nobuiltin);
   KEYWORD(nocapture);
   KEYWORD(noduplicate);
+  KEYWORD(nofree);
   KEYWORD(noimplicitfloat);
   KEYWORD(noinline);
   KEYWORD(norecurse);
@@ -656,6 +660,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(nonnull);
   KEYWORD(noredzone);
   KEYWORD(noreturn);
+  KEYWORD(nosync);
   KEYWORD(nocf_check);
   KEYWORD(nounwind);
   KEYWORD(optforfuzzing);
@@ -676,14 +681,17 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(shadowcallstack);
   KEYWORD(sanitize_address);
   KEYWORD(sanitize_hwaddress);
+  KEYWORD(sanitize_memtag);
   KEYWORD(sanitize_thread);
   KEYWORD(sanitize_memory);
   KEYWORD(speculative_load_hardening);
   KEYWORD(swifterror);
   KEYWORD(swiftself);
   KEYWORD(uwtable);
+  KEYWORD(willreturn);
   KEYWORD(writeonly);
   KEYWORD(zeroext);
+  KEYWORD(immarg);
 
   KEYWORD(type);
   KEYWORD(opaque);
@@ -705,6 +713,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(xchg); KEYWORD(nand); KEYWORD(max); KEYWORD(min); KEYWORD(umax);
   KEYWORD(umin);
 
+  KEYWORD(vscale);
   KEYWORD(x);
   KEYWORD(blockaddress);
 
@@ -732,6 +741,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(notEligibleToImport);
   KEYWORD(live);
   KEYWORD(dsoLocal);
+  KEYWORD(canAutoHide);
   KEYWORD(function);
   KEYWORD(insts);
   KEYWORD(funcFlags);
@@ -748,6 +758,8 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(critical);
   KEYWORD(relbf);
   KEYWORD(variable);
+  KEYWORD(vTableFuncs);
+  KEYWORD(virtFunc);
   KEYWORD(aliasee);
   KEYWORD(refs);
   KEYWORD(typeIdInfo);
@@ -760,6 +772,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(offset);
   KEYWORD(args);
   KEYWORD(typeid);
+  KEYWORD(typeidCompatibleVTable);
   KEYWORD(summary);
   KEYWORD(typeTestRes);
   KEYWORD(kind);
@@ -1047,7 +1060,17 @@ lltok::Kind LLLexer::LexDigitOrNegative() {
   for (; isdigit(static_cast<unsigned char>(CurPtr[0])); ++CurPtr)
     /*empty*/;
 
-  // Check to see if this really is a label afterall, e.g. "-1:".
+  // Check if this is a fully-numeric label:
+  if (isdigit(TokStart[0]) && CurPtr[0] == ':') {
+    uint64_t Val = atoull(TokStart, CurPtr);
+    ++CurPtr; // Skip the colon.
+    if ((unsigned)Val != Val)
+      Error("invalid value number (too large)!");
+    UIntVal = unsigned(Val);
+    return lltok::LabelID;
+  }
+
+  // Check to see if this really is a string label, e.g. "-1:".
   if (isLabelChar(CurPtr[0]) || CurPtr[0] == ':') {
     if (const char *End = isLabelTail(CurPtr)) {
       StrVal.assign(TokStart, End-1);

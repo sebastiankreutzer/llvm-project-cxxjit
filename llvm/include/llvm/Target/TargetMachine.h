@@ -25,7 +25,7 @@ namespace llvm {
 
 class Function;
 class GlobalValue;
-class MachineModuleInfo;
+class MachineModuleInfoWrapperPass;
 class Mangler;
 class MCAsmInfo;
 class MCContext;
@@ -35,6 +35,9 @@ class MCSubtargetInfo;
 class MCSymbol;
 class raw_pwrite_stream;
 class PassManagerBuilder;
+struct PerFunctionMIParsingState;
+class SMDiagnostic;
+class SMRange;
 class Target;
 class TargetIntrinsicInfo;
 class TargetIRAnalysis;
@@ -48,6 +51,10 @@ namespace legacy {
 class PassManagerBase;
 }
 using legacy::PassManagerBase;
+
+namespace yaml {
+struct MachineFunctionInfo;
+}
 
 //===----------------------------------------------------------------------===//
 ///
@@ -112,6 +119,27 @@ public:
   }
   virtual TargetLoweringObjectFile *getObjFileLowering() const {
     return nullptr;
+  }
+
+  /// Allocate and return a default initialized instance of the YAML
+  /// representation for the MachineFunctionInfo.
+  virtual yaml::MachineFunctionInfo *createDefaultFuncInfoYAML() const {
+    return nullptr;
+  }
+
+  /// Allocate and initialize an instance of the YAML representation of the
+  /// MachineFunctionInfo.
+  virtual yaml::MachineFunctionInfo *
+  convertFuncInfoToYAML(const MachineFunction &MF) const {
+    return nullptr;
+  }
+
+  /// Parse out the target's MachineFunctionInfo from the YAML reprsentation.
+  virtual bool parseMachineFunctionInfo(const yaml::MachineFunctionInfo &,
+                                        PerFunctionMIParsingState &PFS,
+                                        SMDiagnostic &Error,
+                                        SMRange &SourceRange) const {
+    return false;
   }
 
   /// This method returns a pointer to the specified type of
@@ -256,12 +284,13 @@ public:
   /// emitted.  Typically this will involve several steps of code generation.
   /// This method should return true if emission of this file type is not
   /// supported, or false on success.
-  /// \p MMI is an optional parameter that, if set to non-nullptr,
+  /// \p MMIWP is an optional parameter that, if set to non-nullptr,
   /// will be used to set the MachineModuloInfo for this PM.
-  virtual bool addPassesToEmitFile(PassManagerBase &, raw_pwrite_stream &,
-                                   raw_pwrite_stream *, CodeGenFileType,
-                                   bool /*DisableVerify*/ = true,
-                                   MachineModuleInfo *MMI = nullptr) {
+  virtual bool
+  addPassesToEmitFile(PassManagerBase &, raw_pwrite_stream &,
+                      raw_pwrite_stream *, CodeGenFileType,
+                      bool /*DisableVerify*/ = true,
+                      MachineModuleInfoWrapperPass *MMIWP = nullptr) {
     return true;
   }
 
@@ -313,12 +342,13 @@ public:
 
   /// Add passes to the specified pass manager to get the specified file
   /// emitted.  Typically this will involve several steps of code generation.
-  /// \p MMI is an optional parameter that, if set to non-nullptr,
-  /// will be used to set the MachineModuloInfofor this PM.
-  bool addPassesToEmitFile(PassManagerBase &PM, raw_pwrite_stream &Out,
-                           raw_pwrite_stream *DwoOut, CodeGenFileType FileType,
-                           bool DisableVerify = true,
-                           MachineModuleInfo *MMI = nullptr) override;
+  /// \p MMIWP is an optional parameter that, if set to non-nullptr,
+  /// will be used to set the MachineModuloInfo for this PM.
+  bool
+  addPassesToEmitFile(PassManagerBase &PM, raw_pwrite_stream &Out,
+                      raw_pwrite_stream *DwoOut, CodeGenFileType FileType,
+                      bool DisableVerify = true,
+                      MachineModuleInfoWrapperPass *MMIWP = nullptr) override;
 
   /// Add passes to the specified pass manager to get machine code emitted with
   /// the MCJIT. This method returns true if machine code is not supported. It
@@ -337,7 +367,7 @@ public:
   /// Adds an AsmPrinter pass to the pipeline that prints assembly or
   /// machine code from the MI representation.
   bool addAsmPrinter(PassManagerBase &PM, raw_pwrite_stream &Out,
-                     raw_pwrite_stream *DwoOut, CodeGenFileType FileTYpe,
+                     raw_pwrite_stream *DwoOut, CodeGenFileType FileType,
                      MCContext &Context);
 
   /// True if the target uses physical regs at Prolog/Epilog insertion
@@ -362,9 +392,9 @@ inline CodeModel::Model getEffectiveCodeModel(Optional<CodeModel::Model> CM,
   if (CM) {
     // By default, targets do not support the tiny and kernel models.
     if (*CM == CodeModel::Tiny)
-      report_fatal_error("Target does not support the tiny CodeModel");
+      report_fatal_error("Target does not support the tiny CodeModel", false);
     if (*CM == CodeModel::Kernel)
-      report_fatal_error("Target does not support the kernel CodeModel");
+      report_fatal_error("Target does not support the kernel CodeModel", false);
     return *CM;
   }
   return Default;

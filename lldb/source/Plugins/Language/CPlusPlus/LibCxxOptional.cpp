@@ -20,7 +20,7 @@ public:
     Update();
   }
 
-  size_t GetIndexOfChildWithName(const ConstString &name) override {
+  size_t GetIndexOfChildWithName(ConstString name) override {
     return formatters::ExtractIndexFromString(name.GetCString());
   }
 
@@ -31,7 +31,6 @@ public:
 
 private:
   size_t m_size = 0;
-  ValueObjectSP m_base_sp;
 };
 } // namespace
 

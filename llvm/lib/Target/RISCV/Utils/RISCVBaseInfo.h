@@ -16,6 +16,7 @@
 #include "MCTargetDesc/RISCVMCTargetDesc.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/SubtargetFeature.h"
 
 namespace llvm {
@@ -48,11 +49,35 @@ enum {
 
 enum {
   MO_None,
+  MO_CALL,
+  MO_PLT,
   MO_LO,
   MO_HI,
+  MO_PCREL_LO,
   MO_PCREL_HI,
+  MO_GOT_HI,
+  MO_TPREL_LO,
+  MO_TPREL_HI,
+  MO_TPREL_ADD,
+  MO_TLS_GOT_HI,
+  MO_TLS_GD_HI,
 };
 } // namespace RISCVII
+
+namespace RISCVOp {
+enum OperandType : unsigned {
+  OPERAND_FIRST_RISCV_IMM = MCOI::OPERAND_FIRST_TARGET,
+  OPERAND_UIMM4 = OPERAND_FIRST_RISCV_IMM,
+  OPERAND_UIMM5,
+  OPERAND_UIMM12,
+  OPERAND_SIMM12,
+  OPERAND_SIMM13_LSB0,
+  OPERAND_UIMM20,
+  OPERAND_SIMM21_LSB0,
+  OPERAND_UIMMLOG2XLEN,
+  OPERAND_LAST_RISCV_IMM = OPERAND_UIMMLOG2XLEN
+};
+} // namespace RISCVOp
 
 // Describes the predecessor/successor bits used in the FENCE instruction.
 namespace RISCVFenceField {
@@ -151,6 +176,34 @@ struct SysReg {
 #define GET_SysRegsList_DECL
 #include "RISCVGenSystemOperands.inc"
 } // end namespace RISCVSysReg
+
+namespace RISCVABI {
+
+enum ABI {
+  ABI_ILP32,
+  ABI_ILP32F,
+  ABI_ILP32D,
+  ABI_ILP32E,
+  ABI_LP64,
+  ABI_LP64F,
+  ABI_LP64D,
+  ABI_Unknown
+};
+
+// Returns the target ABI, or else a StringError if the requested ABIName is
+// not supported for the given TT and FeatureBits combination.
+ABI computeTargetABI(const Triple &TT, FeatureBitset FeatureBits,
+                     StringRef ABIName);
+
+} // namespace RISCVABI
+
+namespace RISCVFeatures {
+
+// Validates if the given combination of features are valid for the target
+// triple. Exits with report_fatal_error if not.
+void validate(const Triple &TT, const FeatureBitset &FeatureBits);
+
+} // namespace RISCVFeatures
 
 } // namespace llvm
 

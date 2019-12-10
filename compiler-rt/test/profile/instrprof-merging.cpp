@@ -1,8 +1,11 @@
 // 1) Compile shared code into different object files and into an executable.
 
-// RUN: %clangxx_profgen -fcoverage-mapping %s -c -o %t.v1.o -D_VERSION_1
-// RUN: %clangxx_profgen -fcoverage-mapping %s -c -o %t.v2.o -D_VERSION_2
-// RUN: %clangxx_profgen -fcoverage-mapping %t.v1.o %t.v2.o -o %t.exe
+// RUN: %clangxx_profgen -std=c++14 -fcoverage-mapping %s -c -o %t.v1.o \
+// RUN:                  -D_VERSION_1
+// RUN: %clangxx_profgen -std=c++14 -fcoverage-mapping %s -c -o %t.v2.o \
+// RUN:                  -D_VERSION_2
+// RUN: %clangxx_profgen -std=c++14 -fcoverage-mapping %t.v1.o %t.v2.o \
+// RUN:                  -o %t.exe
 
 // 2) Collect profile data.
 
@@ -20,9 +23,6 @@
 //    hits for all code. (We used to arbitrarily pick a mapping from one binary
 //    and prefer it over others.) When only limited coverage information is
 //    available (just from one binary), don't try to guess any region counts.
-
-// FIXME: Fails with: "Failed to load coverage: No coverage data found"
-// XFAIL: windows
 
 struct A {
   A() {}    // V1: [[@LINE]]{{ *}}|{{ *}}1

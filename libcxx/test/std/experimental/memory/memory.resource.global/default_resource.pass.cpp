@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// REQUIRES: c++experimental
 // UNSUPPORTED: c++98, c++03
 
 // <experimental/memory_resource>
@@ -32,7 +31,9 @@
 #include <experimental/memory_resource>
 #include <cassert>
 
-#include "test_memory_resource.hpp"
+#include "test_memory_resource.h"
+
+#include "test_macros.h"
 
 using namespace std::experimental::pmr;
 

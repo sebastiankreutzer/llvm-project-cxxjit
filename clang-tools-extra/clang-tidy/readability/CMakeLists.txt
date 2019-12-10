@@ -5,6 +5,7 @@ add_clang_library(clangTidyReadabilityModule
   BracesAroundStatementsCheck.cpp
   ConstReturnTypeCheck.cpp
   ContainerSizeEmptyCheck.cpp
+  ConvertMemberFunctionsToStatic.cpp
   DeleteNullPointerCheck.cpp
   DeletedDefaultCheck.cpp
   ElseAfterReturnCheck.cpp
@@ -20,6 +21,7 @@ add_clang_library(clangTidyReadabilityModule
   NamespaceCommentCheck.cpp
   NonConstParameterCheck.cpp
   ReadabilityTidyModule.cpp
+  RedundantAccessSpecifiersCheck.cpp
   RedundantControlFlowCheck.cpp
   RedundantDeclarationCheck.cpp
   RedundantFunctionPtrDereferenceCheck.cpp

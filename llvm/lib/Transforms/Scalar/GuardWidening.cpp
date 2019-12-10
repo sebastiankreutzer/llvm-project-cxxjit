@@ -591,7 +591,7 @@ bool GuardWideningImpl::widenCondCommon(Value *Cond0, Value *Cond1,
           else
             Result = RC.getCheckInst();
         }
-
+        assert(Result && "Failed to find result value");
         Result->setName("wide.chk");
       }
       return true;
@@ -815,6 +815,31 @@ PreservedAnalyses GuardWideningPass::run(Function &F,
   PreservedAnalyses PA;
   PA.preserveSet<CFGAnalyses>();
   return PA;
+}
+
+PreservedAnalyses GuardWideningPass::run(Loop &L, LoopAnalysisManager &AM,
+                                         LoopStandardAnalysisResults &AR,
+                                         LPMUpdater &U) {
+
+  const auto &FAM =
+    AM.getResult<FunctionAnalysisManagerLoopProxy>(L, AR).getManager();
+  Function &F = *L.getHeader()->getParent();
+  BranchProbabilityInfo *BPI = nullptr;
+  if (WidenFrequentBranches)
+    BPI = FAM.getCachedResult<BranchProbabilityAnalysis>(F);
+
+  BasicBlock *RootBB = L.getLoopPredecessor();
+  if (!RootBB)
+    RootBB = L.getHeader();
+  auto BlockFilter = [&](BasicBlock *BB) {
+    return BB == RootBB || L.contains(BB);
+  };
+  if (!GuardWideningImpl(AR.DT, nullptr, AR.LI, BPI,
+                         AR.DT.getNode(RootBB),
+                         BlockFilter).run())
+    return PreservedAnalyses::all();
+
+  return getLoopPassPreservedAnalyses();
 }
 
 namespace {

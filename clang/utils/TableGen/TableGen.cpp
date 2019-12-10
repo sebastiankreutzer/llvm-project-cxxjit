@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TableGenBackends.h" // Declares all backends.
+#include "ClangASTEmitters.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
@@ -47,16 +48,24 @@ enum ActionType {
   GenClangCommentNodes,
   GenClangDeclNodes,
   GenClangStmtNodes,
+  GenClangTypeNodes,
+  GenClangOpcodes,
   GenClangSACheckers,
   GenClangCommentHTMLTags,
   GenClangCommentHTMLTagsProperties,
   GenClangCommentHTMLNamedCharacterReferences,
   GenClangCommentCommandInfo,
   GenClangCommentCommandList,
+  GenClangOpenCLBuiltins,
   GenArmNeon,
   GenArmFP16,
   GenArmNeonSema,
   GenArmNeonTest,
+  GenArmMveHeader,
+  GenArmMveBuiltinDef,
+  GenArmMveBuiltinSema,
+  GenArmMveBuiltinCG,
+  GenArmMveBuiltinAliases,
   GenAttrDocs,
   GenDiagDocs,
   GenOptDocs,
@@ -128,6 +137,10 @@ cl::opt<ActionType> Action(
                    "Generate Clang AST declaration nodes"),
         clEnumValN(GenClangStmtNodes, "gen-clang-stmt-nodes",
                    "Generate Clang AST statement nodes"),
+        clEnumValN(GenClangTypeNodes, "gen-clang-type-nodes",
+                   "Generate Clang AST type nodes"),
+        clEnumValN(GenClangOpcodes, "gen-clang-opcodes",
+                   "Generate Clang constexpr interpreter opcodes"),
         clEnumValN(GenClangSACheckers, "gen-clang-sa-checkers",
                    "Generate Clang Static Analyzer checkers"),
         clEnumValN(GenClangCommentHTMLTags, "gen-clang-comment-html-tags",
@@ -147,12 +160,24 @@ cl::opt<ActionType> Action(
         clEnumValN(GenClangCommentCommandList, "gen-clang-comment-command-list",
                    "Generate list of commands that are used in "
                    "documentation comments"),
+        clEnumValN(GenClangOpenCLBuiltins, "gen-clang-opencl-builtins",
+                   "Generate OpenCL builtin declaration handlers"),
         clEnumValN(GenArmNeon, "gen-arm-neon", "Generate arm_neon.h for clang"),
         clEnumValN(GenArmFP16, "gen-arm-fp16", "Generate arm_fp16.h for clang"),
         clEnumValN(GenArmNeonSema, "gen-arm-neon-sema",
                    "Generate ARM NEON sema support for clang"),
         clEnumValN(GenArmNeonTest, "gen-arm-neon-test",
                    "Generate ARM NEON tests for clang"),
+        clEnumValN(GenArmMveHeader, "gen-arm-mve-header",
+                   "Generate arm_mve.h for clang"),
+        clEnumValN(GenArmMveBuiltinDef, "gen-arm-mve-builtin-def",
+                   "Generate ARM MVE builtin definitions for clang"),
+        clEnumValN(GenArmMveBuiltinSema, "gen-arm-mve-builtin-sema",
+                   "Generate ARM MVE builtin sema checks for clang"),
+        clEnumValN(GenArmMveBuiltinCG, "gen-arm-mve-builtin-codegen",
+                   "Generate ARM MVE builtin code-generator for clang"),
+        clEnumValN(GenArmMveBuiltinAliases, "gen-arm-mve-builtin-aliases",
+                   "Generate list of valid ARM MVE builtin aliases for clang"),
         clEnumValN(GenAttrDocs, "gen-attr-docs",
                    "Generate attribute documentation"),
         clEnumValN(GenDiagDocs, "gen-diag-docs",
@@ -239,14 +264,20 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
     EmitClangDiagsIndexName(Records, OS);
     break;
   case GenClangCommentNodes:
-    EmitClangASTNodes(Records, OS, "Comment", "");
+    EmitClangASTNodes(Records, OS, CommentNodeClassName, "");
     break;
   case GenClangDeclNodes:
-    EmitClangASTNodes(Records, OS, "Decl", "Decl");
+    EmitClangASTNodes(Records, OS, DeclNodeClassName, "Decl");
     EmitClangDeclContext(Records, OS);
     break;
   case GenClangStmtNodes:
-    EmitClangASTNodes(Records, OS, "Stmt", "");
+    EmitClangASTNodes(Records, OS, StmtNodeClassName, "");
+    break;
+  case GenClangTypeNodes:
+    EmitClangTypeNodes(Records, OS);
+    break;
+  case GenClangOpcodes:
+    EmitClangOpcodes(Records, OS);
     break;
   case GenClangSACheckers:
     EmitClangSACheckers(Records, OS);
@@ -266,6 +297,9 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
   case GenClangCommentCommandList:
     EmitClangCommentCommandList(Records, OS);
     break;
+  case GenClangOpenCLBuiltins:
+    EmitClangOpenCLBuiltins(Records, OS);
+    break;
   case GenArmNeon:
     EmitNeon(Records, OS);
     break;
@@ -277,6 +311,21 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
     break;
   case GenArmNeonTest:
     EmitNeonTest(Records, OS);
+    break;
+  case GenArmMveHeader:
+    EmitMveHeader(Records, OS);
+    break;
+  case GenArmMveBuiltinDef:
+    EmitMveBuiltinDef(Records, OS);
+    break;
+  case GenArmMveBuiltinSema:
+    EmitMveBuiltinSema(Records, OS);
+    break;
+  case GenArmMveBuiltinCG:
+    EmitMveBuiltinCG(Records, OS);
+    break;
+  case GenArmMveBuiltinAliases:
+    EmitMveBuiltinAliases(Records, OS);
     break;
   case GenAttrDocs:
     EmitClangAttrDocs(Records, OS);

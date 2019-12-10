@@ -12,6 +12,7 @@
 #include "clang/Driver/Options.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/TargetParser.h"
+#include "llvm/Support/Host.h"
 
 using namespace clang::driver;
 using namespace clang::driver::tools;
@@ -192,6 +193,18 @@ void aarch64::getAArch64TargetFeatures(const Driver &D,
     Features.push_back("-fp-armv8");
     Features.push_back("-crypto");
     Features.push_back("-neon");
+  }
+
+  if (Arg *A = Args.getLastArg(options::OPT_mtp_mode_EQ)) {
+    StringRef Mtp = A->getValue();
+    if (Mtp == "el3")
+      Features.push_back("+tpidr-el3");
+    else if (Mtp == "el2")
+      Features.push_back("+tpidr-el2");
+    else if (Mtp == "el1")
+      Features.push_back("+tpidr-el1");
+    else if (Mtp != "el0")
+      D.Diag(diag::err_drv_invalid_mtp) << A->getAsString(Args);
   }
 
   // En/disable crc

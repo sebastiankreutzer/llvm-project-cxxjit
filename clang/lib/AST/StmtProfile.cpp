@@ -321,6 +321,9 @@ void StmtProfiler::VisitGCCAsmStmt(const GCCAsmStmt *S) {
   ID.AddInteger(S->getNumClobbers());
   for (unsigned I = 0, N = S->getNumClobbers(); I != N; ++I)
     VisitStringLiteral(S->getClobberStringLiteral(I));
+  ID.AddInteger(S->getNumLabels());
+  for (auto *L : S->labels())
+    VisitDecl(L->getLabel());
 }
 
 void StmtProfiler::VisitMSAsmStmt(const MSAsmStmt *S) {
@@ -412,7 +415,6 @@ public:
   OMPClauseProfiler(StmtProfiler *P) : Profiler(P) { }
 #define OPENMP_CLAUSE(Name, Class)                                             \
   void Visit##Class(const Class *C);
-  OPENMP_CLAUSE(flush, OMPFlushClause)
 #include "clang/Basic/OpenMPKinds.def"
   void VistOMPClauseWithPreInit(const OMPClauseWithPreInit *C);
   void VistOMPClauseWithPostUpdate(const OMPClauseWithPostUpdate *C);
@@ -438,6 +440,7 @@ void OMPClauseProfiler::VisitOMPIfClause(const OMPIfClause *C) {
 }
 
 void OMPClauseProfiler::VisitOMPFinalClause(const OMPFinalClause *C) {
+  VistOMPClauseWithPreInit(C);
   if (C->getCondition())
     Profiler->VisitStmt(C->getCondition());
 }
@@ -456,6 +459,11 @@ void OMPClauseProfiler::VisitOMPSafelenClause(const OMPSafelenClause *C) {
 void OMPClauseProfiler::VisitOMPSimdlenClause(const OMPSimdlenClause *C) {
   if (C->getSimdlen())
     Profiler->VisitStmt(C->getSimdlen());
+}
+
+void OMPClauseProfiler::VisitOMPAllocatorClause(const OMPAllocatorClause *C) {
+  if (C->getAllocator())
+    Profiler->VisitStmt(C->getAllocator());
 }
 
 void OMPClauseProfiler::VisitOMPCollapseClause(const OMPCollapseClause *C) {
@@ -712,6 +720,11 @@ void OMPClauseProfiler::VisitOMPDeviceClause(const OMPDeviceClause *C) {
 void OMPClauseProfiler::VisitOMPMapClause(const OMPMapClause *C) {
   VisitOMPClauseList(C);
 }
+void OMPClauseProfiler::VisitOMPAllocateClause(const OMPAllocateClause *C) {
+  if (Expr *Allocator = C->getAllocator())
+    Profiler->VisitStmt(Allocator);
+  VisitOMPClauseList(C);
+}
 void OMPClauseProfiler::VisitOMPNumTeamsClause(const OMPNumTeamsClause *C) {
   VistOMPClauseWithPreInit(C);
   if (C->getNumTeams())
@@ -724,14 +737,17 @@ void OMPClauseProfiler::VisitOMPThreadLimitClause(
     Profiler->VisitStmt(C->getThreadLimit());
 }
 void OMPClauseProfiler::VisitOMPPriorityClause(const OMPPriorityClause *C) {
+  VistOMPClauseWithPreInit(C);
   if (C->getPriority())
     Profiler->VisitStmt(C->getPriority());
 }
 void OMPClauseProfiler::VisitOMPGrainsizeClause(const OMPGrainsizeClause *C) {
+  VistOMPClauseWithPreInit(C);
   if (C->getGrainsize())
     Profiler->VisitStmt(C->getGrainsize());
 }
 void OMPClauseProfiler::VisitOMPNumTasksClause(const OMPNumTasksClause *C) {
+  VistOMPClauseWithPreInit(C);
   if (C->getNumTasks())
     Profiler->VisitStmt(C->getNumTasks());
 }
@@ -903,6 +919,26 @@ void StmtProfiler::VisitOMPTaskLoopDirective(const OMPTaskLoopDirective *S) {
 
 void StmtProfiler::VisitOMPTaskLoopSimdDirective(
     const OMPTaskLoopSimdDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPMasterTaskLoopDirective(
+    const OMPMasterTaskLoopDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPMasterTaskLoopSimdDirective(
+    const OMPMasterTaskLoopSimdDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPParallelMasterTaskLoopDirective(
+    const OMPParallelMasterTaskLoopDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPParallelMasterTaskLoopSimdDirective(
+    const OMPParallelMasterTaskLoopSimdDirective *S) {
   VisitOMPLoopDirective(S);
 }
 
@@ -1285,6 +1321,14 @@ void StmtProfiler::VisitAtomicExpr(const AtomicExpr *S) {
   ID.AddInteger(S->getOp());
 }
 
+void StmtProfiler::VisitConceptSpecializationExpr(
+                                           const ConceptSpecializationExpr *S) {
+  VisitExpr(S);
+  VisitDecl(S->getFoundDecl());
+  VisitTemplateArguments(S->getTemplateArgsAsWritten()->getTemplateArgs(),
+                         S->getTemplateArgsAsWritten()->NumTemplateArgs);
+}
+
 static Stmt::StmtClass DecodeOperatorCall(const CXXOperatorCallExpr *S,
                                           UnaryOperatorKind &UnaryOp,
                                           BinaryOperatorKind &BinaryOp) {
@@ -1518,6 +1562,16 @@ void StmtProfiler::VisitCXXOperatorCallExpr(const CXXOperatorCallExpr *S) {
   ID.AddInteger(S->getOperator());
 }
 
+void StmtProfiler::VisitCXXRewrittenBinaryOperator(
+    const CXXRewrittenBinaryOperator *S) {
+  // If a rewritten operator were ever to be type-dependent, we should profile
+  // it following its syntactic operator.
+  assert(!S->isTypeDependent() &&
+         "resolved rewritten operator should never be type-dependent");
+  ID.AddBoolean(S->isReversed());
+  VisitExpr(S->getSemanticForm());
+}
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #if _MSC_VER == 1911
 #pragma optimize("", on)
@@ -1555,6 +1609,11 @@ StmtProfiler::VisitCXXReinterpretCastExpr(const CXXReinterpretCastExpr *S) {
 
 void StmtProfiler::VisitCXXConstCastExpr(const CXXConstCastExpr *S) {
   VisitCXXNamedCastExpr(S);
+}
+
+void StmtProfiler::VisitBuiltinBitCastExpr(const BuiltinBitCastExpr *S) {
+  VisitExpr(S);
+  VisitType(S->getTypeInfoAsWritten()->getType());
 }
 
 void StmtProfiler::VisitUserDefinedLiteral(const UserDefinedLiteral *S) {
@@ -1870,6 +1929,10 @@ void StmtProfiler::VisitOpaqueValueExpr(const OpaqueValueExpr *E) {
 }
 
 void StmtProfiler::VisitTypoExpr(const TypoExpr *E) {
+  VisitExpr(E);
+}
+
+void StmtProfiler::VisitSourceLocExpr(const SourceLocExpr *E) {
   VisitExpr(E);
 }
 

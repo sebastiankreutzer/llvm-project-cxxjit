@@ -34,6 +34,14 @@
 #error "wrong value for __cpp_char8_t"
 #endif
 
+#if check(constexpr_dynamic_alloc, 0, 0, 0, 0, 201907)
+#error "wrong value for __cpp_constexpr_dynamic_alloc"
+#endif
+
+#if check(constinit, 0, 0, 0, 0, 201907)
+#error "wrong value for __cpp_constinit"
+#endif
+
 #if check(impl_destroying_delete, 201806, 201806, 201806, 201806, 201806)
 #error "wrong value for __cpp_impl_destroying_delete"
 #endif
@@ -203,7 +211,7 @@
 #error "wrong value for __cpp_lambdas"
 #endif
 
-#if check(constexpr, 0, 200704, 201304, 201603, 201603)
+#if check(constexpr, 0, 200704, 201304, 201603, 201907)
 #error "wrong value for __cpp_constexpr"
 #endif
 
@@ -271,6 +279,6 @@
 #error "wrong value for __cpp_experimental_concepts"
 #endif
 
-#if defined(COROUTINES) ? check(coroutines, 201703L, 201703L, 201703L, 201703L, 201703L) : check(coroutines, 0, 0, 0, 0, 0)
+#if defined(COROUTINES) ? check(coroutines, 201703L, 201703L, 201703L, 201703L, 201703L) : check(coroutines, 0, 0, 0, 0, 201703L)
 #error "wrong value for __cpp_coroutines"
 #endif

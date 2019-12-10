@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/CodeGen/AsmPrinterHandler.h"
 #include "llvm/CodeGen/DwarfStringPoolEntry.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/IR/InlineAsm.h"
@@ -32,7 +33,6 @@
 
 namespace llvm {
 
-class AsmPrinterHandler;
 class BasicBlock;
 class BlockAddress;
 class Constant;
@@ -70,6 +70,7 @@ class MCTargetOptions;
 class MDNode;
 class Module;
 class raw_ostream;
+class RemarkStreamer;
 class StackMaps;
 class TargetLoweringObjectFile;
 class TargetMachine;
@@ -111,6 +112,10 @@ public:
   /// of each call to runOnMachineFunction().
   MCSymbol *CurrentFnSym = nullptr;
 
+  /// The symbol for the current function descriptor on AIX. This is created
+  /// at the beginning of each call to SetupMachineFunction().
+  MCSymbol *CurrentFnDescSym = nullptr;
+
   /// The symbol used to represent the start of the current function for the
   /// purpose of calculating its size (e.g. using the .size directive). By
   /// default, this is equal to CurrentFnSym.
@@ -138,16 +143,16 @@ protected:
   /// Protected struct HandlerInfo and Handlers permit target extended
   /// AsmPrinter adds their own handlers.
   struct HandlerInfo {
-    AsmPrinterHandler *Handler;
+    std::unique_ptr<AsmPrinterHandler> Handler;
     const char *TimerName;
     const char *TimerDescription;
     const char *TimerGroupName;
     const char *TimerGroupDescription;
 
-    HandlerInfo(AsmPrinterHandler *Handler, const char *TimerName,
-                const char *TimerDescription, const char *TimerGroupName,
-                const char *TimerGroupDescription)
-        : Handler(Handler), TimerName(TimerName),
+    HandlerInfo(std::unique_ptr<AsmPrinterHandler> Handler,
+                const char *TimerName, const char *TimerDescription,
+                const char *TimerGroupName, const char *TimerGroupDescription)
+        : Handler(std::move(Handler)), TimerName(TimerName),
           TimerDescription(TimerDescription), TimerGroupName(TimerGroupName),
           TimerGroupDescription(TimerGroupDescription) {}
   };
@@ -304,7 +309,7 @@ public:
 
   /// This should be called when a new MachineFunction is being processed from
   /// runOnMachineFunction.
-  void SetupMachineFunction(MachineFunction &MF);
+  virtual void SetupMachineFunction(MachineFunction &MF);
 
   /// This method emits the body and trailer for a function.
   void EmitFunctionBody();
@@ -314,6 +319,8 @@ public:
   void emitFrameAlloc(const MachineInstr &MI);
 
   void emitStackSizeSection(const MachineFunction &MF);
+
+  void emitRemarksSection(RemarkStreamer &RS);
 
   enum CFIMoveType { CFI_M_None, CFI_M_EH, CFI_M_Debug };
   CFIMoveType needsCFIMoves() const;
@@ -340,12 +347,11 @@ public:
   /// so, emit it and return true, otherwise do nothing and return false.
   bool EmitSpecialLLVMGlobal(const GlobalVariable *GV);
 
-  /// Emit an alignment directive to the specified power of two boundary. For
-  /// example, if you pass in 3 here, you will get an 8 byte alignment. If a
+  /// Emit an alignment directive to the specified power of two boundary. If a
   /// global value is specified, and if that global has an explicit alignment
   /// requested, it will override the alignment request if required for
   /// correctness.
-  void EmitAlignment(unsigned NumBits, const GlobalObject *GV = nullptr) const;
+  void EmitAlignment(Align Alignment, const GlobalObject *GV = nullptr) const;
 
   /// Lower the specified LLVM Constant to an MCExpr.
   virtual const MCExpr *lowerConstant(const Constant *CV);
@@ -398,7 +404,7 @@ public:
   /// By default, this method prints the label for the specified
   /// MachineBasicBlock, an alignment (if present) and a comment describing it
   /// if appropriate.
-  virtual void EmitBasicBlockStart(const MachineBasicBlock &MBB) const;
+  virtual void EmitBasicBlockStart(const MachineBasicBlock &MBB);
 
   /// Targets can override this to emit stuff at the end of a basic block.
   virtual void EmitBasicBlockEnd(const MachineBasicBlock &MBB);
@@ -412,6 +418,10 @@ public:
   virtual MCSymbol *GetCPISymbol(unsigned CPID) const;
 
   virtual void EmitFunctionEntryLabel();
+
+  virtual void EmitFunctionDescriptor() {
+    llvm_unreachable("Function descriptor is target-specific.");
+  }
 
   virtual void EmitMachineConstantPoolValue(MachineConstantPoolValue *MCPV);
 
@@ -510,7 +520,7 @@ public:
   void EmitSLEB128(int64_t Value, const char *Desc = nullptr) const;
 
   /// Emit the specified unsigned leb128 value.
-  void EmitULEB128(uint64_t Value, const char *Desc = nullptr) const;
+  void EmitULEB128(uint64_t Value, const char *Desc = nullptr, unsigned PadTo = 0) const;
 
   /// Emit a .byte 42 directive that corresponds to an encoding.  If verbose
   /// assembly output is enabled, we output comments describing the encoding.
@@ -540,6 +550,12 @@ public:
   void emitDwarfStringOffset(DwarfStringPoolEntryRef S) const {
     emitDwarfStringOffset(S.getEntry());
   }
+
+  /// Emit reference to a call site with a specified encoding
+  void EmitCallSiteOffset(const MCSymbol *Hi, const MCSymbol *Lo,
+                          unsigned Encoding) const;
+  /// Emit an integer value corresponding to the call site encoding
+  void EmitCallSiteValue(uint64_t Value, unsigned Encoding) const;
 
   /// Get the value for DW_AT_APPLE_isa. Zero if no isa encoding specified.
   virtual unsigned getISAEncoding() { return 0; }
@@ -588,20 +604,22 @@ public:
   virtual void PrintSpecial(const MachineInstr *MI, raw_ostream &OS,
                             const char *Code) const;
 
+  /// Print the MachineOperand as a symbol. Targets with complex handling of
+  /// symbol references should override the base implementation.
+  virtual void PrintSymbolOperand(const MachineOperand &MO, raw_ostream &OS);
+
   /// Print the specified operand of MI, an INLINEASM instruction, using the
   /// specified assembler variant.  Targets should override this to format as
   /// appropriate.  This method can return true if the operand is erroneous.
   virtual bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
-                               unsigned AsmVariant, const char *ExtraCode,
-                               raw_ostream &OS);
+                               const char *ExtraCode, raw_ostream &OS);
 
   /// Print the specified operand of MI, an INLINEASM instruction, using the
   /// specified assembler variant as an address. Targets should override this to
   /// format as appropriate.  This method can return true if the operand is
   /// erroneous.
   virtual bool PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNo,
-                                     unsigned AsmVariant, const char *ExtraCode,
-                                     raw_ostream &OS);
+                                     const char *ExtraCode, raw_ostream &OS);
 
   /// Let the target do anything it needs to do before emitting inlineasm.
   /// \p StartInfo - the subtarget info before parsing inline asm
@@ -615,6 +633,19 @@ public:
   ///                or NULL if the value is unknown.
   virtual void emitInlineAsmEnd(const MCSubtargetInfo &StartInfo,
                                 const MCSubtargetInfo *EndInfo) const;
+
+  /// This emits visibility information about symbol, if this is supported by
+  /// the target.
+  void EmitVisibility(MCSymbol *Sym, unsigned Visibility,
+                      bool IsDefinition = true) const;
+
+  /// This emits linkage information about \p GVSym based on \p GV, if this is
+  /// supported by the target.
+  void EmitLinkage(const GlobalValue *GV, MCSymbol *GVSym) const;
+
+  /// Return the alignment for the specified \p GV.
+  static Align getGVAlignment(const GlobalValue *GV, const DataLayout &DL,
+                              Align InAlign = Align::None());
 
 private:
   /// Private state for PrintSpecial()
@@ -645,13 +676,6 @@ private:
   //===------------------------------------------------------------------===//
   // Internal Implementation Details
   //===------------------------------------------------------------------===//
-
-  /// This emits visibility information about symbol, if this is supported by
-  /// the target.
-  void EmitVisibility(MCSymbol *Sym, unsigned Visibility,
-                      bool IsDefinition = true) const;
-
-  void EmitLinkage(const GlobalValue *GV, MCSymbol *GVSym) const;
 
   void EmitJumpTableEntry(const MachineJumpTableInfo *MJTI,
                           const MachineBasicBlock *MBB, unsigned uid) const;

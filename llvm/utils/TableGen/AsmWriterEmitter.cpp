@@ -585,11 +585,20 @@ void AsmWriterEmitter::EmitGetRegisterName(raw_ostream &O) {
       O << "  case ";
       if (!Namespace.empty())
         O << Namespace << "::";
-      O << AltName << ":\n"
-        << "    assert(*(AsmStrs" << AltName << "+RegAsmOffset" << AltName
-        << "[RegNo-1]) &&\n"
-        << "           \"Invalid alt name index for register!\");\n"
-        << "    return AsmStrs" << AltName << "+RegAsmOffset" << AltName
+      O << AltName << ":\n";
+      if (R->isValueUnset("FallbackRegAltNameIndex"))
+        O << "    assert(*(AsmStrs" << AltName << "+RegAsmOffset" << AltName
+          << "[RegNo-1]) &&\n"
+          << "           \"Invalid alt name index for register!\");\n";
+      else {
+        O << "    if (!*(AsmStrs" << AltName << "+RegAsmOffset" << AltName
+          << "[RegNo-1]))\n"
+          << "      return getRegisterName(RegNo, ";
+        if (!Namespace.empty())
+          O << Namespace << "::";
+        O << R->getValueAsDef("FallbackRegAltNameIndex")->getName() << ");\n";
+      }
+      O << "    return AsmStrs" << AltName << "+RegAsmOffset" << AltName
         << "[RegNo-1];\n";
     }
     O << "  }\n";
@@ -775,8 +784,7 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
       continue; // Aliases with priority 0 are never emitted.
 
     const DagInit *DI = R->getValueAsDag("ResultInst");
-    const DefInit *Op = cast<DefInit>(DI->getOperator());
-    AliasMap[getQualifiedName(Op->getDef())].insert(
+    AliasMap[getQualifiedName(DI->getOperatorAsDef(R->getLoc()))].insert(
         std::make_pair(CodeGenInstAlias(R, Target), Priority));
   }
 

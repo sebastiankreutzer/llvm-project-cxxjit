@@ -111,7 +111,12 @@ public:
   }
 
   void VisitUsingDecl(const UsingDecl *D) {
-    IgnoreResults = true;
+    VisitDeclContext(D->getDeclContext());
+    Out << "@UD@";
+
+    bool EmittedDeclName = !EmitDeclName(D);
+    assert(EmittedDeclName && "EmitDeclName can not fail for UsingDecls");
+    (void)EmittedDeclName;
   }
 
   bool ShouldGenerateLocation(const NamedDecl *D);
@@ -719,6 +724,9 @@ void USRGenerator::VisitType(QualType T) {
         case BuiltinType::OCLQueue:
         case BuiltinType::OCLReserveID:
         case BuiltinType::OCLSampler:
+#define SVE_TYPE(Name, Id, SingletonId) \
+        case BuiltinType::Id:
+#include "clang/Basic/AArch64SVEACLETypes.def"
         case BuiltinType::ShortAccum:
         case BuiltinType::Accum:
         case BuiltinType::LongAccum:

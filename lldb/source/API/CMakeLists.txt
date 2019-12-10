@@ -9,6 +9,10 @@ if(NOT LLDB_DISABLE_PYTHON)
   set(lldb_python_wrapper ${lldb_scripts_dir}/LLDBWrapPython.cpp)
 endif()
 
+if(LLDB_BUILD_FRAMEWORK)
+  set(option_install_prefix INSTALL_PREFIX ${LLDB_FRAMEWORK_INSTALL_DIR})
+endif()
+
 add_lldb_library(liblldb SHARED
   SBAddress.cpp
   SBAttachInfo.cpp
@@ -30,11 +34,11 @@ add_lldb_library(liblldb SHARED
   SBExecutionContext.cpp
   SBExpressionOptions.cpp
   SBFileSpec.cpp
+  SBFile.cpp
   SBFileSpecList.cpp
   SBFrame.cpp
   SBFunction.cpp
   SBHostOS.cpp
-  SBInitializerOptions.cpp
   SBInstruction.cpp
   SBInstructionList.cpp
   SBLanguageRuntime.cpp
@@ -96,7 +100,13 @@ add_lldb_library(liblldb SHARED
     ${LLDB_ALL_PLUGINS}
   LINK_COMPONENTS
     Support
-  )
+
+  ${option_install_prefix}
+)
+
+if (MSVC)
+  set_source_files_properties(SBReproducer.cpp PROPERTIES COMPILE_FLAGS /bigobj)
+endif()
 
 if(lldb_python_wrapper)
   add_dependencies(liblldb swig_wrapper)
@@ -137,6 +147,7 @@ if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
     MESSAGE("-- Symbols (liblldb): exporting all symbols from the lldb and lldb_private namespaces")
     add_llvm_symbol_exports(liblldb ${CMAKE_CURRENT_SOURCE_DIR}/liblldb-private.exports)
   endif()
+  set_target_properties(liblldb_exports PROPERTIES FOLDER "lldb misc")
 endif()
 
 if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
@@ -150,6 +161,10 @@ else()
     PROPERTIES
     OUTPUT_NAME lldb
   )
+endif()
+
+if (NOT LLDB_BUILT_STANDALONE)
+  add_dependencies(liblldb clang-resource-headers)
 endif()
 
 if(LLDB_BUILD_FRAMEWORK)

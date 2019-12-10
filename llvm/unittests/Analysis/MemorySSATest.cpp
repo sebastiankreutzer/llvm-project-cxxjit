@@ -51,7 +51,7 @@ protected:
         : DT(*Test.F), AC(*Test.F), AA(Test.TLI),
           BAA(Test.DL, *Test.F, Test.TLI, AC, &DT) {
       AA.addAAResult(BAA);
-      MSSA = make_unique<MemorySSA>(*Test.F, &AA, &DT);
+      MSSA = std::make_unique<MemorySSA>(*Test.F, &AA, &DT);
       Walker = MSSA->getWalker();
     }
   };
@@ -159,14 +159,14 @@ TEST_F(MemorySSATest, CreateLoadsAndStoreUpdater) {
   MemoryAccess *LeftStoreAccess = Updater.createMemoryAccessInBB(
       LeftStore, nullptr, Left, MemorySSA::Beginning);
   Updater.insertDef(cast<MemoryDef>(LeftStoreAccess), false);
-  // We don't touch existing loads, so we need to create a new one to get a phi
+
+  // MemoryPHI should exist after adding LeftStore.
+  MP = MSSA.getMemoryAccess(Merge);
+  EXPECT_NE(MP, nullptr);
+
   // Add the second load
   B.SetInsertPoint(Merge, Merge->begin());
   LoadInst *SecondLoad = B.CreateLoad(B.getInt8Ty(), PointerArg);
-
-  // MemoryPHI should not already exist.
-  MP = MSSA.getMemoryAccess(Merge);
-  EXPECT_EQ(MP, nullptr);
 
   // Create the load memory access
   MemoryUse *SecondLoadAccess = cast<MemoryUse>(Updater.createMemoryAccessInBB(
@@ -226,13 +226,13 @@ TEST_F(MemorySSATest, CreateALoadUpdater) {
       Updater.createMemoryAccessInBB(SI, nullptr, Left, MemorySSA::Beginning);
   Updater.insertDef(cast<MemoryDef>(StoreAccess));
 
+  // MemoryPHI should be created when inserting the def
+  MemoryPhi *MP = MSSA.getMemoryAccess(Merge);
+  EXPECT_NE(MP, nullptr);
+
   // Add the load
   B.SetInsertPoint(Merge, Merge->begin());
   LoadInst *LoadInst = B.CreateLoad(B.getInt8Ty(), PointerArg);
-
-  // MemoryPHI should not already exist.
-  MemoryPhi *MP = MSSA.getMemoryAccess(Merge);
-  EXPECT_EQ(MP, nullptr);
 
   // Create the load memory acccess
   MemoryUse *LoadAccess = cast<MemoryUse>(Updater.createMemoryAccessInBB(
@@ -1431,7 +1431,7 @@ TEST_F(MemorySSATest, TestAddedEdgeToBlockWithPhiNotOpt) {
   MemorySSA &MSSA = *Analyses->MSSA;
   MemorySSAWalker *Walker = Analyses->Walker;
   std::unique_ptr<MemorySSAUpdater> MSSAU =
-      make_unique<MemorySSAUpdater>(&MSSA);
+      std::make_unique<MemorySSAUpdater>(&MSSA);
 
   MemoryPhi *Phi = MSSA.getMemoryAccess(Exit);
   EXPECT_EQ(Phi, Walker->getClobberingMemoryAccess(S1));
@@ -1493,7 +1493,7 @@ TEST_F(MemorySSATest, TestAddedEdgeToBlockWithPhiOpt) {
   MemorySSA &MSSA = *Analyses->MSSA;
   MemorySSAWalker *Walker = Analyses->Walker;
   std::unique_ptr<MemorySSAUpdater> MSSAU =
-      make_unique<MemorySSAUpdater>(&MSSA);
+      std::make_unique<MemorySSAUpdater>(&MSSA);
 
   MemoryDef *DefS1 = cast<MemoryDef>(MSSA.getMemoryAccess(S1));
   EXPECT_EQ(DefS1, Walker->getClobberingMemoryAccess(S2));
@@ -1565,7 +1565,7 @@ TEST_F(MemorySSATest, TestAddedEdgeToBlockWithNoPhiAddNewPhis) {
   setupAnalyses();
   MemorySSA &MSSA = *Analyses->MSSA;
   std::unique_ptr<MemorySSAUpdater> MSSAU =
-      make_unique<MemorySSAUpdater>(&MSSA);
+      std::make_unique<MemorySSAUpdater>(&MSSA);
 
   // Alter CFG, add edge: f -> c
   FBlock->getTerminator()->eraseFromParent();

@@ -15,9 +15,7 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//-------------------------------------------------------------------------
 // CommandObjectGUI
-//-------------------------------------------------------------------------
 
 CommandObjectGUI::CommandObjectGUI(CommandInterpreter &interpreter)
     : CommandObjectParsed(interpreter, "gui",
@@ -28,11 +26,12 @@ CommandObjectGUI::~CommandObjectGUI() {}
 bool CommandObjectGUI::DoExecute(Args &args, CommandReturnObject &result) {
 #ifndef LLDB_DISABLE_CURSES
   if (args.GetArgumentCount() == 0) {
-    Debugger &debugger = m_interpreter.GetDebugger();
+    Debugger &debugger = GetDebugger();
 
-    lldb::StreamFileSP input_sp = debugger.GetInputFile();
-    if (input_sp && input_sp->GetFile().GetIsRealTerminal() &&
-        input_sp->GetFile().GetIsInteractive()) {
+    File &input = debugger.GetInputFile();
+    File &output = debugger.GetOutputFile();
+    if (input.GetStream() && output.GetStream() && input.GetIsRealTerminal() &&
+        input.GetIsInteractive()) {
       IOHandlerSP io_handler_sp(new IOHandlerCursesGUI(debugger));
       if (io_handler_sp)
         debugger.PushIOHandler(io_handler_sp);

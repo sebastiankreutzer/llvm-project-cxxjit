@@ -129,7 +129,7 @@ FunctionImportGlobalProcessing::getLinkage(const GlobalValue *SGV,
     // definitions upon import, so that they are available for inlining
     // and/or optimization, but are turned into declarations later
     // during the EliminateAvailableExternally pass.
-    if (doImportAsDefinition(SGV) && !dyn_cast<GlobalAlias>(SGV))
+    if (doImportAsDefinition(SGV) && !isa<GlobalAlias>(SGV))
       return GlobalValue::AvailableExternallyLinkage;
     // An imported external declaration stays external.
     return SGV->getLinkage();
@@ -158,7 +158,7 @@ FunctionImportGlobalProcessing::getLinkage(const GlobalValue *SGV,
     // equivalent, so the issue described above for weak_any does not exist,
     // and the definition can be imported. It can be treated similarly
     // to an imported externally visible global value.
-    if (doImportAsDefinition(SGV) && !dyn_cast<GlobalAlias>(SGV))
+    if (doImportAsDefinition(SGV) && !isa<GlobalAlias>(SGV))
       return GlobalValue::AvailableExternallyLinkage;
     else
       return GlobalValue::ExternalLinkage;
@@ -176,7 +176,7 @@ FunctionImportGlobalProcessing::getLinkage(const GlobalValue *SGV,
     // If we are promoting the local to global scope, it is handled
     // similarly to a normal externally visible global.
     if (DoPromote) {
-      if (doImportAsDefinition(SGV) && !dyn_cast<GlobalAlias>(SGV))
+      if (doImportAsDefinition(SGV) && !isa<GlobalAlias>(SGV))
         return GlobalValue::AvailableExternallyLinkage;
       else
         return GlobalValue::ExternalLinkage;
@@ -210,7 +210,7 @@ void FunctionImportGlobalProcessing::processGlobalForThinLTO(GlobalValue &GV) {
       if (Function *F = dyn_cast<Function>(&GV)) {
         if (!F->isDeclaration()) {
           for (auto &S : VI.getSummaryList()) {
-            FunctionSummary *FS = dyn_cast<FunctionSummary>(S->getBaseObject());
+            auto *FS = cast<FunctionSummary>(S->getBaseObject());
             if (FS->modulePath() == M.getModuleIdentifier()) {
               F->setEntryCount(Function::ProfileCount(FS->entryCount(),
                                                       Function::PCT_Synthetic));
@@ -229,20 +229,32 @@ void FunctionImportGlobalProcessing::processGlobalForThinLTO(GlobalValue &GV) {
     }
   }
 
-  // Mark read-only variables which can be imported with specific attribute.
-  // We can't internalize them now because IRMover will fail to link variable
-  // definitions to their external declarations during ThinLTO import. We'll
-  // internalize read-only variables later, after import is finished.
-  // See internalizeImmutableGVs.
+  // Mark read/write-only variables which can be imported with specific
+  // attribute. We can't internalize them now because IRMover will fail
+  // to link variable definitions to their external declarations during
+  // ThinLTO import. We'll internalize read-only variables later, after
+  // import is finished. See internalizeGVsAfterImport.
   //
   // If global value dead stripping is not enabled in summary then
   // propagateConstants hasn't been run. We can't internalize GV
   // in such case.
   if (!GV.isDeclaration() && VI && ImportIndex.withGlobalValueDeadStripping()) {
-    const auto &SL = VI.getSummaryList();
-    auto *GVS = SL.empty() ? nullptr : dyn_cast<GlobalVarSummary>(SL[0].get());
-    if (GVS && GVS->isReadOnly())
-      cast<GlobalVariable>(&GV)->addAttribute("thinlto-internalize");
+    if (GlobalVariable *V = dyn_cast<GlobalVariable>(&GV)) {
+      // We can have more than one local with the same GUID, in the case of
+      // same-named locals in different but same-named source files that were
+      // compiled in their respective directories (so the source file name
+      // and resulting GUID is the same). Find the one in this module.
+      // Handle the case where there is no summary found in this module. That
+      // can happen in the distributed ThinLTO backend, because the index only
+      // contains summaries from the source modules if they are being imported.
+      // We might have a non-null VI and get here even in that case if the name
+      // matches one in this module (e.g. weak or appending linkage).
+      auto* GVS = dyn_cast_or_null<GlobalVarSummary>(
+          ImportIndex.findSummaryInModule(VI, M.getModuleIdentifier()));
+      // At this stage "maybe" is "definitely"
+      if (GVS && (GVS->maybeReadOnly() || GVS->maybeWriteOnly()))
+        V->addAttribute("thinlto-internalize");
+    }
   }
 
   bool DoPromote = false;

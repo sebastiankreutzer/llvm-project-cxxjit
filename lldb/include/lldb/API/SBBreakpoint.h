@@ -36,6 +36,8 @@ public:
 
   break_id_t GetID() const;
 
+  explicit operator bool() const;
+
   bool IsValid() const;
 
   void ClearAllBreakpointSites();
@@ -91,6 +93,9 @@ public:
   void SetCallback(SBBreakpointHitCallback callback, void *baton);
 
   void SetScriptCallbackFunction(const char *callback_function_name);
+
+  SBError SetScriptCallbackFunction(const char *callback_function_name,
+                                 SBStructuredData &extra_args);
 
   void SetCommandLineCommands(SBStringList &commands);
 

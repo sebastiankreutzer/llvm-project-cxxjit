@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// REQUIRES: c++experimental
 // UNSUPPORTED: c++98, c++03
 
 // <experimental/memory_resource>
@@ -19,7 +18,7 @@
 #include <cassert>
 
 #include "test_macros.h"
-#include "count_new.hpp"
+#include "count_new.h"
 
 namespace ex = std::experimental::pmr;
 

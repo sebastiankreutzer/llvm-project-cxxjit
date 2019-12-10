@@ -29,7 +29,9 @@ class TestAppleSimulatorOSType(gdbremote_testcase.GdbRemoteTestCaseBase):
             if not platform in runtime.lower():
                 continue
             for device in devices:
-                if device['availability'] != '(available)':
+                if 'availability' in device and device['availability'] != '(available)':
+                    continue
+                if 'isAvailable' in device and device['isAvailable'] != True:
                     continue
                 deviceUDID = device['udid']
                 break
@@ -44,7 +46,7 @@ class TestAppleSimulatorOSType(gdbremote_testcase.GdbRemoteTestCaseBase):
         self.build(dictionary={ 'EXE': exe_name, 'SDKROOT': sdkroot.strip(),
                                 'ARCH': arch })
         exe_path = self.getBuildArtifact(exe_name)
-        sim_launcher = subprocess.Popen(['xcrun', 'simctl', 'spawn',
+        sim_launcher = subprocess.Popen(['xcrun', 'simctl', 'spawn', '-s',
                                          deviceUDID, exe_path,
                                          'print-pid', 'sleep:10'],
                                         stderr=subprocess.PIPE)
@@ -101,21 +103,21 @@ class TestAppleSimulatorOSType(gdbremote_testcase.GdbRemoteTestCaseBase):
 
     @apple_simulator_test('iphone')
     @debugserver_test
-    @skipIfDarwinEmbedded
+    @skipIfRemote
     def test_simulator_ostype_ios(self):
         self.check_simulator_ostype(sdk='iphonesimulator',
                                     platform='ios')
 
     @apple_simulator_test('appletv')
     @debugserver_test
-    @skipIfDarwinEmbedded
+    @skipIfRemote
     def test_simulator_ostype_tvos(self):
         self.check_simulator_ostype(sdk='appletvsimulator',
                                     platform='tvos')
 
     @apple_simulator_test('watch')
     @debugserver_test
-    @skipIfDarwinEmbedded
+    @skipIfRemote
     def test_simulator_ostype_watchos(self):
         self.check_simulator_ostype(sdk='watchsimulator',
                                     platform='watchos', arch='i386')

@@ -224,7 +224,7 @@ public:
 
   /// Returns true if this is a libc/libm function without the '__builtin_'
   /// prefix.
-  static bool isBuiltinFunc(const char *Name);
+  static bool isBuiltinFunc(llvm::StringRef Name);
 
   /// Returns true if this is a builtin that can be redeclared.  Returns true
   /// for non-builtins.
@@ -242,13 +242,7 @@ private:
               const char *Fmt) const;
 };
 
-/// For a given BuiltinID, return the ID of the fortified variant function. For
-/// instance, if Builtin::BIsprintf is passed, this function will return
-/// Builtin::BI__builtin___sprintf_chk. If BuiltinID doesn't have a fortified
-/// variant, 0 is returned.
-unsigned getFortifiedVariantFunction(unsigned BuiltinID);
-
-} // end namespace Builtin
+}
 
 /// Kinds of BuiltinTemplateDecl.
 enum BuiltinTemplateKind : int {

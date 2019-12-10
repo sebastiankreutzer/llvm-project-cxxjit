@@ -31,6 +31,8 @@ public:
 
   ~SBInstruction();
 
+  explicit operator bool() const;
+
   bool IsValid();
 
   SBAddress GetAddress();
@@ -52,6 +54,10 @@ public:
   bool CanSetBreakpoint();
 
   void Print(FILE *out);
+
+  void Print(SBFile out);
+
+  void Print(FileSP out);
 
   bool GetDescription(lldb::SBStream &description);
 

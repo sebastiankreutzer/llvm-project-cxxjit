@@ -34,6 +34,7 @@
 
 namespace llvm {
 
+  class AAResults;
   class LiveIntervals;
   class MachineFrameInfo;
   class MachineFunction;
@@ -57,7 +58,7 @@ namespace llvm {
       : VirtReg(VReg), LaneMask(LaneMask), SU(SU) {}
 
     unsigned getSparseSetIndex() const {
-      return TargetRegisterInfo::virtReg2Index(VirtReg);
+      return Register::virtReg2Index(VirtReg);
     }
   };
 
@@ -173,7 +174,7 @@ namespace llvm {
     /// Tracks the last instructions in this region using each virtual register.
     VReg2SUnitOperIdxMultiMap CurrentVRegUses;
 
-    AliasAnalysis *AAForDep = nullptr;
+    AAResults *AAForDep = nullptr;
 
     /// Remember a generic side-effecting instruction as we proceed.
     /// No other SU ever gets scheduled around it (except in the special
@@ -201,7 +202,7 @@ namespace llvm {
                                Value2SUsMap &loads, unsigned N);
 
     /// Adds a chain edge between SUa and SUb, but only if both
-    /// AliasAnalysis and Target fail to deny the dependency.
+    /// AAResults and Target fail to deny the dependency.
     void addChainDependency(SUnit *SUa, SUnit *SUb,
                             unsigned Latency = 0);
 
@@ -233,6 +234,11 @@ namespace llvm {
 
     /// For an unanalyzable memory access, this Value is used in maps.
     UndefValue *UnknownValue;
+
+
+    /// Topo - A topological ordering for SUnits which permits fast IsReachable
+    /// and similar queries.
+    ScheduleDAGTopologicalSort Topo;
 
     using DbgValueVector =
         std::vector<std::pair<MachineInstr *, MachineInstr *>>;
@@ -301,7 +307,7 @@ namespace llvm {
     /// If \p RPTracker is non-null, compute register pressure as a side effect.
     /// The DAG builder is an efficient place to do it because it already visits
     /// operands.
-    void buildSchedGraph(AliasAnalysis *AA,
+    void buildSchedGraph(AAResults *AA,
                          RegPressureTracker *RPTracker = nullptr,
                          PressureDiffs *PDiffs = nullptr,
                          LiveIntervals *LIS = nullptr,
@@ -338,6 +344,17 @@ namespace llvm {
     /// Fixes register kill flags that scheduling has made invalid.
     void fixupKills(MachineBasicBlock &MBB);
 
+    /// True if an edge can be added from PredSU to SuccSU without creating
+    /// a cycle.
+    bool canAddEdge(SUnit *SuccSU, SUnit *PredSU);
+
+    /// Add a DAG edge to the given SU with the given predecessor
+    /// dependence data.
+    ///
+    /// \returns true if the edge may be added without creating a cycle OR if an
+    /// equivalent edge already existed (false indicates failure).
+    bool addEdge(SUnit *SuccSU, const SDep &PredDep);
+
   protected:
     void initSUnits();
     void addPhysRegDataDeps(SUnit *SU, unsigned OperIdx);
@@ -358,6 +375,9 @@ namespace llvm {
     /// Returns a mask for which lanes get read/written by the given (register)
     /// machine operand.
     LaneBitmask getLaneMaskForMO(const MachineOperand &MO) const;
+
+    /// Returns true if the def register in \p MO has no uses.
+    bool deadDefHasNoUse(const MachineOperand &MO);
   };
 
   /// Creates a new SUnit and return a ptr to it.

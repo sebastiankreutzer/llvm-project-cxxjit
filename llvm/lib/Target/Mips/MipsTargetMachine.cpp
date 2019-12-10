@@ -18,6 +18,7 @@
 #include "MipsSEISelDAGToDAG.h"
 #include "MipsSubtarget.h"
 #include "MipsTargetObjectFile.h"
+#include "TargetInfo/MipsTargetInfo.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -116,14 +117,17 @@ MipsTargetMachine::MipsTargetMachine(const Target &T, const Triple &TT,
     : LLVMTargetMachine(T, computeDataLayout(TT, CPU, Options, isLittle), TT,
                         CPU, FS, Options, getEffectiveRelocModel(JIT, RM),
                         getEffectiveCodeModel(CM, CodeModel::Small), OL),
-      isLittle(isLittle), TLOF(llvm::make_unique<MipsTargetObjectFile>()),
+      isLittle(isLittle), TLOF(std::make_unique<MipsTargetObjectFile>()),
       ABI(MipsABIInfo::computeTargetABI(TT, CPU, Options.MCOptions)),
-      Subtarget(nullptr), DefaultSubtarget(TT, CPU, FS, isLittle, *this,
-                                           Options.StackAlignmentOverride),
+      Subtarget(nullptr),
+      DefaultSubtarget(TT, CPU, FS, isLittle, *this,
+                       MaybeAlign(Options.StackAlignmentOverride)),
       NoMips16Subtarget(TT, CPU, FS.empty() ? "-mips16" : FS.str() + ",-mips16",
-                        isLittle, *this, Options.StackAlignmentOverride),
+                        isLittle, *this,
+                        MaybeAlign(Options.StackAlignmentOverride)),
       Mips16Subtarget(TT, CPU, FS.empty() ? "+mips16" : FS.str() + ",+mips16",
-                      isLittle, *this, Options.StackAlignmentOverride) {
+                      isLittle, *this,
+                      MaybeAlign(Options.StackAlignmentOverride)) {
   Subtarget = &DefaultSubtarget;
   initAsmInfo();
 }
@@ -195,8 +199,9 @@ MipsTargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = llvm::make_unique<MipsSubtarget>(TargetTriple, CPU, FS, isLittle, *this,
-                                         Options.StackAlignmentOverride);
+    I = std::make_unique<MipsSubtarget>(
+        TargetTriple, CPU, FS, isLittle, *this,
+        MaybeAlign(Options.StackAlignmentOverride));
   }
   return I.get();
 }
@@ -204,8 +209,7 @@ MipsTargetMachine::getSubtargetImpl(const Function &F) const {
 void MipsTargetMachine::resetSubtarget(MachineFunction *MF) {
   LLVM_DEBUG(dbgs() << "resetSubtarget\n");
 
-  Subtarget = const_cast<MipsSubtarget *>(getSubtargetImpl(MF->getFunction()));
-  MF->setSubtarget(Subtarget);
+  Subtarget = &MF->getSubtarget<MipsSubtarget>();
 }
 
 namespace {
@@ -239,12 +243,18 @@ public:
   bool addLegalizeMachineIR() override;
   bool addRegBankSelect() override;
   bool addGlobalInstructionSelect() override;
+
+  std::unique_ptr<CSEConfigBase> getCSEConfig() const override;
 };
 
 } // end anonymous namespace
 
 TargetPassConfig *MipsTargetMachine::createPassConfig(PassManagerBase &PM) {
   return new MipsPassConfig(*this, PM);
+}
+
+std::unique_ptr<CSEConfigBase> MipsPassConfig::getCSEConfig() const {
+  return getStandardCSEConfigForOpt(TM->getOptLevel());
 }
 
 void MipsPassConfig::addIRPasses() {

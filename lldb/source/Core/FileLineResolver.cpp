@@ -23,9 +23,7 @@ class Address;
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // FileLineResolver:
-//----------------------------------------------------------------------
 FileLineResolver::FileLineResolver(const FileSpec &file_spec, uint32_t line_no,
                                    bool check_inlines)
     : Searcher(), m_file_spec(file_spec), m_line_number(line_no),
@@ -35,7 +33,7 @@ FileLineResolver::~FileLineResolver() {}
 
 Searcher::CallbackReturn
 FileLineResolver::SearchCallback(SearchFilter &filter, SymbolContext &context,
-                                 Address *addr, bool containing) {
+                                 Address *addr) {
   CompileUnit *cu = context.comp_unit;
 
   if (m_inlines ||

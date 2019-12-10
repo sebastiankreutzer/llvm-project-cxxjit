@@ -49,10 +49,12 @@ void llvm::computeSignatureVTs(const FunctionType *Ty, const Function &F,
   computeLegalValueVTs(F, TM, Ty->getReturnType(), Results);
 
   MVT PtrVT = MVT::getIntegerVT(TM.createDataLayout().getPointerSizeInBits());
-  if (Results.size() > 1) {
-    // WebAssembly currently can't lower returns of multiple values without
-    // demoting to sret (see WebAssemblyTargetLowering::CanLowerReturn). So
-    // replace multiple return values with a pointer parameter.
+  if (Results.size() > 1 &&
+      !TM.getSubtarget<WebAssemblySubtarget>(F).hasMultivalue()) {
+    // WebAssembly can't lower returns of multiple values without demoting to
+    // sret unless multivalue is enabled (see
+    // WebAssemblyTargetLowering::CanLowerReturn). So replace multiple return
+    // values with a poitner parameter.
     Results.clear();
     Params.push_back(PtrVT);
   }
@@ -72,8 +74,21 @@ void llvm::valTypesFromMVTs(const ArrayRef<MVT> &In,
 std::unique_ptr<wasm::WasmSignature>
 llvm::signatureFromMVTs(const SmallVectorImpl<MVT> &Results,
                         const SmallVectorImpl<MVT> &Params) {
-  auto Sig = make_unique<wasm::WasmSignature>();
+  auto Sig = std::make_unique<wasm::WasmSignature>();
   valTypesFromMVTs(Results, Sig->Returns);
   valTypesFromMVTs(Params, Sig->Params);
   return Sig;
+}
+
+yaml::WebAssemblyFunctionInfo::WebAssemblyFunctionInfo(
+    const llvm::WebAssemblyFunctionInfo &MFI)
+    : CFGStackified(MFI.isCFGStackified()) {}
+
+void yaml::WebAssemblyFunctionInfo::mappingImpl(yaml::IO &YamlIO) {
+  MappingTraits<WebAssemblyFunctionInfo>::mapping(YamlIO, *this);
+}
+
+void WebAssemblyFunctionInfo::initializeBaseYamlFields(
+    const yaml::WebAssemblyFunctionInfo &YamlMFI) {
+  CFGStackified = YamlMFI.CFGStackified;
 }

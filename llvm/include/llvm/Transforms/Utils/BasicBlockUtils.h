@@ -35,6 +35,7 @@ class LoopInfo;
 class MDNode;
 class MemoryDependenceResults;
 class MemorySSAUpdater;
+class PostDominatorTree;
 class ReturnInst;
 class TargetLibraryInfo;
 class Value;
@@ -61,6 +62,12 @@ void DeleteDeadBlocks(ArrayRef <BasicBlock *> BBs,
                       DomTreeUpdater *DTU = nullptr,
                       bool KeepOneInputPHIs = false);
 
+/// Delete all basic blocks from \p F that are not reachable from its entry
+/// node. If \p KeepOneInputPHIs is true, one-input Phis in successors of
+/// blocks being deleted will be preserved.
+bool EliminateUnreachableBlocks(Function &F, DomTreeUpdater *DTU = nullptr,
+                                bool KeepOneInputPHIs = false);
+
 /// We know that BB has one predecessor. If there are any single-entry PHI nodes
 /// in it, fold them away. This handles the case when all entries to the PHI
 /// nodes in a block are guaranteed equal, such as when the block has exactly
@@ -76,10 +83,16 @@ bool DeleteDeadPHIs(BasicBlock *BB, const TargetLibraryInfo *TLI = nullptr);
 
 /// Attempts to merge a block into its predecessor, if possible. The return
 /// value indicates success or failure.
+/// By default do not merge blocks if BB's predecessor has multiple successors.
+/// If PredecessorWithTwoSuccessors = true, the blocks can only be merged
+/// if BB's Pred has a branch to BB and to AnotherBB, and BB has a single
+/// successor Sing. In this case the branch will be updated with Sing instead of
+/// BB, and BB will still be merged into its predecessor and removed.
 bool MergeBlockIntoPredecessor(BasicBlock *BB, DomTreeUpdater *DTU = nullptr,
                                LoopInfo *LI = nullptr,
                                MemorySSAUpdater *MSSAU = nullptr,
-                               MemoryDependenceResults *MemDep = nullptr);
+                               MemoryDependenceResults *MemDep = nullptr,
+                               bool PredecessorWithTwoSuccessors = false);
 
 /// Replace all uses of an instruction (specified by BI) with a value, then
 /// remove and delete the original instruction.
@@ -103,16 +116,19 @@ void ReplaceInstWithInst(Instruction *From, Instruction *To);
 /// during critical edge splitting.
 struct CriticalEdgeSplittingOptions {
   DominatorTree *DT;
+  PostDominatorTree *PDT;
   LoopInfo *LI;
   MemorySSAUpdater *MSSAU;
   bool MergeIdenticalEdges = false;
   bool KeepOneInputPHIs = false;
   bool PreserveLCSSA = false;
+  bool IgnoreUnreachableDests = false;
 
   CriticalEdgeSplittingOptions(DominatorTree *DT = nullptr,
                                LoopInfo *LI = nullptr,
-                               MemorySSAUpdater *MSSAU = nullptr)
-      : DT(DT), LI(LI), MSSAU(MSSAU) {}
+                               MemorySSAUpdater *MSSAU = nullptr,
+                               PostDominatorTree *PDT = nullptr)
+      : DT(DT), PDT(PDT), LI(LI), MSSAU(MSSAU) {}
 
   CriticalEdgeSplittingOptions &setMergeIdenticalEdges() {
     MergeIdenticalEdges = true;
@@ -126,6 +142,11 @@ struct CriticalEdgeSplittingOptions {
 
   CriticalEdgeSplittingOptions &setPreserveLCSSA() {
     PreserveLCSSA = true;
+    return *this;
+  }
+
+  CriticalEdgeSplittingOptions &setIgnoreUnreachableDests() {
+    IgnoreUnreachableDests = true;
     return *this;
   }
 };
@@ -207,7 +228,8 @@ BasicBlock *SplitEdge(BasicBlock *From, BasicBlock *To,
 /// info is updated.
 BasicBlock *SplitBlock(BasicBlock *Old, Instruction *SplitPt,
                        DominatorTree *DT = nullptr, LoopInfo *LI = nullptr,
-                       MemorySSAUpdater *MSSAU = nullptr);
+                       MemorySSAUpdater *MSSAU = nullptr,
+                       const Twine &BBName = "");
 
 /// This method introduces at least one new basic block into the function and
 /// moves some of the predecessors of BB to be predecessors of the new block.

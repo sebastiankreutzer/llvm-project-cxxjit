@@ -1179,10 +1179,7 @@ void MDGlobalAttachmentMap::getAll(
 
   // Sort the resulting array so it is stable with respect to metadata IDs. We
   // need to preserve the original insertion order though.
-  std::stable_sort(
-      Result.begin(), Result.end(),
-      [](const std::pair<unsigned, MDNode *> &A,
-         const std::pair<unsigned, MDNode *> &B) { return A.first < B.first; });
+  llvm::stable_sort(Result, less_first());
 }
 
 void Instruction::setMetadata(StringRef Kind, MDNode *Node) {
@@ -1498,6 +1495,24 @@ void GlobalObject::addTypeMetadata(unsigned Offset, Metadata *TypeID) {
                     {ConstantAsMetadata::get(ConstantInt::get(
                          Type::getInt64Ty(getContext()), Offset)),
                      TypeID}));
+}
+
+void GlobalObject::addVCallVisibilityMetadata(VCallVisibility Visibility) {
+  addMetadata(LLVMContext::MD_vcall_visibility,
+              *MDNode::get(getContext(),
+                           {ConstantAsMetadata::get(ConstantInt::get(
+                               Type::getInt64Ty(getContext()), Visibility))}));
+}
+
+GlobalObject::VCallVisibility GlobalObject::getVCallVisibility() const {
+  if (MDNode *MD = getMetadata(LLVMContext::MD_vcall_visibility)) {
+    uint64_t Val = cast<ConstantInt>(
+                       cast<ConstantAsMetadata>(MD->getOperand(0))->getValue())
+                       ->getZExtValue();
+    assert(Val <= 2 && "unknown vcall visibility!");
+    return (VCallVisibility)Val;
+  }
+  return VCallVisibility::VCallVisibilityPublic;
 }
 
 void Function::setSubprogram(DISubprogram *SP) {

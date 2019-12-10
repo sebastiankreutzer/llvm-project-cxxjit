@@ -1222,11 +1222,6 @@ template <typename A, typename R> bool UnwindCursor<A, R>::isSignalFrame() {
 #endif // defined(_LIBUNWIND_SUPPORT_SEH_UNWIND)
 
 #if defined(_LIBUNWIND_ARM_EHABI)
-struct EHABIIndexEntry {
-  uint32_t functionOffset;
-  uint32_t data;
-};
-
 template<typename A>
 struct EHABISectionIterator {
   typedef EHABISectionIterator _Self;
@@ -1740,7 +1735,7 @@ bool UnwindCursor<A, R>::getInfoFromCompactEncodingSection(pint_t pc,
     --personalityIndex; // change 1-based to zero-based index
     if (personalityIndex > sectionHeader.personalityArrayCount()) {
       _LIBUNWIND_DEBUG_LOG("found encoding 0x%08X with personality index %d,  "
-                            "but personality table has only %d entires",
+                            "but personality table has only %d entries",
                             encoding, personalityIndex,
                             sectionHeader.personalityArrayCount());
       return false;
@@ -1991,7 +1986,10 @@ int UnwindCursor<A, R>::step() {
 
 template <typename A, typename R>
 void UnwindCursor<A, R>::getInfo(unw_proc_info_t *info) {
-  *info = _info;
+  if (_unwindInfoMissing)
+    memset(info, 0, sizeof(*info));
+  else
+    *info = _info;
 }
 
 template <typename A, typename R>

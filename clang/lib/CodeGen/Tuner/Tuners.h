@@ -29,10 +29,10 @@ inline TunerSearchAlgo loadSearchAlgoEnv() {
 inline std::unique_ptr<Tuner> createTuner(TunerSearchAlgo Search, KnobSet& Knobs) {
   switch(Search) {
     case TunerSearchAlgo::Simplex:
-      return llvm::make_unique<SimplexTuner>(Knobs);
+      return std::make_unique<SimplexTuner>(Knobs);
     case TunerSearchAlgo::Random:
     default:
-      return llvm::make_unique<RandomTuner>(Knobs);
+      return std::make_unique<RandomTuner>(Knobs);
   }
 }
 

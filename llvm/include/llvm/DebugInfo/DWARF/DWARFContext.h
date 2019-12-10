@@ -225,10 +225,10 @@ public:
   DWARFCompileUnit *getDWOCompileUnitForHash(uint64_t Hash);
 
   /// Return the compile unit that includes an offset (relative to .debug_info).
-  DWARFCompileUnit *getCompileUnitForOffset(uint32_t Offset);
+  DWARFCompileUnit *getCompileUnitForOffset(uint64_t Offset);
 
   /// Get a DIE given an exact offset.
-  DWARFDie getDIEForOffset(uint32_t Offset);
+  DWARFDie getDIEForOffset(uint64_t Offset);
 
   unsigned getMaxVersion() {
     // Ensure info units have been parsed to discover MaxVersion
@@ -301,10 +301,10 @@ public:
                       std::function<void(Error)> RecoverableErrorCallback);
 
   DataExtractor getStringExtractor() const {
-    return DataExtractor(DObj->getStringSection(), false, 0);
+    return DataExtractor(DObj->getStrSection(), false, 0);
   }
   DataExtractor getLineStringExtractor() const {
-    return DataExtractor(DObj->getLineStringSection(), false, 0);
+    return DataExtractor(DObj->getLineStrSection(), false, 0);
   }
 
   /// Wraps the returned DIEs for a given address.
@@ -317,14 +317,22 @@ public:
 
   /// Get the compilation unit, the function DIE and lexical block DIE for the
   /// given address where applicable.
+  /// TODO: change input parameter from "uint64_t Address"
+  ///       into "SectionedAddress Address"
   DIEsForAddress getDIEsForAddress(uint64_t Address);
 
-  DILineInfo getLineInfoForAddress(uint64_t Address,
+  DILineInfo getLineInfoForAddress(
+      object::SectionedAddress Address,
       DILineInfoSpecifier Specifier = DILineInfoSpecifier()) override;
-  DILineInfoTable getLineInfoForAddressRange(uint64_t Address, uint64_t Size,
+  DILineInfoTable getLineInfoForAddressRange(
+      object::SectionedAddress Address, uint64_t Size,
       DILineInfoSpecifier Specifier = DILineInfoSpecifier()) override;
-  DIInliningInfo getInliningInfoForAddress(uint64_t Address,
+  DIInliningInfo getInliningInfoForAddress(
+      object::SectionedAddress Address,
       DILineInfoSpecifier Specifier = DILineInfoSpecifier()) override;
+
+  std::vector<DILocal>
+  getLocalsForAddress(object::SectionedAddress Address) override;
 
   bool isLittleEndian() const { return DObj->isLittleEndian(); }
   static bool isSupportedVersion(unsigned version) {
@@ -366,7 +374,11 @@ public:
 private:
   /// Return the compile unit which contains instruction with provided
   /// address.
+  /// TODO: change input parameter from "uint64_t Address"
+  ///       into "SectionedAddress Address"
   DWARFCompileUnit *getCompileUnitForAddress(uint64_t Address);
+  void addLocalsForDie(DWARFCompileUnit *CU, DWARFDie Subprogram, DWARFDie Die,
+                       std::vector<DILocal> &Result);
 };
 
 } // end namespace llvm

@@ -50,7 +50,7 @@ public:
     Knobs.add(&OptLvl);
     Knobs.add(&OptSizeLvl);
 
-    // OptTuner = llvm::make_unique<RandomTuner>(Knobs);
+    // OptTuner = std::make_unique<RandomTuner>(Knobs);
     OptTuner = clang::jit::createTuner(clang::jit::loadSearchAlgoEnv(), Knobs);
 
   }

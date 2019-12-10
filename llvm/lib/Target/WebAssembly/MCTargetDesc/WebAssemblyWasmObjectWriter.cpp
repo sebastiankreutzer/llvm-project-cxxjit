@@ -31,7 +31,7 @@ using namespace llvm;
 namespace {
 class WebAssemblyWasmObjectWriter final : public MCWasmObjectTargetWriter {
 public:
-  explicit WebAssemblyWasmObjectWriter(bool Is64Bit);
+  explicit WebAssemblyWasmObjectWriter(bool Is64Bit, bool IsEmscripten);
 
 private:
   unsigned getRelocType(const MCValue &Target,
@@ -39,27 +39,9 @@ private:
 };
 } // end anonymous namespace
 
-WebAssemblyWasmObjectWriter::WebAssemblyWasmObjectWriter(bool Is64Bit)
-    : MCWasmObjectTargetWriter(Is64Bit) {}
-
-// Test whether the given expression computes a function address.
-static bool isFunctionExpr(const MCExpr *Expr) {
-  if (auto SyExp = dyn_cast<MCSymbolRefExpr>(Expr))
-    return cast<MCSymbolWasm>(SyExp->getSymbol()).isFunction();
-
-  if (auto BinOp = dyn_cast<MCBinaryExpr>(Expr))
-    return isFunctionExpr(BinOp->getLHS()) != isFunctionExpr(BinOp->getRHS());
-
-  if (auto UnOp = dyn_cast<MCUnaryExpr>(Expr))
-    return isFunctionExpr(UnOp->getSubExpr());
-
-  return false;
-}
-
-static bool isFunctionType(const MCValue &Target) {
-  const MCSymbolRefExpr *RefA = Target.getSymA();
-  return RefA && RefA->getKind() == MCSymbolRefExpr::VK_WebAssembly_TYPEINDEX;
-}
+WebAssemblyWasmObjectWriter::WebAssemblyWasmObjectWriter(bool Is64Bit,
+                                                         bool IsEmscripten)
+    : MCWasmObjectTargetWriter(Is64Bit, IsEmscripten) {}
 
 static const MCSection *getFixupSection(const MCExpr *Expr) {
   if (auto SyExp = dyn_cast<MCSymbolRefExpr>(Expr)) {
@@ -80,41 +62,46 @@ static const MCSection *getFixupSection(const MCExpr *Expr) {
   return nullptr;
 }
 
-static bool isGlobalType(const MCValue &Target) {
-  const MCSymbolRefExpr *RefA = Target.getSymA();
-  return RefA && RefA->getKind() == MCSymbolRefExpr::VK_WebAssembly_GLOBAL;
-}
-
-static bool isEventType(const MCValue &Target) {
-  const MCSymbolRefExpr *RefA = Target.getSymA();
-  return RefA && RefA->getKind() == MCSymbolRefExpr::VK_WebAssembly_EVENT;
-}
-
 unsigned WebAssemblyWasmObjectWriter::getRelocType(const MCValue &Target,
                                                    const MCFixup &Fixup) const {
-  // WebAssembly functions are not allocated in the data address space. To
-  // resolve a pointer to a function, we must use a special relocation type.
-  bool IsFunction = isFunctionExpr(Fixup.getValue());
+  const MCSymbolRefExpr *RefA = Target.getSymA();
+  assert(RefA);
+  auto& SymA = cast<MCSymbolWasm>(RefA->getSymbol());
+
+  MCSymbolRefExpr::VariantKind Modifier = Target.getAccessVariant();
+
+  switch (Modifier) {
+    case MCSymbolRefExpr::VK_GOT:
+      return wasm::R_WASM_GLOBAL_INDEX_LEB;
+    case MCSymbolRefExpr::VK_WASM_TBREL:
+      assert(SymA.isFunction());
+      return wasm::R_WASM_TABLE_INDEX_REL_SLEB;
+    case MCSymbolRefExpr::VK_WASM_MBREL:
+      assert(SymA.isData());
+      return wasm::R_WASM_MEMORY_ADDR_REL_SLEB;
+    case MCSymbolRefExpr::VK_WASM_TYPEINDEX:
+      return wasm::R_WASM_TYPE_INDEX_LEB;
+    default:
+      break;
+  }
 
   switch (unsigned(Fixup.getKind())) {
-  case WebAssembly::fixup_code_sleb128_i32:
-    if (IsFunction)
+  case WebAssembly::fixup_sleb128_i32:
+    if (SymA.isFunction())
       return wasm::R_WASM_TABLE_INDEX_SLEB;
     return wasm::R_WASM_MEMORY_ADDR_SLEB;
-  case WebAssembly::fixup_code_sleb128_i64:
+  case WebAssembly::fixup_sleb128_i64:
     llvm_unreachable("fixup_sleb128_i64 not implemented yet");
-  case WebAssembly::fixup_code_uleb128_i32:
-    if (isGlobalType(Target))
+  case WebAssembly::fixup_uleb128_i32:
+    if (SymA.isGlobal())
       return wasm::R_WASM_GLOBAL_INDEX_LEB;
-    if (isFunctionType(Target))
-      return wasm::R_WASM_TYPE_INDEX_LEB;
-    if (IsFunction)
+    if (SymA.isFunction())
       return wasm::R_WASM_FUNCTION_INDEX_LEB;
-    if (isEventType(Target))
+    if (SymA.isEvent())
       return wasm::R_WASM_EVENT_INDEX_LEB;
     return wasm::R_WASM_MEMORY_ADDR_LEB;
   case FK_Data_4:
-    if (IsFunction)
+    if (SymA.isFunction())
       return wasm::R_WASM_TABLE_INDEX_I32;
     if (auto Section = static_cast<const MCSectionWasm *>(
             getFixupSection(Fixup.getValue()))) {
@@ -124,14 +111,12 @@ unsigned WebAssemblyWasmObjectWriter::getRelocType(const MCValue &Target,
         return wasm::R_WASM_SECTION_OFFSET_I32;
     }
     return wasm::R_WASM_MEMORY_ADDR_I32;
-  case FK_Data_8:
-    llvm_unreachable("FK_Data_8 not implemented yet");
   default:
     llvm_unreachable("unimplemented fixup kind");
   }
 }
 
 std::unique_ptr<MCObjectTargetWriter>
-llvm::createWebAssemblyWasmObjectWriter(bool Is64Bit) {
-  return llvm::make_unique<WebAssemblyWasmObjectWriter>(Is64Bit);
+llvm::createWebAssemblyWasmObjectWriter(bool Is64Bit, bool IsEmscripten) {
+  return std::make_unique<WebAssemblyWasmObjectWriter>(Is64Bit, IsEmscripten);
 }

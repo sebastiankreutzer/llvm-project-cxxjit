@@ -18,6 +18,7 @@
 #include "ClangTidyDiagnosticConsumer.h"
 #include "ClangTidyModuleRegistry.h"
 #include "ClangTidyProfiling.h"
+#include "ExpandModularHeadersPPCallbacks.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -32,12 +33,10 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Rewrite/Frontend/FixItRewriter.h"
 #include "clang/Rewrite/Frontend/FrontendActions.h"
-#if CLANG_ENABLE_STATIC_ANALYZER
-#include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
-#include "clang/StaticAnalyzer/Frontend/AnalysisConsumer.h"
-#endif // CLANG_ENABLE_STATIC_ANALYZER
+#include "clang/Tooling/Core/Diagnostic.h"
 #include "clang/Tooling/DiagnosticsYaml.h"
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/ReplacementsYaml.h"
@@ -46,6 +45,11 @@
 #include "llvm/Support/Signals.h"
 #include <algorithm>
 #include <utility>
+
+#if CLANG_ENABLE_STATIC_ANALYZER
+#include "clang/Analysis/PathDiagnostic.h"
+#include "clang/StaticAnalyzer/Frontend/AnalysisConsumer.h"
+#endif // CLANG_ENABLE_STATIC_ANALYZER
 
 using namespace clang::ast_matchers;
 using namespace clang::driver;
@@ -69,7 +73,7 @@ public:
                             FilesMade *filesMade) override {
     for (const ento::PathDiagnostic *PD : Diags) {
       SmallString<64> CheckName(AnalyzerCheckNamePrefix);
-      CheckName += PD->getCheckName();
+      CheckName += PD->getCheckerName();
       Context.diag(CheckName, PD->getLocation().asLocation(),
                    PD->getShortDescription())
           << PD->path.back()->getRanges();
@@ -124,61 +128,51 @@ public:
       }
       auto Diag = Diags.Report(Loc, Diags.getCustomDiagID(Level, "%0 [%1]"))
                   << Message.Message << Name;
-      for (const auto &FileAndReplacements : Error.Fix) {
-        for (const auto &Repl : FileAndReplacements.second) {
-          SourceLocation FixLoc;
-          ++TotalFixes;
-          bool CanBeApplied = false;
-          if (Repl.isApplicable()) {
+      // FIXME: explore options to support interactive fix selection.
+      const llvm::StringMap<Replacements> *ChosenFix = selectFirstFix(Error);
+      if (ApplyFixes && ChosenFix) {
+        for (const auto &FileAndReplacements : *ChosenFix) {
+          for (const auto &Repl : FileAndReplacements.second) {
+            ++TotalFixes;
+            bool CanBeApplied = false;
+            if (!Repl.isApplicable())
+              continue;
+            SourceLocation FixLoc;
             SmallString<128> FixAbsoluteFilePath = Repl.getFilePath();
             Files.makeAbsolutePath(FixAbsoluteFilePath);
-            if (ApplyFixes) {
-              tooling::Replacement R(FixAbsoluteFilePath, Repl.getOffset(),
-                                     Repl.getLength(),
-                                     Repl.getReplacementText());
-              Replacements &Replacements = FileReplacements[R.getFilePath()];
-              llvm::Error Err = Replacements.add(R);
-              if (Err) {
-                // FIXME: Implement better conflict handling.
-                llvm::errs() << "Trying to resolve conflict: "
-                             << llvm::toString(std::move(Err)) << "\n";
-                unsigned NewOffset =
-                    Replacements.getShiftedCodePosition(R.getOffset());
-                unsigned NewLength = Replacements.getShiftedCodePosition(
-                                         R.getOffset() + R.getLength()) -
-                                     NewOffset;
-                if (NewLength == R.getLength()) {
-                  R = Replacement(R.getFilePath(), NewOffset, NewLength,
-                                  R.getReplacementText());
-                  Replacements = Replacements.merge(tooling::Replacements(R));
-                  CanBeApplied = true;
-                  ++AppliedFixes;
-                } else {
-                  llvm::errs()
-                      << "Can't resolve conflict, skipping the replacement.\n";
-                }
-
-              } else {
+            tooling::Replacement R(FixAbsoluteFilePath, Repl.getOffset(),
+                                   Repl.getLength(), Repl.getReplacementText());
+            Replacements &Replacements = FileReplacements[R.getFilePath()];
+            llvm::Error Err = Replacements.add(R);
+            if (Err) {
+              // FIXME: Implement better conflict handling.
+              llvm::errs() << "Trying to resolve conflict: "
+                           << llvm::toString(std::move(Err)) << "\n";
+              unsigned NewOffset =
+                  Replacements.getShiftedCodePosition(R.getOffset());
+              unsigned NewLength = Replacements.getShiftedCodePosition(
+                                       R.getOffset() + R.getLength()) -
+                                   NewOffset;
+              if (NewLength == R.getLength()) {
+                R = Replacement(R.getFilePath(), NewOffset, NewLength,
+                                R.getReplacementText());
+                Replacements = Replacements.merge(tooling::Replacements(R));
                 CanBeApplied = true;
                 ++AppliedFixes;
+              } else {
+                llvm::errs()
+                    << "Can't resolve conflict, skipping the replacement.\n";
               }
+            } else {
+              CanBeApplied = true;
+              ++AppliedFixes;
             }
             FixLoc = getLocation(FixAbsoluteFilePath, Repl.getOffset());
-            SourceLocation FixEndLoc =
-                FixLoc.getLocWithOffset(Repl.getLength());
-            // Retrieve the source range for applicable fixes. Macro definitions
-            // on the command line have locations in a virtual buffer and don't
-            // have valid file paths and are therefore not applicable.
-            CharSourceRange Range =
-                CharSourceRange::getCharRange(SourceRange(FixLoc, FixEndLoc));
-            Diag << FixItHint::CreateReplacement(Range,
-                                                 Repl.getReplacementText());
-          }
-
-          if (ApplyFixes)
             FixLocations.push_back(std::make_pair(FixLoc, CanBeApplied));
+          }
         }
       }
+      reportFix(Diag, Error.Message.Fix);
     }
     for (auto Fix : FixLocations) {
       Diags.Report(Fix.first, Fix.second ? diag::note_fixit_applied
@@ -244,15 +238,41 @@ private:
     if (FilePath.empty())
       return SourceLocation();
 
-    const FileEntry *File = SourceMgr.getFileManager().getFile(FilePath);
-    FileID ID = SourceMgr.getOrCreateFileID(File, SrcMgr::C_User);
+    auto File = SourceMgr.getFileManager().getFile(FilePath);
+    if (!File)
+      return SourceLocation();
+
+    FileID ID = SourceMgr.getOrCreateFileID(*File, SrcMgr::C_User);
     return SourceMgr.getLocForStartOfFile(ID).getLocWithOffset(Offset);
+  }
+
+  void reportFix(const DiagnosticBuilder &Diag,
+                 const llvm::StringMap<Replacements> &Fix) {
+    for (const auto &FileAndReplacements : Fix) {
+      for (const auto &Repl : FileAndReplacements.second) {
+        if (!Repl.isApplicable())
+          continue;
+        SmallString<128> FixAbsoluteFilePath = Repl.getFilePath();
+        Files.makeAbsolutePath(FixAbsoluteFilePath);
+        SourceLocation FixLoc =
+            getLocation(FixAbsoluteFilePath, Repl.getOffset());
+        SourceLocation FixEndLoc = FixLoc.getLocWithOffset(Repl.getLength());
+        // Retrieve the source range for applicable fixes. Macro definitions
+        // on the command line have locations in a virtual buffer and don't
+        // have valid file paths and are therefore not applicable.
+        CharSourceRange Range =
+            CharSourceRange::getCharRange(SourceRange(FixLoc, FixEndLoc));
+        Diag << FixItHint::CreateReplacement(Range, Repl.getReplacementText());
+      }
+    }
   }
 
   void reportNote(const tooling::DiagnosticMessage &Message) {
     SourceLocation Loc = getLocation(Message.FilePath, Message.FileOffset);
-    Diags.Report(Loc, Diags.getCustomDiagID(DiagnosticsEngine::Note, "%0"))
+    auto Diag =
+        Diags.Report(Loc, Diags.getCustomDiagID(DiagnosticsEngine::Note, "%0"))
         << Message.Message;
+    reportFix(Diag, Message.Fix);
   }
 
   FileManager Files;
@@ -290,8 +310,10 @@ private:
 } // namespace
 
 ClangTidyASTConsumerFactory::ClangTidyASTConsumerFactory(
-    ClangTidyContext &Context)
-    : Context(Context), CheckFactories(new ClangTidyCheckFactories) {
+    ClangTidyContext &Context,
+    IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> OverlayFS)
+    : Context(Context), OverlayFS(OverlayFS),
+      CheckFactories(new ClangTidyCheckFactories) {
   for (ClangTidyModuleRegistry::iterator I = ClangTidyModuleRegistry::begin(),
                                          E = ClangTidyModuleRegistry::end();
        I != E; ++I) {
@@ -314,8 +336,8 @@ static void setStaticAnalyzerCheckerOpts(const ClangTidyOptions &Opts,
 
 typedef std::vector<std::pair<std::string, bool>> CheckersList;
 
-static CheckersList getCheckersControlList(ClangTidyContext &Context,
-                                           bool IncludeExperimental) {
+static CheckersList getAnalyzerCheckersAndPackages(ClangTidyContext &Context,
+                                                   bool IncludeExperimental) {
   CheckersList List;
 
   const auto &RegisteredCheckers =
@@ -351,25 +373,26 @@ ClangTidyASTConsumerFactory::CreateASTConsumer(
     clang::CompilerInstance &Compiler, StringRef File) {
   // FIXME: Move this to a separate method, so that CreateASTConsumer doesn't
   // modify Compiler.
-  Context.setSourceManager(&Compiler.getSourceManager());
+  SourceManager *SM = &Compiler.getSourceManager();
+  Context.setSourceManager(SM);
   Context.setCurrentFile(File);
   Context.setASTContext(&Compiler.getASTContext());
 
   auto WorkingDir = Compiler.getSourceManager()
                         .getFileManager()
                         .getVirtualFileSystem()
-                        ->getCurrentWorkingDirectory();
+                        .getCurrentWorkingDirectory();
   if (WorkingDir)
     Context.setCurrentBuildDirectory(WorkingDir.get());
 
-  std::vector<std::unique_ptr<ClangTidyCheck>> Checks;
-  CheckFactories->createChecks(&Context, Checks);
+  std::vector<std::unique_ptr<ClangTidyCheck>> Checks =
+      CheckFactories->createChecks(&Context);
 
   ast_matchers::MatchFinder::MatchFinderOptions FinderOptions;
 
   std::unique_ptr<ClangTidyProfiling> Profiling;
   if (Context.getEnableProfiling()) {
-    Profiling = llvm::make_unique<ClangTidyProfiling>(
+    Profiling = std::make_unique<ClangTidyProfiling>(
         Context.getProfileStorageParams());
     FinderOptions.CheckProfiling.emplace(Profiling->Records);
   }
@@ -377,9 +400,19 @@ ClangTidyASTConsumerFactory::CreateASTConsumer(
   std::unique_ptr<ast_matchers::MatchFinder> Finder(
       new ast_matchers::MatchFinder(std::move(FinderOptions)));
 
+  Preprocessor *PP = &Compiler.getPreprocessor();
+  Preprocessor *ModuleExpanderPP = PP;
+
+  if (Context.getLangOpts().Modules && OverlayFS != nullptr) {
+    auto ModuleExpander = std::make_unique<ExpandModularHeadersPPCallbacks>(
+        &Compiler, OverlayFS);
+    ModuleExpanderPP = ModuleExpander->getPreprocessor();
+    PP->addPPCallbacks(std::move(ModuleExpander));
+  }
+
   for (auto &Check : Checks) {
     Check->registerMatchers(&*Finder);
-    Check->registerPPCallbacks(Compiler);
+    Check->registerPPCallbacks(*SM, PP, ModuleExpanderPP);
   }
 
   std::vector<std::unique_ptr<ASTConsumer>> Consumers;
@@ -388,9 +421,9 @@ ClangTidyASTConsumerFactory::CreateASTConsumer(
 
 #if CLANG_ENABLE_STATIC_ANALYZER
   AnalyzerOptionsRef AnalyzerOptions = Compiler.getAnalyzerOpts();
-  AnalyzerOptions->CheckersControlList =
-      getCheckersControlList(Context, Context.canEnableAnalyzerAlphaCheckers());
-  if (!AnalyzerOptions->CheckersControlList.empty()) {
+  AnalyzerOptions->CheckersAndPackages = getAnalyzerCheckersAndPackages(
+      Context, Context.canEnableAnalyzerAlphaCheckers());
+  if (!AnalyzerOptions->CheckersAndPackages.empty()) {
     setStaticAnalyzerCheckerOpts(Context.getOptions(), AnalyzerOptions);
     AnalyzerOptions->AnalysisStoreOpt = RegionStoreModel;
     AnalyzerOptions->AnalysisDiagOpt = PD_NONE;
@@ -403,7 +436,7 @@ ClangTidyASTConsumerFactory::CreateASTConsumer(
     Consumers.push_back(std::move(AnalysisConsumer));
   }
 #endif // CLANG_ENABLE_STATIC_ANALYZER
-  return llvm::make_unique<ClangTidyASTConsumer>(
+  return std::make_unique<ClangTidyASTConsumer>(
       std::move(Consumers), std::move(Profiling), std::move(Finder),
       std::move(Checks));
 }
@@ -416,7 +449,7 @@ std::vector<std::string> ClangTidyASTConsumerFactory::getCheckNames() {
   }
 
 #if CLANG_ENABLE_STATIC_ANALYZER
-  for (const auto &AnalyzerCheck : getCheckersControlList(
+  for (const auto &AnalyzerCheck : getAnalyzerCheckersAndPackages(
            Context, Context.canEnableAnalyzerAlphaCheckers()))
     CheckNames.push_back(AnalyzerCheckNamePrefix + AnalyzerCheck.first);
 #endif // CLANG_ENABLE_STATIC_ANALYZER
@@ -427,63 +460,18 @@ std::vector<std::string> ClangTidyASTConsumerFactory::getCheckNames() {
 
 ClangTidyOptions::OptionMap ClangTidyASTConsumerFactory::getCheckOptions() {
   ClangTidyOptions::OptionMap Options;
-  std::vector<std::unique_ptr<ClangTidyCheck>> Checks;
-  CheckFactories->createChecks(&Context, Checks);
+  std::vector<std::unique_ptr<ClangTidyCheck>> Checks =
+      CheckFactories->createChecks(&Context);
   for (const auto &Check : Checks)
     Check->storeOptions(Options);
   return Options;
-}
-
-DiagnosticBuilder ClangTidyCheck::diag(SourceLocation Loc, StringRef Message,
-                                       DiagnosticIDs::Level Level) {
-  return Context->diag(CheckName, Loc, Message, Level);
-}
-
-void ClangTidyCheck::run(const ast_matchers::MatchFinder::MatchResult &Result) {
-  // For historical reasons, checks don't implement the MatchFinder run()
-  // callback directly. We keep the run()/check() distinction to avoid interface
-  // churn, and to allow us to add cross-cutting logic in the future.
-  check(Result);
-}
-
-OptionsView::OptionsView(StringRef CheckName,
-                         const ClangTidyOptions::OptionMap &CheckOptions)
-    : NamePrefix(CheckName.str() + "."), CheckOptions(CheckOptions) {}
-
-std::string OptionsView::get(StringRef LocalName, StringRef Default) const {
-  const auto &Iter = CheckOptions.find(NamePrefix + LocalName.str());
-  if (Iter != CheckOptions.end())
-    return Iter->second;
-  return Default;
-}
-
-std::string OptionsView::getLocalOrGlobal(StringRef LocalName,
-                                          StringRef Default) const {
-  auto Iter = CheckOptions.find(NamePrefix + LocalName.str());
-  if (Iter != CheckOptions.end())
-    return Iter->second;
-  // Fallback to global setting, if present.
-  Iter = CheckOptions.find(LocalName.str());
-  if (Iter != CheckOptions.end())
-    return Iter->second;
-  return Default;
-}
-
-void OptionsView::store(ClangTidyOptions::OptionMap &Options,
-                        StringRef LocalName, StringRef Value) const {
-  Options[NamePrefix + LocalName.str()] = Value;
-}
-
-void OptionsView::store(ClangTidyOptions::OptionMap &Options,
-                        StringRef LocalName, int64_t Value) const {
-  store(Options, LocalName, llvm::itostr(Value));
 }
 
 std::vector<std::string>
 getCheckNames(const ClangTidyOptions &Options,
               bool AllowEnablingAnalyzerAlphaCheckers) {
   clang::tidy::ClangTidyContext Context(
-      llvm::make_unique<DefaultOptionsProvider>(ClangTidyGlobalOptions(),
+      std::make_unique<DefaultOptionsProvider>(ClangTidyGlobalOptions(),
                                                 Options),
       AllowEnablingAnalyzerAlphaCheckers);
   ClangTidyASTConsumerFactory Factory(Context);
@@ -494,7 +482,7 @@ ClangTidyOptions::OptionMap
 getCheckOptions(const ClangTidyOptions &Options,
                 bool AllowEnablingAnalyzerAlphaCheckers) {
   clang::tidy::ClangTidyContext Context(
-      llvm::make_unique<DefaultOptionsProvider>(ClangTidyGlobalOptions(),
+      std::make_unique<DefaultOptionsProvider>(ClangTidyGlobalOptions(),
                                                 Options),
       AllowEnablingAnalyzerAlphaCheckers);
   ClangTidyASTConsumerFactory Factory(Context);
@@ -505,7 +493,7 @@ std::vector<ClangTidyError>
 runClangTidy(clang::tidy::ClangTidyContext &Context,
              const CompilationDatabase &Compilations,
              ArrayRef<std::string> InputFiles,
-             llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> BaseFS,
+             llvm::IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> BaseFS,
              bool EnableCheckProfile, llvm::StringRef StoreCheckProfile) {
   ClangTool Tool(Compilations, InputFiles,
                  std::make_shared<PCHContainerOperations>(), BaseFS);
@@ -541,17 +529,19 @@ runClangTidy(clang::tidy::ClangTidyContext &Context,
 
   class ActionFactory : public FrontendActionFactory {
   public:
-    ActionFactory(ClangTidyContext &Context) : ConsumerFactory(Context) {}
-    FrontendAction *create() override { return new Action(&ConsumerFactory); }
+    ActionFactory(ClangTidyContext &Context,
+                  IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> BaseFS)
+        : ConsumerFactory(Context, BaseFS) {}
+    std::unique_ptr<FrontendAction> create() override {
+      return std::make_unique<Action>(&ConsumerFactory);
+    }
 
     bool runInvocation(std::shared_ptr<CompilerInvocation> Invocation,
                        FileManager *Files,
                        std::shared_ptr<PCHContainerOperations> PCHContainerOps,
                        DiagnosticConsumer *DiagConsumer) override {
-      // Explicitly set ProgramAction to RunAnalysis to make the preprocessor
-      // define __clang_analyzer__ macro. The frontend analyzer action will not
-      // be called here.
-      Invocation->getFrontendOpts().ProgramAction = frontend::RunAnalysis;
+      // Explicitly ask to define __clang_analyzer__ macro.
+      Invocation->getPreprocessorOpts().SetUpStaticAnalyzer = true;
       return FrontendActionFactory::runInvocation(
           Invocation, Files, PCHContainerOps, DiagConsumer);
     }
@@ -572,7 +562,7 @@ runClangTidy(clang::tidy::ClangTidyContext &Context,
     ClangTidyASTConsumerFactory ConsumerFactory;
   };
 
-  ActionFactory Factory(Context);
+  ActionFactory Factory(Context, BaseFS);
   Tool.run(&Factory);
   return DiagConsumer.take();
 }
@@ -583,7 +573,7 @@ void handleErrors(llvm::ArrayRef<ClangTidyError> Errors,
                   llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> BaseFS) {
   ErrorReporter Reporter(Context, Fix, BaseFS);
   llvm::vfs::FileSystem &FileSystem =
-      *Reporter.getSourceManager().getFileManager().getVirtualFileSystem();
+      Reporter.getSourceManager().getFileManager().getVirtualFileSystem();
   auto InitialWorkingDir = FileSystem.getCurrentWorkingDirectory();
   if (!InitialWorkingDir)
     llvm::report_fatal_error("Cannot get current working path.");

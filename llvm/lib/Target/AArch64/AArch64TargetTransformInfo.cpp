@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "AArch64ExpandImm.h"
 #include "AArch64TargetTransformInfo.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -49,8 +50,9 @@ int AArch64TTIImpl::getIntImmCost(int64_t Val) {
     Val = ~Val;
 
   // Calculate how many moves we will need to materialize this constant.
-  unsigned LZ = countLeadingZeros((uint64_t)Val);
-  return (64 - LZ + 15) / 16;
+  SmallVector<AArch64_IMM::ImmInsnModel, 4> Insn;
+  AArch64_IMM::expandMOVImm(Val, 64, Insn);
+  return Insn.size();
 }
 
 /// Calculate the cost of materializing the given constant.
@@ -616,13 +618,26 @@ int AArch64TTIImpl::getCmpSelInstrCost(unsigned Opcode, Type *ValTy,
   return BaseT::getCmpSelInstrCost(Opcode, ValTy, CondTy, I);
 }
 
+AArch64TTIImpl::TTI::MemCmpExpansionOptions
+AArch64TTIImpl::enableMemCmpExpansion(bool OptSize, bool IsZeroCmp) const {
+  TTI::MemCmpExpansionOptions Options;
+  Options.AllowOverlappingLoads = !ST->requiresStrictAlign();
+  Options.MaxNumLoads = TLI->getMaxExpandSizeMemcmp(OptSize);
+  Options.NumLoadsPerBlock = Options.MaxNumLoads;
+  // TODO: Though vector loads usually perform well on AArch64, in some targets
+  // they may wake up the FP unit, which raises the power consumption.  Perhaps
+  // they could be used with no holds barred (-O3).
+  Options.LoadSizes = {8, 4, 2, 1};
+  return Options;
+}
+
 int AArch64TTIImpl::getMemoryOpCost(unsigned Opcode, Type *Ty,
-                                    unsigned Alignment, unsigned AddressSpace,
+                                    MaybeAlign Alignment, unsigned AddressSpace,
                                     const Instruction *I) {
   auto LT = TLI->getTypeLegalizationCost(DL, Ty);
 
   if (ST->isMisaligned128StoreSlow() && Opcode == Instruction::Store &&
-      LT.second.is128BitVector() && Alignment < 16) {
+      LT.second.is128BitVector() && (!Alignment || *Alignment < Align(16))) {
     // Unaligned stores are extremely inefficient. We don't split all
     // unaligned 128-bit stores because the negative impact that has shown in
     // practice on inlined block copy code.
@@ -664,7 +679,7 @@ int AArch64TTIImpl::getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
   assert(Factor >= 2 && "Invalid interleave factor");
   assert(isa<VectorType>(VecTy) && "Expect a vector type");
 
-  if (!UseMaskForCond && !UseMaskForGaps && 
+  if (!UseMaskForCond && !UseMaskForGaps &&
       Factor <= TLI->getMaxSupportedInterleaveFactor()) {
     unsigned NumElts = VecTy->getVectorNumElements();
     auto *SubVecTy = VectorType::get(VecTy->getScalarType(), NumElts / Factor);
@@ -688,8 +703,8 @@ int AArch64TTIImpl::getCostOfKeepingLiveOverCall(ArrayRef<Type *> Tys) {
     if (!I->isVectorTy())
       continue;
     if (I->getScalarSizeInBits() * I->getVectorNumElements() == 128)
-      Cost += getMemoryOpCost(Instruction::Store, I, 128, 0) +
-        getMemoryOpCost(Instruction::Load, I, 128, 0);
+      Cost += getMemoryOpCost(Instruction::Store, I, Align(128), 0) +
+              getMemoryOpCost(Instruction::Load, I, Align(128), 0);
   }
   return Cost;
 }
@@ -875,22 +890,6 @@ bool AArch64TTIImpl::shouldConsiderAddressTypePromotion(
     }
   }
   return Considerable;
-}
-
-unsigned AArch64TTIImpl::getCacheLineSize() {
-  return ST->getCacheLineSize();
-}
-
-unsigned AArch64TTIImpl::getPrefetchDistance() {
-  return ST->getPrefetchDistance();
-}
-
-unsigned AArch64TTIImpl::getMinPrefetchStride() {
-  return ST->getMinPrefetchStride();
-}
-
-unsigned AArch64TTIImpl::getMaxPrefetchIterationsAhead() {
-  return ST->getMaxPrefetchIterationsAhead();
 }
 
 bool AArch64TTIImpl::useReductionIntrinsic(unsigned Opcode, Type *Ty,

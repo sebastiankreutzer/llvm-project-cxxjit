@@ -65,7 +65,7 @@ declare i32 @fgetc(i8*)
 define <4 x float> @dead_shuffle_elt(<4 x float> %x, <2 x float> %y) nounwind {
 ; CHECK-LABEL: @dead_shuffle_elt(
 ; CHECK-NEXT:    [[SHUFFLE_I:%.*]] = shufflevector <2 x float> [[Y:%.*]], <2 x float> undef, <4 x i32> <i32 0, i32 1, i32 undef, i32 undef>
-; CHECK-NEXT:    [[SHUFFLE9_I:%.*]] = shufflevector <4 x float> [[X:%.*]], <4 x float> [[SHUFFLE_I]], <4 x i32> <i32 4, i32 5, i32 2, i32 3>
+; CHECK-NEXT:    [[SHUFFLE9_I:%.*]] = shufflevector <4 x float> [[SHUFFLE_I]], <4 x float> [[X:%.*]], <4 x i32> <i32 0, i32 1, i32 6, i32 7>
 ; CHECK-NEXT:    ret <4 x float> [[SHUFFLE9_I]]
 ;
   %shuffle.i = shufflevector <2 x float> %y, <2 x float> %y, <4 x i32> <i32 0, i32 1, i32 0, i32 1>
@@ -569,7 +569,7 @@ define i32* @gep_cvbase_w_s_idx(<2 x i32*> %base, i64 %raw_addr) {
 
 define i32* @gep_cvbase_w_cv_idx(<2 x i32*> %base, i64 %raw_addr) {
 ; CHECK-LABEL: @gep_cvbase_w_cv_idx(
-; CHECK-NEXT:    ret i32* extractelement (<2 x i32*> getelementptr (i32, <2 x i32*> <i32* @GLOBAL, i32* @GLOBAL>, <2 x i64> <i64 0, i64 1>), i32 1)
+; CHECK-NEXT:    ret i32* getelementptr inbounds (i32, i32* @GLOBAL, i64 1)
 ;
   %gep = getelementptr i32, <2 x i32*> <i32* @GLOBAL, i32* @GLOBAL>, <2 x i64> <i64 0, i64 1>
   %ee = extractelement <2 x i32*> %gep, i32 1
@@ -620,10 +620,7 @@ define i32* @gep_splat_both(i32* %base, i64 %idx) {
 
 define <2 x i32*> @gep_all_lanes_undef(i32* %base, i64 %idx) {;
 ; CHECK-LABEL: @gep_all_lanes_undef(
-; CHECK-NEXT:    [[BASEVEC:%.*]] = insertelement <2 x i32*> undef, i32* [[BASE:%.*]], i32 0
-; CHECK-NEXT:    [[IDXVEC:%.*]] = insertelement <2 x i64> undef, i64 [[IDX:%.*]], i32 1
-; CHECK-NEXT:    [[GEP:%.*]] = getelementptr i32, <2 x i32*> [[BASEVEC]], <2 x i64> [[IDXVEC]]
-; CHECK-NEXT:    ret <2 x i32*> [[GEP]]
+; CHECK-NEXT:    ret <2 x i32*> undef
 ;
   %basevec = insertelement <2 x i32*> undef, i32* %base, i32 0
   %idxvec = insertelement <2 x i64> undef, i64 %idx, i32 1
@@ -642,3 +639,32 @@ define i32* @gep_demanded_lane_undef(i32* %base, i64 %idx) {
   ret i32* %ee
 }
 
+
+;; LangRef has an odd quirk around FCAs which make it illegal to use undef
+;; indices.
+define i32* @PR41624(<2 x { i32, i32 }*> %a) {
+; CHECK-LABEL: @PR41624(
+; CHECK-NEXT:   %w = getelementptr { i32, i32 }, <2 x { i32, i32 }*> %a, <2 x i64> <i64 5, i64 5>, <2 x i32> zeroinitializer
+; CHECK-NEXT:   %r = extractelement <2 x i32*> %w, i32 0
+; CHECK-NEXT:   ret i32* %r
+  %w = getelementptr { i32, i32 }, <2 x { i32, i32 }*> %a, <2 x i64> <i64 5, i64 5>, <2 x i32> zeroinitializer
+  %r = extractelement <2 x i32*> %w, i32 0
+  ret i32* %r
+}
+
+@global = external global [0 x i32], align 4
+
+; Make sure we don't get stuck in a loop turning the zeroinitializer into
+; <0, undef, undef, undef> and then changing it back.
+define i32* @zero_sized_type_extract(<4 x i64> %arg, i64 %arg1) {
+; CHECK-LABEL: @zero_sized_type_extract(
+; CHECK-NEXT:  bb:
+; CHECK-NEXT:    [[TMP:%.*]] = getelementptr inbounds [0 x i32], <4 x [0 x i32]*> <[0 x i32]* @global, [0 x i32]* undef, [0 x i32]* undef, [0 x i32]* undef>, <4 x i64> <i64 0, i64 undef, i64 undef, i64 undef>, <4 x i64> [[ARG:%.*]]
+; CHECK-NEXT:    [[TMP2:%.*]] = extractelement <4 x i32*> [[TMP]], i64 0
+; CHECK-NEXT:    ret i32* [[TMP2]]
+;
+bb:
+  %tmp = getelementptr inbounds [0 x i32], <4 x [0 x i32]*> <[0 x i32]* @global, [0 x i32]* @global, [0 x i32]* @global, [0 x i32]* @global>, <4 x i64> zeroinitializer, <4 x i64> %arg
+  %tmp2 = extractelement <4 x i32*> %tmp, i64 0
+  ret i32* %tmp2
+}

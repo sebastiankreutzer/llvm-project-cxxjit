@@ -21,6 +21,7 @@ set(LLVM_LINK_COMPONENTS
   Passes
   ProfileData
   RuntimeDyld
+  Remarks
   ScalarOpts
   Support
   Target
@@ -98,11 +99,12 @@ add_clang_library(clangCodeGen
   MicrosoftCXXABI.cpp
   ModuleBuilder.cpp
   ObjectFilePCHContainerOperations.cpp
+  PatternInit.cpp
   SanitizerMetadata.cpp
   SwiftCallingConv.cpp
   TargetInfo.cpp
   VarBypassDetector.cpp
-        JIT.cpp
+  JIT.cpp
 
   Tuner/Optimizer.cpp
   Tuner/Tuner.cpp
@@ -120,6 +122,7 @@ add_clang_library(clangCodeGen
   LINK_LIBS
   clangAnalysis
   clangAST
+  clangASTMatchers
   clangBasic
   clangDriver
   clangFrontend

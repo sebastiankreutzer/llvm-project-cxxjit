@@ -24,7 +24,7 @@ def ExynosM3Model : SchedMachineModel {
   let MispredictPenalty     =  16; // Minimum branch misprediction penalty.
   let CompleteModel         =   1; // Use the default model otherwise.
 
-  list<Predicate> UnsupportedFeatures = [HasSVE];
+  list<Predicate> UnsupportedFeatures = SVEUnsupported.F;
 }
 
 //===----------------------------------------------------------------------===//
@@ -130,8 +130,10 @@ def M3WriteAU : SchedWriteVariant<[SchedVar<IsCopyIdiomPred, [M3WriteZ0]>,
                                    SchedVar<ExynosLogicPred, [M3WriteA1]>,
                                    SchedVar<NoSchedPred,     [M3WriteAA]>]>;
 def M3WriteAV : SchedWriteVariant<[SchedVar<IsCopyIdiomPred, [M3WriteZ0]>,
+                                   SchedVar<ExynosArithPred, [M3WriteA1]>,
                                    SchedVar<NoSchedPred,     [M3WriteAA]>]>;
 def M3WriteAW : SchedWriteVariant<[SchedVar<IsZeroIdiomPred, [M3WriteZ0]>,
+                                   SchedVar<ExynosLogicPred, [M3WriteA1]>,
                                    SchedVar<NoSchedPred,     [M3WriteAA]>]>;
 def M3WriteAX : SchedWriteVariant<[SchedVar<ExynosArithPred, [M3WriteA1]>,
                                    SchedVar<ExynosLogicPred, [M3WriteA1]>,

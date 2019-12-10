@@ -21,7 +21,16 @@
 #define GET_INSTRINFO_HEADER
 #include "WebAssemblyGenInstrInfo.inc"
 
+#define GET_INSTRINFO_OPERAND_ENUM
+#include "WebAssemblyGenInstrInfo.inc"
+
 namespace llvm {
+
+namespace WebAssembly {
+
+int16_t getNamedOperandIdx(uint16_t Opcode, uint16_t NamedIndex);
+
+}
 
 class WebAssemblySubtarget;
 
@@ -34,7 +43,7 @@ public:
   const WebAssemblyRegisterInfo &getRegisterInfo() const { return RI; }
 
   bool isReallyTriviallyReMaterializable(const MachineInstr &MI,
-                                         AliasAnalysis *AA) const override;
+                                         AAResults *AA) const override;
 
   void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
                    const DebugLoc &DL, unsigned DestReg, unsigned SrcReg,

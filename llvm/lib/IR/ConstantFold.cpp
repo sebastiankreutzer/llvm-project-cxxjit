@@ -26,6 +26,7 @@
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -267,19 +268,20 @@ static Constant *ExtractConstantBytes(Constant *C, unsigned ByteStart,
     ConstantInt *Amt = dyn_cast<ConstantInt>(CE->getOperand(1));
     if (!Amt)
       return nullptr;
-    unsigned ShAmt = Amt->getZExtValue();
+    APInt ShAmt = Amt->getValue();
     // Cannot analyze non-byte shifts.
     if ((ShAmt & 7) != 0)
       return nullptr;
-    ShAmt >>= 3;
+    ShAmt.lshrInPlace(3);
 
     // If the extract is known to be all zeros, return zero.
-    if (ByteStart >= CSize-ShAmt)
-      return Constant::getNullValue(IntegerType::get(CE->getContext(),
-                                                     ByteSize*8));
+    if (ShAmt.uge(CSize - ByteStart))
+      return Constant::getNullValue(
+          IntegerType::get(CE->getContext(), ByteSize * 8));
     // If the extract is known to be fully in the input, extract it.
-    if (ByteStart+ByteSize+ShAmt <= CSize)
-      return ExtractConstantBytes(CE->getOperand(0), ByteStart+ShAmt, ByteSize);
+    if (ShAmt.ule(CSize - (ByteStart + ByteSize)))
+      return ExtractConstantBytes(CE->getOperand(0),
+                                  ByteStart + ShAmt.getZExtValue(), ByteSize);
 
     // TODO: Handle the 'partially zero' case.
     return nullptr;
@@ -289,19 +291,20 @@ static Constant *ExtractConstantBytes(Constant *C, unsigned ByteStart,
     ConstantInt *Amt = dyn_cast<ConstantInt>(CE->getOperand(1));
     if (!Amt)
       return nullptr;
-    unsigned ShAmt = Amt->getZExtValue();
+    APInt ShAmt = Amt->getValue();
     // Cannot analyze non-byte shifts.
     if ((ShAmt & 7) != 0)
       return nullptr;
-    ShAmt >>= 3;
+    ShAmt.lshrInPlace(3);
 
     // If the extract is known to be all zeros, return zero.
-    if (ByteStart+ByteSize <= ShAmt)
-      return Constant::getNullValue(IntegerType::get(CE->getContext(),
-                                                     ByteSize*8));
+    if (ShAmt.uge(ByteStart + ByteSize))
+      return Constant::getNullValue(
+          IntegerType::get(CE->getContext(), ByteSize * 8));
     // If the extract is known to be fully in the input, extract it.
-    if (ByteStart >= ShAmt)
-      return ExtractConstantBytes(CE->getOperand(0), ByteStart-ShAmt, ByteSize);
+    if (ShAmt.ule(ByteStart))
+      return ExtractConstantBytes(CE->getOperand(0),
+                                  ByteStart - ShAmt.getZExtValue(), ByteSize);
 
     // TODO: Handle the 'partially zero' case.
     return nullptr;
@@ -743,7 +746,7 @@ Constant *llvm::ConstantFoldSelectInstruction(Constant *Cond,
                                                     ConstantInt::get(Ty, i));
       Constant *V2Element = ConstantExpr::getExtractElement(V2,
                                                     ConstantInt::get(Ty, i));
-      Constant *Cond = dyn_cast<Constant>(CondV->getOperand(i));
+      auto *Cond = cast<Constant>(CondV->getOperand(i));
       if (V1Element == V2Element) {
         V = V1Element;
       } else if (isa<UndefValue>(Cond)) {
@@ -784,21 +787,41 @@ Constant *llvm::ConstantFoldSelectInstruction(Constant *Cond,
 
 Constant *llvm::ConstantFoldExtractElementInstruction(Constant *Val,
                                                       Constant *Idx) {
-  if (isa<UndefValue>(Val))  // ee(undef, x) -> undef
-    return UndefValue::get(Val->getType()->getVectorElementType());
-  if (Val->isNullValue())  // ee(zero, x) -> zero
-    return Constant::getNullValue(Val->getType()->getVectorElementType());
-  // ee({w,x,y,z}, undef) -> undef
-  if (isa<UndefValue>(Idx))
+  // extractelt undef, C -> undef
+  // extractelt C, undef -> undef
+  if (isa<UndefValue>(Val) || isa<UndefValue>(Idx))
     return UndefValue::get(Val->getType()->getVectorElementType());
 
-  if (ConstantInt *CIdx = dyn_cast<ConstantInt>(Idx)) {
-    // ee({w,x,y,z}, wrong_value) -> undef
-    if (CIdx->uge(Val->getType()->getVectorNumElements()))
-      return UndefValue::get(Val->getType()->getVectorElementType());
-    return Val->getAggregateElement(CIdx->getZExtValue());
+  auto *CIdx = dyn_cast<ConstantInt>(Idx);
+  if (!CIdx)
+    return nullptr;
+
+  // ee({w,x,y,z}, wrong_value) -> undef
+  if (CIdx->uge(Val->getType()->getVectorNumElements()))
+    return UndefValue::get(Val->getType()->getVectorElementType());
+
+  // ee (gep (ptr, idx0, ...), idx) -> gep (ee (ptr, idx), ee (idx0, idx), ...)
+  if (auto *CE = dyn_cast<ConstantExpr>(Val)) {
+    if (CE->getOpcode() == Instruction::GetElementPtr) {
+      SmallVector<Constant *, 8> Ops;
+      Ops.reserve(CE->getNumOperands());
+      for (unsigned i = 0, e = CE->getNumOperands(); i != e; ++i) {
+        Constant *Op = CE->getOperand(i);
+        if (Op->getType()->isVectorTy()) {
+          Constant *ScalarOp = ConstantExpr::getExtractElement(Op, Idx);
+          if (!ScalarOp)
+            return  nullptr;
+          Ops.push_back(ScalarOp);
+        } else
+          Ops.push_back(Op);
+      }
+      return CE->getWithOperands(Ops, CE->getType()->getVectorElementType(),
+                                 false,
+                                 Ops[0]->getType()->getPointerElementType());
+    }
   }
-  return nullptr;
+
+  return Val->getAggregateElement(CIdx);
 }
 
 Constant *llvm::ConstantFoldInsertElementInstruction(Constant *Val,
@@ -913,6 +936,52 @@ Constant *llvm::ConstantFoldInsertValueInstruction(Constant *Agg,
   if (ArrayType *AT = dyn_cast<ArrayType>(Agg->getType()))
     return ConstantArray::get(AT, Result);
   return ConstantVector::get(Result);
+}
+
+Constant *llvm::ConstantFoldUnaryInstruction(unsigned Opcode, Constant *C) {
+  assert(Instruction::isUnaryOp(Opcode) && "Non-unary instruction detected");
+
+  // Handle scalar UndefValue. Vectors are always evaluated per element.
+  bool HasScalarUndef = !C->getType()->isVectorTy() && isa<UndefValue>(C);
+
+  if (HasScalarUndef) {
+    switch (static_cast<Instruction::UnaryOps>(Opcode)) {
+    case Instruction::FNeg:
+      return C; // -undef -> undef
+    case Instruction::UnaryOpsEnd:
+      llvm_unreachable("Invalid UnaryOp");
+    }
+  }
+
+  // Constant should not be UndefValue, unless these are vector constants.
+  assert(!HasScalarUndef && "Unexpected UndefValue");
+  // We only have FP UnaryOps right now.
+  assert(!isa<ConstantInt>(C) && "Unexpected Integer UnaryOp");
+
+  if (ConstantFP *CFP = dyn_cast<ConstantFP>(C)) {
+    const APFloat &CV = CFP->getValueAPF();
+    switch (Opcode) {
+    default:
+      break;
+    case Instruction::FNeg:
+      return ConstantFP::get(C->getContext(), neg(CV));
+    }
+  } else if (VectorType *VTy = dyn_cast<VectorType>(C->getType())) {
+    // Fold each element and create a vector constant from those constants.
+    SmallVector<Constant*, 16> Result;
+    Type *Ty = IntegerType::get(VTy->getContext(), 32);
+    for (unsigned i = 0, e = VTy->getNumElements(); i != e; ++i) {
+      Constant *ExtractIdx = ConstantInt::get(Ty, i);
+      Constant *Elt = ConstantExpr::getExtractElement(C, ExtractIdx);
+
+      Result.push_back(ConstantExpr::get(Opcode, Elt));
+    }
+
+    return ConstantVector::get(Result);
+  }
+
+  // We don't know how to fold this.
+  return nullptr;
 }
 
 Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode, Constant *C1,
@@ -1076,14 +1145,33 @@ Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode, Constant *C1,
             isa<GlobalValue>(CE1->getOperand(0))) {
           GlobalValue *GV = cast<GlobalValue>(CE1->getOperand(0));
 
-          // Functions are at least 4-byte aligned.
-          unsigned GVAlign = GV->getAlignment();
-          if (isa<Function>(GV))
-            GVAlign = std::max(GVAlign, 4U);
+          MaybeAlign GVAlign;
 
-          if (GVAlign > 1) {
+          if (Module *TheModule = GV->getParent()) {
+            GVAlign = GV->getPointerAlignment(TheModule->getDataLayout());
+
+            // If the function alignment is not specified then assume that it
+            // is 4.
+            // This is dangerous; on x86, the alignment of the pointer
+            // corresponds to the alignment of the function, but might be less
+            // than 4 if it isn't explicitly specified.
+            // However, a fix for this behaviour was reverted because it
+            // increased code size (see https://reviews.llvm.org/D55115)
+            // FIXME: This code should be deleted once existing targets have
+            // appropriate defaults
+            if (!GVAlign && isa<Function>(GV))
+              GVAlign = Align(4);
+          } else if (isa<Function>(GV)) {
+            // Without a datalayout we have to assume the worst case: that the
+            // function pointer isn't aligned at all.
+            GVAlign = llvm::None;
+          } else {
+            GVAlign = MaybeAlign(GV->getAlignment());
+          }
+
+          if (GVAlign && *GVAlign > 1) {
             unsigned DstWidth = CI2->getType()->getBitWidth();
-            unsigned SrcWidth = std::min(DstWidth, Log2_32(GVAlign));
+            unsigned SrcWidth = std::min(DstWidth, Log2(*GVAlign));
             APInt BitsNotSet(APInt::getLowBitsSet(DstWidth, SrcWidth));
 
             // If checking bits we know are clear, return zero.
@@ -1359,8 +1447,9 @@ static FCmpInst::Predicate evaluateFCmpRelation(Constant *V1, Constant *V2) {
   assert(V1->getType() == V2->getType() &&
          "Cannot compare values of different types!");
 
-  // Handle degenerate case quickly
-  if (V1 == V2) return FCmpInst::FCMP_OEQ;
+  // We do not know if a constant expression will evaluate to a number or NaN.
+  // Therefore, we can only say that the relation is unordered or equal.
+  if (V1 == V2) return FCmpInst::FCMP_UEQ;
 
   if (!isa<ConstantExpr>(V1)) {
     if (!isa<ConstantExpr>(V2)) {
@@ -1551,7 +1640,7 @@ static ICmpInst::Predicate evaluateICmpRelation(Constant *V1, Constant *V2,
     case Instruction::ZExt:
     case Instruction::SExt:
       // We can't evaluate floating point casts or truncations.
-      if (CE1Op0->getType()->isFloatingPointTy())
+      if (CE1Op0->getType()->isFPOrFPVectorTy())
         break;
 
       // If the cast is not actually changing bits, and the second operand is a
@@ -1855,7 +1944,6 @@ Constant *llvm::ConstantFoldCompareInstruction(unsigned short pred,
     default: llvm_unreachable("Unknown relation!");
     case FCmpInst::FCMP_UNO:
     case FCmpInst::FCMP_ORD:
-    case FCmpInst::FCMP_UEQ:
     case FCmpInst::FCMP_UNE:
     case FCmpInst::FCMP_ULT:
     case FCmpInst::FCMP_UGT:
@@ -1899,6 +1987,13 @@ Constant *llvm::ConstantFoldCompareInstruction(unsigned short pred,
       if (pred == FCmpInst::FCMP_OEQ || pred == FCmpInst::FCMP_UEQ)
         Result = 0;
       else if (pred == FCmpInst::FCMP_ONE || pred == FCmpInst::FCMP_UNE)
+        Result = 1;
+      break;
+    case FCmpInst::FCMP_UEQ: // We know that C1 == C2 || isUnordered(C1, C2).
+      // We can only partially decide this relation.
+      if (pred == FCmpInst::FCMP_ONE)
+        Result = 0;
+      else if (pred == FCmpInst::FCMP_UEQ)
         Result = 1;
       break;
     }
@@ -1980,11 +2075,13 @@ Constant *llvm::ConstantFoldCompareInstruction(unsigned short pred,
 
     // If the right hand side is a bitcast, try using its inverse to simplify
     // it by moving it to the left hand side.  We can't do this if it would turn
-    // a vector compare into a scalar compare or visa versa.
+    // a vector compare into a scalar compare or visa versa, or if it would turn
+    // the operands into FP values.
     if (ConstantExpr *CE2 = dyn_cast<ConstantExpr>(C2)) {
       Constant *CE2Op0 = CE2->getOperand(0);
       if (CE2->getOpcode() == Instruction::BitCast &&
-          CE2->getType()->isVectorTy() == CE2Op0->getType()->isVectorTy()) {
+          CE2->getType()->isVectorTy() == CE2Op0->getType()->isVectorTy() &&
+          !CE2Op0->getType()->isFPOrFPVectorTy()) {
         Constant *Inverse = ConstantExpr::getBitCast(C1, CE2Op0->getType());
         return ConstantExpr::getICmp(pred, Inverse, CE2Op0);
       }

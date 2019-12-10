@@ -34,9 +34,10 @@ int main(int, char**)
     assert(std::char_traits<char8_t>::length(u8"aaaa") == 4);
 
     static_assert(test_constexpr(), "");
+    return 0;
 }
 #else
-int main(int, char**) { 
+int main(int, char**) {
   return 0;
 }
 #endif

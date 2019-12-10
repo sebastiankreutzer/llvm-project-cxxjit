@@ -45,7 +45,7 @@
 #define LLVM_ADT_HASHING_H
 
 #include "llvm/Support/DataTypes.h"
-#include "llvm/Support/Host.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SwapByteOrder.h"
 #include "llvm/Support/type_traits.h"
 #include <algorithm>
@@ -191,7 +191,7 @@ inline uint64_t hash_1to3_bytes(const char *s, size_t len, uint64_t seed) {
   uint8_t b = s[len >> 1];
   uint8_t c = s[len - 1];
   uint32_t y = static_cast<uint32_t>(a) + (static_cast<uint32_t>(b) << 8);
-  uint32_t z = len + (static_cast<uint32_t>(c) << 2);
+  uint32_t z = static_cast<uint32_t>(len) + (static_cast<uint32_t>(c) << 2);
   return shift_mix(y * k2 ^ z * k3 ^ seed) * k2;
 }
 
@@ -540,7 +540,7 @@ public:
       // store types smaller than the buffer.
       if (!store_and_advance(buffer_ptr, buffer_end, data,
                              partial_store_size))
-        abort();
+        llvm_unreachable("buffer smaller than stored type");
     }
     return buffer_ptr;
   }

@@ -101,6 +101,8 @@ static const CoreDefinition g_core_definitions[] = {
      ArchSpec::eCore_arm_arm64, "arm64"},
     {eByteOrderLittle, 8, 4, 4, llvm::Triple::aarch64,
      ArchSpec::eCore_arm_armv8, "armv8"},
+    {eByteOrderLittle, 4, 4, 4, llvm::Triple::aarch64_32,
+      ArchSpec::eCore_arm_arm64_32, "arm64_32"},
     {eByteOrderLittle, 8, 4, 4, llvm::Triple::aarch64,
      ArchSpec::eCore_arm_aarch64, "aarch64"},
 
@@ -214,13 +216,8 @@ static const CoreDefinition g_core_definitions[] = {
      ArchSpec::eCore_uknownMach32, "unknown-mach-32"},
     {eByteOrderLittle, 8, 4, 4, llvm::Triple::UnknownArch,
      ArchSpec::eCore_uknownMach64, "unknown-mach-64"},
-
-    {eByteOrderBig, 4, 1, 1, llvm::Triple::kalimba, ArchSpec::eCore_kalimba3,
-     "kalimba3"},
-    {eByteOrderLittle, 4, 1, 1, llvm::Triple::kalimba, ArchSpec::eCore_kalimba4,
-     "kalimba4"},
-    {eByteOrderLittle, 4, 1, 1, llvm::Triple::kalimba, ArchSpec::eCore_kalimba5,
-     "kalimba5"}};
+    {eByteOrderLittle, 4, 2, 4, llvm::Triple::arc, ArchSpec::eCore_arc, "arc"}
+};
 
 // Ensure that we have an entry in the g_core_definitions for each core. If you
 // comment out an entry above, you will need to comment out the corresponding
@@ -249,19 +246,9 @@ void ArchSpec::ListSupportedArchNames(StringList &list) {
     list.AppendString(g_core_definitions[i].name);
 }
 
-size_t ArchSpec::AutoComplete(CompletionRequest &request) {
-  if (!request.GetCursorArgumentPrefix().empty()) {
-    for (uint32_t i = 0; i < llvm::array_lengthof(g_core_definitions); ++i) {
-      if (NameMatches(g_core_definitions[i].name, NameMatch::StartsWith,
-                      request.GetCursorArgumentPrefix()))
-        request.AddCompletion(g_core_definitions[i].name);
-    }
-  } else {
-    StringList matches;
-    ListSupportedArchNames(matches);
-    request.AddCompletions(matches);
-  }
-  return request.GetNumberOfMatches();
+void ArchSpec::AutoComplete(CompletionRequest &request) {
+  for (uint32_t i = 0; i < llvm::array_lengthof(g_core_definitions); ++i)
+    request.TryCompleteCurrentArg(g_core_definitions[i].name);
 }
 
 #define CPU_ANY (UINT32_MAX)
@@ -312,6 +299,10 @@ static const ArchDefinitionEntry g_macho_arch_entries[] = {
      SUBTYPE_MASK},
     {ArchSpec::eCore_arm_arm64, llvm::MachO::CPU_TYPE_ARM64, 13, UINT32_MAX,
      SUBTYPE_MASK},
+    {ArchSpec::eCore_arm_arm64_32, llvm::MachO::CPU_TYPE_ARM64_32, 0,
+     UINT32_MAX, SUBTYPE_MASK},
+    {ArchSpec::eCore_arm_arm64_32, llvm::MachO::CPU_TYPE_ARM64_32, 1,
+     UINT32_MAX, SUBTYPE_MASK},
     {ArchSpec::eCore_arm_arm64, llvm::MachO::CPU_TYPE_ARM64, CPU_ANY,
      UINT32_MAX, SUBTYPE_MASK},
     {ArchSpec::eCore_thumb, llvm::MachO::CPU_TYPE_ARM, 0, UINT32_MAX,
@@ -452,12 +443,8 @@ static const ArchDefinitionEntry g_elf_arch_entries[] = {
      ArchSpec::eMIPSSubType_mips64r6el, 0xFFFFFFFFu, 0xFFFFFFFFu}, // mips64r6el
     {ArchSpec::eCore_hexagon_generic, llvm::ELF::EM_HEXAGON,
      LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu, 0xFFFFFFFFu}, // HEXAGON
-    {ArchSpec::eCore_kalimba3, llvm::ELF::EM_CSR_KALIMBA,
-     llvm::Triple::KalimbaSubArch_v3, 0xFFFFFFFFu, 0xFFFFFFFFu}, // KALIMBA
-    {ArchSpec::eCore_kalimba4, llvm::ELF::EM_CSR_KALIMBA,
-     llvm::Triple::KalimbaSubArch_v4, 0xFFFFFFFFu, 0xFFFFFFFFu}, // KALIMBA
-    {ArchSpec::eCore_kalimba5, llvm::ELF::EM_CSR_KALIMBA,
-     llvm::Triple::KalimbaSubArch_v5, 0xFFFFFFFFu, 0xFFFFFFFFu} // KALIMBA
+    {ArchSpec::eCore_arc, llvm::ELF::EM_ARC_COMPACT2, LLDB_INVALID_CPUTYPE,
+     0xFFFFFFFFu, 0xFFFFFFFFu }, // ARC
 };
 
 static const ArchDefinition g_elf_arch_def = {
@@ -481,7 +468,9 @@ static const ArchDefinitionEntry g_coff_arch_entries[] = {
     {ArchSpec::eCore_thumb, llvm::COFF::IMAGE_FILE_MACHINE_THUMB,
      LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu, 0xFFFFFFFFu}, // ARMv7
     {ArchSpec::eCore_x86_64_x86_64, llvm::COFF::IMAGE_FILE_MACHINE_AMD64,
-     LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu, 0xFFFFFFFFu} // AMD64
+     LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu, 0xFFFFFFFFu}, // AMD64
+    {ArchSpec::eCore_arm_arm64, llvm::COFF::IMAGE_FILE_MACHINE_ARM64,
+     LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu, 0xFFFFFFFFu} // ARM64
 };
 
 static const ArchDefinition g_coff_arch_def = {
@@ -607,11 +596,7 @@ const char *ArchSpec::GetArchitectureName() const {
   return "unknown";
 }
 
-bool ArchSpec::IsMIPS() const {
-  const llvm::Triple::ArchType machine = GetMachine();
-  return machine == llvm::Triple::mips || machine == llvm::Triple::mipsel ||
-         machine == llvm::Triple::mips64 || machine == llvm::Triple::mips64el;
-}
+bool ArchSpec::IsMIPS() const { return GetTriple().isMIPS(); }
 
 std::string ArchSpec::GetTargetABI() const {
 
@@ -651,10 +636,8 @@ void ArchSpec::SetFlags(std::string elf_abi) {
 
 std::string ArchSpec::GetClangTargetCPU() const {
   std::string cpu;
-  const llvm::Triple::ArchType machine = GetMachine();
 
-  if (machine == llvm::Triple::mips || machine == llvm::Triple::mipsel ||
-      machine == llvm::Triple::mips64 || machine == llvm::Triple::mips64el) {
+  if (IsMIPS()) {
     switch (m_core) {
     case ArchSpec::eCore_mips32:
     case ArchSpec::eCore_mips32el:
@@ -728,30 +711,10 @@ uint32_t ArchSpec::GetMachOCPUSubType() const {
 }
 
 uint32_t ArchSpec::GetDataByteSize() const {
-  switch (m_core) {
-  case eCore_kalimba3:
-    return 4;
-  case eCore_kalimba4:
-    return 1;
-  case eCore_kalimba5:
-    return 4;
-  default:
-    return 1;
-  }
   return 1;
 }
 
 uint32_t ArchSpec::GetCodeByteSize() const {
-  switch (m_core) {
-  case eCore_kalimba3:
-    return 4;
-  case eCore_kalimba4:
-    return 1;
-  case eCore_kalimba5:
-    return 1;
-  default:
-    return 1;
-  }
   return 1;
 }
 
@@ -763,7 +726,7 @@ llvm::Triple::ArchType ArchSpec::GetMachine() const {
   return llvm::Triple::UnknownArch;
 }
 
-const ConstString &ArchSpec::GetDistributionId() const {
+ConstString ArchSpec::GetDistributionId() const {
   return m_distribution_id;
 }
 
@@ -798,6 +761,7 @@ bool ArchSpec::CharIsSignedByDefault() const {
     return true;
 
   case llvm::Triple::aarch64:
+  case llvm::Triple::aarch64_32:
   case llvm::Triple::aarch64_be:
   case llvm::Triple::arm:
   case llvm::Triple::armeb:
@@ -889,10 +853,9 @@ bool ArchSpec::ContainsOnlyArch(const llvm::Triple &normalized_triple) {
 }
 
 void ArchSpec::MergeFrom(const ArchSpec &other) {
-  if (TripleVendorIsUnspecifiedUnknown() &&
-      !other.TripleVendorIsUnspecifiedUnknown())
+  if (!TripleVendorWasSpecified() && other.TripleVendorWasSpecified())
     GetTriple().setVendor(other.GetTriple().getVendor());
-  if (TripleOSIsUnspecifiedUnknown() && !other.TripleOSIsUnspecifiedUnknown())
+  if (!TripleOSWasSpecified() && other.TripleOSWasSpecified())
     GetTriple().setOS(other.GetTriple().getOS());
   if (GetTriple().getArch() == llvm::Triple::UnknownArch) {
     GetTriple().setArch(other.GetTriple().getArch());
@@ -903,10 +866,9 @@ void ArchSpec::MergeFrom(const ArchSpec &other) {
     if (other.GetCore() != eCore_uknownMach64)
       UpdateCore();
   }
-  if (GetTriple().getEnvironment() == llvm::Triple::UnknownEnvironment &&
-      !TripleVendorWasSpecified()) {
-    if (other.TripleVendorWasSpecified())
-      GetTriple().setEnvironment(other.GetTriple().getEnvironment());
+  if (!TripleEnvironmentWasSpecified() &&
+      other.TripleEnvironmentWasSpecified()) {
+    GetTriple().setEnvironment(other.GetTriple().getEnvironment());
   }
   // If this and other are both arm ArchSpecs and this ArchSpec is a generic
   // "some kind of arm" spec but the other ArchSpec is a specific arm core,
@@ -944,13 +906,13 @@ bool ArchSpec::SetArchitecture(ArchitectureType arch_type, uint32_t cpu,
           m_triple.setVendor(llvm::Triple::Apple);
 
           // Don't set the OS.  It could be simulator, macosx, ios, watchos,
-          // tvos, bridgeos.  We could get close with the cpu type - but we 
-          // can't get it right all of the time.  Better to leave this unset 
-          // so other sections of code will set it when they have more 
-          // information. NB: don't call m_triple.setOS (llvm::Triple::UnknownOS).  
-          // That sets the OSName to "unknown" and the 
-          // ArchSpec::TripleVendorWasSpecified() method says that any OSName 
-          // setting means it was specified.
+          // tvos, bridgeos.  We could get close with the cpu type - but we
+          // can't get it right all of the time.  Better to leave this unset
+          // so other sections of code will set it when they have more
+          // information. NB: don't call m_triple.setOS
+          // (llvm::Triple::UnknownOS). That sets the OSName to "unknown" and
+          // the ArchSpec::TripleVendorWasSpecified() method says that any
+          // OSName setting means it was specified.
         } else if (arch_type == eArchTypeELF) {
           switch (os) {
           case llvm::ELF::ELFOSABI_AIX:
@@ -986,8 +948,10 @@ bool ArchSpec::SetArchitecture(ArchitectureType arch_type, uint32_t cpu,
       }
     } else {
       Log *log(lldb_private::GetLogIfAnyCategoriesSet(LIBLLDB_LOG_TARGET | LIBLLDB_LOG_PROCESS | LIBLLDB_LOG_PLATFORM));
-      if (log)
-        log->Printf("Unable to find a core definition for cpu 0x%" PRIx32 " sub %" PRId32, cpu, sub);
+      LLDB_LOGF(log,
+                "Unable to find a core definition for cpu 0x%" PRIx32
+                " sub %" PRId32,
+                cpu, sub);
     }
   }
   CoreUpdated(update_triple);
@@ -1280,6 +1244,14 @@ static bool cores_match(const ArchSpec::Core core1, const ArchSpec::Core core2,
       if (core2 == ArchSpec::eCore_arm_aarch64)
         return true;
       if (core2 == ArchSpec::eCore_arm_armv8)
+        return true;
+      try_inverse = false;
+    }
+    break;
+
+  case ArchSpec::eCore_arm_arm64_32:
+    if (!enforce_exact_match) {
+      if (core2 == ArchSpec::eCore_arm_generic)
         return true;
       try_inverse = false;
     }

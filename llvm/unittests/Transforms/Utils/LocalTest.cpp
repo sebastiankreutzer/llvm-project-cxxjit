@@ -153,8 +153,7 @@ TEST(Local, ReplaceDbgDeclare) {
   ASSERT_TRUE(DII);
   Value *NewBase = Constant::getNullValue(Type::getInt32PtrTy(C));
   DIBuilder DIB(*M);
-  replaceDbgDeclare(AI, NewBase, DII, DIB, DIExpression::NoDeref, 0,
-                    DIExpression::NoDeref);
+  replaceDbgDeclare(AI, NewBase, DII, DIB, DIExpression::ApplyOffset, 0);
 
   // There should be exactly two dbg.declares.
   int Declares = 0;
@@ -788,31 +787,35 @@ TEST(Local, ReplaceAllDbgUsesWith) {
   };
 
   // Case 1: The original expr is empty, so no deref is needed.
-  EXPECT_TRUE(hasADbgVal({DW_OP_dup, DW_OP_constu, 31, DW_OP_shr, DW_OP_lit0,
-                          DW_OP_not, DW_OP_mul, DW_OP_or, DW_OP_stack_value}));
+  EXPECT_TRUE(hasADbgVal({DW_OP_LLVM_convert, 32, DW_ATE_signed,
+                         DW_OP_LLVM_convert, 64, DW_ATE_signed,
+                         DW_OP_stack_value}));
 
   // Case 2: Perform an address calculation with the original expr, deref it,
   // then sign-extend the result.
-  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_deref, DW_OP_dup,
-                          DW_OP_constu, 31, DW_OP_shr, DW_OP_lit0, DW_OP_not,
-                          DW_OP_mul, DW_OP_or, DW_OP_stack_value}));
+  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_deref,
+                         DW_OP_LLVM_convert, 32, DW_ATE_signed,
+                         DW_OP_LLVM_convert, 64, DW_ATE_signed,
+                         DW_OP_stack_value}));
 
   // Case 3: Insert the sign-extension logic before the DW_OP_stack_value.
-  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_dup, DW_OP_constu, 31,
-                          DW_OP_shr, DW_OP_lit0, DW_OP_not, DW_OP_mul, DW_OP_or,
-                          DW_OP_stack_value}));
+  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_LLVM_convert, 32,
+                         DW_ATE_signed, DW_OP_LLVM_convert, 64, DW_ATE_signed,
+                         DW_OP_stack_value}));
 
   // Cases 4-6: Just like cases 1-3, but preserve the fragment at the end.
-  EXPECT_TRUE(hasADbgVal({DW_OP_dup, DW_OP_constu, 31, DW_OP_shr, DW_OP_lit0,
-                          DW_OP_not, DW_OP_mul, DW_OP_or, DW_OP_stack_value,
-                          DW_OP_LLVM_fragment, 0, 8}));
-  EXPECT_TRUE(
-      hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_deref, DW_OP_dup, DW_OP_constu,
-                  31, DW_OP_shr, DW_OP_lit0, DW_OP_not, DW_OP_mul, DW_OP_or,
-                  DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 8}));
-  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_dup, DW_OP_constu, 31,
-                          DW_OP_shr, DW_OP_lit0, DW_OP_not, DW_OP_mul, DW_OP_or,
-                          DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 8}));
+  EXPECT_TRUE(hasADbgVal({DW_OP_LLVM_convert, 32, DW_ATE_signed,
+                         DW_OP_LLVM_convert, 64, DW_ATE_signed,
+                         DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 8}));
+
+  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_deref,
+                         DW_OP_LLVM_convert, 32, DW_ATE_signed,
+                         DW_OP_LLVM_convert, 64, DW_ATE_signed,
+                         DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 8}));
+
+  EXPECT_TRUE(hasADbgVal({DW_OP_lit0, DW_OP_mul, DW_OP_LLVM_convert, 32,
+                         DW_ATE_signed, DW_OP_LLVM_convert, 64, DW_ATE_signed,
+                         DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 8}));
 
   verifyModule(*M, &errs(), &BrokenDebugInfo);
   ASSERT_FALSE(BrokenDebugInfo);
@@ -864,12 +867,42 @@ TEST(Local, RemoveUnreachableBlocks) {
       bb2:
         br label %bb1
       }
+
+      declare i32 @__gxx_personality_v0(...)
+
+      define void @invoke_terminator() personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) {
+      entry:
+        br i1 undef, label %invoke.block, label %exit
+
+      invoke.block:
+        %cond = invoke zeroext i1 @invokable()
+                to label %continue.block unwind label %lpad.block
+
+      continue.block:
+        br i1 %cond, label %if.then, label %if.end
+
+      if.then:
+        unreachable
+
+      if.end:
+        unreachable
+
+      lpad.block:
+        %lp = landingpad { i8*, i32 }
+                catch i8* null
+        br label %exit
+
+      exit:
+        ret void
+      }
+
+      declare i1 @invokable()
       )");
 
   auto runEager = [&](Function &F, DominatorTree *DT) {
     PostDominatorTree PDT = PostDominatorTree(F);
     DomTreeUpdater DTU(*DT, PDT, DomTreeUpdater::UpdateStrategy::Eager);
-    removeUnreachableBlocks(F, nullptr, &DTU);
+    removeUnreachableBlocks(F, &DTU);
     EXPECT_TRUE(DTU.getDomTree().verify());
     EXPECT_TRUE(DTU.getPostDomTree().verify());
   };
@@ -877,7 +910,7 @@ TEST(Local, RemoveUnreachableBlocks) {
   auto runLazy = [&](Function &F, DominatorTree *DT) {
     PostDominatorTree PDT = PostDominatorTree(F);
     DomTreeUpdater DTU(*DT, PDT, DomTreeUpdater::UpdateStrategy::Lazy);
-    removeUnreachableBlocks(F, nullptr, &DTU);
+    removeUnreachableBlocks(F, &DTU);
     EXPECT_TRUE(DTU.getDomTree().verify());
     EXPECT_TRUE(DTU.getPostDomTree().verify());
   };
@@ -887,12 +920,14 @@ TEST(Local, RemoveUnreachableBlocks) {
   runWithDomTree(*M, "br_self_loop", runEager);
   runWithDomTree(*M, "br_constant", runEager);
   runWithDomTree(*M, "br_loop", runEager);
+  runWithDomTree(*M, "invoke_terminator", runEager);
 
   // Test removeUnreachableBlocks under Lazy UpdateStrategy.
   runWithDomTree(*M, "br_simple", runLazy);
   runWithDomTree(*M, "br_self_loop", runLazy);
   runWithDomTree(*M, "br_constant", runLazy);
   runWithDomTree(*M, "br_loop", runLazy);
+  runWithDomTree(*M, "invoke_terminator", runLazy);
 
   M = parseIR(C,
               R"(
@@ -906,8 +941,8 @@ TEST(Local, RemoveUnreachableBlocks) {
 
   auto checkRUBlocksRetVal = [&](Function &F, DominatorTree *DT) {
     DomTreeUpdater DTU(DT, DomTreeUpdater::UpdateStrategy::Lazy);
-    EXPECT_TRUE(removeUnreachableBlocks(F, nullptr, &DTU));
-    EXPECT_FALSE(removeUnreachableBlocks(F, nullptr, &DTU));
+    EXPECT_TRUE(removeUnreachableBlocks(F, &DTU));
+    EXPECT_FALSE(removeUnreachableBlocks(F, &DTU));
     EXPECT_TRUE(DTU.getDomTree().verify());
   };
 

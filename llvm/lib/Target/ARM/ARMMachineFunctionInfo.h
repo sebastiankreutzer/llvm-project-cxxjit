@@ -16,6 +16,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <utility>
 
@@ -60,6 +61,10 @@ class ARMFunctionInfo : public MachineFunctionInfo {
   /// LRSpilledForFarJump - True if the LR register has been for spilled to
   /// enable far jump.
   bool LRSpilledForFarJump = false;
+
+  /// LRSpilled - True if the LR register has been for spilled for
+  /// any reason, so it's legal to emit an ARM::tBfar (i.e. "bl").
+  bool LRSpilled = false;
 
   /// FramePtrSpillOffset - If HasStackFrame, this records the frame pointer
   /// spill stack offset.
@@ -126,6 +131,10 @@ class ARMFunctionInfo : public MachineFunctionInfo {
   /// The amount the literal pool has been increasedby due to promoted globals.
   int PromotedGlobalsIncrease = 0;
 
+  /// True if r0 will be preserved by a call to this function (e.g. C++
+  /// con/destructors).
+  bool PreservesR0 = false;
+
 public:
   ARMFunctionInfo() = default;
 
@@ -149,6 +158,9 @@ public:
 
   bool shouldRestoreSPFromFP() const { return RestoreSPFromFP; }
   void setShouldRestoreSPFromFP(bool s) { RestoreSPFromFP = s; }
+
+  bool isLRSpilled() const { return LRSpilled; }
+  void setLRIsSpilled(bool s) { LRSpilled = s; }
 
   bool isLRSpilledForFarJump() const { return LRSpilledForFarJump; }
   void setLRIsSpilledForFarJump(bool s) { LRSpilledForFarJump = s; }
@@ -238,6 +250,11 @@ public:
   void setPromotedConstpoolIncrease(int Sz) {
     PromotedGlobalsIncrease = Sz;
   }
+
+  DenseMap<unsigned, unsigned> EHPrologueRemappedRegs;
+
+  void setPreservesR0() { PreservesR0 = true; }
+  bool getPreservesR0() const { return PreservesR0; }
 };
 
 } // end namespace llvm

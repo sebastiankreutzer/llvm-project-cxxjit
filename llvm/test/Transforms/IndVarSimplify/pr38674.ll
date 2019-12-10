@@ -14,10 +14,9 @@ define i32 @test_01() {
 ; CHECK-NEXT:    [[ZEXT:%.*]] = zext i16 1 to i32
 ; CHECK-NEXT:    br label [[FOR_BODY6:%.*]]
 ; CHECK:       for.cond4:
-; CHECK-NEXT:    [[CMP5:%.*]] = icmp ult i32 [[INC:%.*]], 2
-; CHECK-NEXT:    br i1 [[CMP5]], label [[FOR_BODY6]], label [[FOR_END:%.*]]
+; CHECK-NEXT:    br i1 true, label [[FOR_BODY6]], label [[FOR_END:%.*]]
 ; CHECK:       for.body6:
-; CHECK-NEXT:    [[IV:%.*]] = phi i32 [ 0, [[FOR_COND4_PREHEADER]] ], [ [[INC]], [[FOR_COND4:%.*]] ]
+; CHECK-NEXT:    [[IV:%.*]] = phi i32 [ 0, [[FOR_COND4_PREHEADER]] ], [ [[INC:%.*]], [[FOR_COND4:%.*]] ]
 ; CHECK-NEXT:    [[TMP0:%.*]] = icmp eq i32 [[IV]], [[ZEXT]]
 ; CHECK-NEXT:    [[INC]] = add nuw nsw i32 [[IV]], 1
 ; CHECK-NEXT:    br i1 [[TMP0]], label [[RETURN_LOOPEXIT:%.*]], label [[FOR_COND4]]
@@ -92,15 +91,13 @@ define i32 @test_02(i32 %x) {
 ; CHECK:       for.end:
 ; CHECK-NEXT:    br i1 false, label [[FOR_COND4_PREHEADER]], label [[FOR_END9:%.*]]
 ; CHECK:       for.end9:
-; CHECK-NEXT:    [[INC11:%.*]] = add nuw nsw i32 0, [[X]]
 ; CHECK-NEXT:    br i1 false, label [[FOR_COND1_PREHEADER]], label [[RETURN_LOOPEXIT3:%.*]]
 ; CHECK:       return.loopexit:
 ; CHECK-NEXT:    unreachable
 ; CHECK:       return.loopexit3:
-; CHECK-NEXT:    [[INC11_LCSSA:%.*]] = phi i32 [ [[INC11]], [[FOR_END9]] ]
 ; CHECK-NEXT:    br label [[RETURN:%.*]]
 ; CHECK:       return:
-; CHECK-NEXT:    ret i32 [[INC11_LCSSA]]
+; CHECK-NEXT:    ret i32 [[X]]
 ;
 entry:
   br label %for.cond1.preheader

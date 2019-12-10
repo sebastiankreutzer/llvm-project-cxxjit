@@ -231,6 +231,7 @@ template <typename T> class ArrayRef;
     std::vector<Record*> ImplicitDefs, ImplicitUses;
 
     // Various boolean values we track for the instruction.
+    bool isPreISelOpcode : 1;
     bool isReturn : 1;
     bool isEHScopeReturn : 1;
     bool isBranch : 1;
@@ -249,6 +250,7 @@ template <typename T> class ArrayRef;
     bool mayLoad_Unset : 1;
     bool mayStore : 1;
     bool mayStore_Unset : 1;
+    bool mayRaiseFPException : 1;
     bool isPredicable : 1;
     bool isConvertibleToThreeAddress : 1;
     bool isCommutable : 1;

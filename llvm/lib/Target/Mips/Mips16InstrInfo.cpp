@@ -358,7 +358,7 @@ unsigned Mips16InstrInfo::loadImmediate(unsigned FrameReg, int64_t Imm,
   for (unsigned i = 0, e = II->getNumOperands(); i != e; ++i) {
     MachineOperand &MO = II->getOperand(i);
     if (MO.isReg() && MO.getReg() != 0 && !MO.isDef() &&
-        !TargetRegisterInfo::isVirtualRegister(MO.getReg()))
+        !Register::isVirtualRegister(MO.getReg()))
       Candidates.reset(MO.getReg());
   }
 
@@ -418,8 +418,9 @@ unsigned Mips16InstrInfo::loadImmediate(unsigned FrameReg, int64_t Imm,
    else
      Available.reset(SpReg);
     copyPhysReg(MBB, II, DL, SpReg, Mips::SP, false);
-    BuildMI(MBB, II, DL, get(Mips::  AdduRxRyRz16), Reg).addReg(SpReg, RegState::Kill)
-      .addReg(Reg);
+    BuildMI(MBB, II, DL, get(Mips::AdduRxRyRz16), Reg)
+        .addReg(SpReg, RegState::Kill)
+        .addReg(Reg);
   }
   else
     BuildMI(MBB, II, DL, get(Mips::  AdduRxRyRz16), Reg).addReg(FrameReg)

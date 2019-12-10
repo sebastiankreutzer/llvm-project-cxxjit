@@ -32,15 +32,9 @@ class LexicalScope;
 class MCSection;
 
 // Data structure to hold a range for range lists.
-class RangeSpan {
-public:
-  RangeSpan(MCSymbol *S, MCSymbol *E) : Start(S), End(E) {}
-  const MCSymbol *getStart() const { return Start; }
-  const MCSymbol *getEnd() const { return End; }
-  void setEnd(const MCSymbol *E) { End = E; }
-
-private:
-  const MCSymbol *Start, *End;
+struct RangeSpan {
+  const MCSymbol *Begin;
+  const MCSymbol *End;
 };
 
 class RangeSpanList {
@@ -58,7 +52,6 @@ public:
   MCSymbol *getSym() const { return RangeSym; }
   const DwarfCompileUnit &getCU() const { return *CU; }
   const SmallVectorImpl<RangeSpan> &getRanges() const { return Ranges; }
-  void addRange(RangeSpan Range) { Ranges.push_back(Range); }
 };
 
 class DwarfFile {
@@ -86,10 +79,6 @@ class DwarfFile {
   /// DWARF v5: The symbol that designates the base of the range list table.
   /// The table is shared by all units.
   MCSymbol *RnglistsTableBaseSym = nullptr;
-
-  /// DWARF v5: The symbol that designates the base of the locations list table.
-  /// The table is shared by all units.
-  MCSymbol *LoclistsTableBaseSym = nullptr;
 
   /// The variables of a lexical scope.
   struct ScopeVars {
@@ -147,7 +136,7 @@ public:
   void emitUnits(bool UseOffsets);
 
   /// Emit the given unit to its section.
-  void emitUnit(DwarfUnit *U, bool UseOffsets);
+  void emitUnit(DwarfUnit *TheU, bool UseOffsets);
 
   /// Emit a set of abbreviations to the specific section.
   void emitAbbrevs(MCSection *);
@@ -167,9 +156,6 @@ public:
 
   MCSymbol *getRnglistsTableBaseSym() const { return RnglistsTableBaseSym; }
   void setRnglistsTableBaseSym(MCSymbol *Sym) { RnglistsTableBaseSym = Sym; }
-
-  MCSymbol *getLoclistsTableBaseSym() const { return LoclistsTableBaseSym; }
-  void setLoclistsTableBaseSym(MCSymbol *Sym) { LoclistsTableBaseSym = Sym; }
 
   /// \returns false if the variable was merged with a previous one.
   bool addScopeVariable(LexicalScope *LS, DbgVariable *Var);

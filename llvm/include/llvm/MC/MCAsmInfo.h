@@ -17,16 +17,17 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/MC/MCDirectives.h"
-#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include <vector>
 
 namespace llvm {
 
 class MCContext;
+class MCCFIInstruction;
 class MCExpr;
 class MCSection;
 class MCStreamer;
+class MCSubtargetInfo;
 class MCSymbol;
 
 namespace WinEH {
@@ -163,6 +164,10 @@ protected:
   /// ".data_region/.end_data_region" directives. If false, use "$d/$a" labels
   /// instead.
   bool UseDataRegionDirectives = false;
+
+  /// True if .align is to be used for alignment. Only power-of-two
+  /// alignment is supported.
+  bool UseDotAlignForAlignment = false;
 
   //===--- Data Emission Directives -------------------------------------===//
 
@@ -312,6 +317,10 @@ protected:
   /// Defaults to false.
   bool HasLinkOnceDirective = false;
 
+  /// True if we have a .lglobl directive, which is used to emit the information
+  /// of a static symbol into the symbol table. Defaults to false.
+  bool HasDotLGloblDirective = false;
+
   /// This attribute, if not MCSA_Invalid, is used to declare a symbol as having
   /// hidden visibility.  Defaults to MCSA_Hidden.
   MCSymbolAttr HiddenVisibilityAttr = MCSA_Hidden;
@@ -386,6 +395,9 @@ protected:
   // If true, then the lexer and expression parser will support %neg(),
   // %hi(), and similar unary operators.
   bool HasMipsExpressions = false;
+
+  // If true, emit function descriptor symbol on AIX.
+  bool NeedsFunctionDescriptors = false;
 
 public:
   explicit MCAsmInfo();
@@ -473,7 +485,13 @@ public:
   bool hasMachoTBSSDirective() const { return HasMachoTBSSDirective; }
   bool hasCOFFAssociativeComdats() const { return HasCOFFAssociativeComdats; }
   bool hasCOFFComdatConstants() const { return HasCOFFComdatConstants; }
-  unsigned getMaxInstLength() const { return MaxInstLength; }
+
+  /// Returns the maximum possible encoded instruction size in bytes. If \p STI
+  /// is null, this should be the maximum size for any subtarget.
+  virtual unsigned getMaxInstLength(const MCSubtargetInfo *STI = nullptr) const {
+    return MaxInstLength;
+  }
+
   unsigned getMinInstAlignment() const { return MinInstAlignment; }
   bool getDollarIsPC() const { return DollarIsPC; }
   const char *getSeparatorString() const { return SeparatorString; }
@@ -513,6 +531,10 @@ public:
     return UseDataRegionDirectives;
   }
 
+  bool useDotAlignForAlignment() const {
+    return UseDotAlignForAlignment;
+  }
+
   const char *getZeroDirective() const { return ZeroDirective; }
   const char *getAsciiDirective() const { return AsciiDirective; }
   const char *getAscizDirective() const { return AscizDirective; }
@@ -549,6 +571,8 @@ public:
   }
 
   bool hasLinkOnceDirective() const { return HasLinkOnceDirective; }
+
+  bool hasDotLGloblDirective() const { return HasDotLGloblDirective; }
 
   MCSymbolAttr getHiddenVisibilityAttr() const { return HiddenVisibilityAttr; }
 
@@ -597,9 +621,7 @@ public:
     return SupportsExtendedDwarfLocDirective;
   }
 
-  void addInitialFrameState(const MCCFIInstruction &Inst) {
-    InitialFrameState.push_back(Inst);
-  }
+  void addInitialFrameState(const MCCFIInstruction &Inst);
 
   const std::vector<MCCFIInstruction> &getInitialFrameState() const {
     return InitialFrameState;
@@ -634,6 +656,7 @@ public:
   bool canRelaxRelocations() const { return RelaxELFRelocations; }
   void setRelaxELFRelocations(bool V) { RelaxELFRelocations = V; }
   bool hasMipsExpressions() const { return HasMipsExpressions; }
+  bool needsFunctionDescriptors() const { return NeedsFunctionDescriptors; }
 };
 
 } // end namespace llvm

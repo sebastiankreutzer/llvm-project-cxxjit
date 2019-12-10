@@ -35,8 +35,8 @@ public:
     return RegisterInfo;
   }
 
-  bool areMemAccessesTriviallyDisjoint(MachineInstr &MIa, MachineInstr &MIb,
-                                       AliasAnalysis *AA) const override;
+  bool areMemAccessesTriviallyDisjoint(const MachineInstr &MIa,
+                                       const MachineInstr &MIb) const override;
 
   unsigned isLoadFromStackSlot(const MachineInstr &MI,
                                int &FrameIndex) const override;
@@ -67,11 +67,13 @@ public:
 
   bool expandPostRAPseudo(MachineInstr &MI) const override;
 
-  bool getMemOperandWithOffset(MachineInstr &LdSt, MachineOperand *&BaseOp,
+  bool getMemOperandWithOffset(const MachineInstr &LdSt,
+                               const MachineOperand *&BaseOp,
                                int64_t &Offset,
                                const TargetRegisterInfo *TRI) const override;
 
-  bool getMemOperandWithOffsetWidth(MachineInstr &LdSt, MachineOperand *&BaseOp,
+  bool getMemOperandWithOffsetWidth(const MachineInstr &LdSt,
+                                    const MachineOperand *&BaseOp,
                                     int64_t &Offset, unsigned &Width,
                                     const TargetRegisterInfo *TRI) const;
 

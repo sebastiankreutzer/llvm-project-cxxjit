@@ -22,7 +22,7 @@ public:
   bool GetModuleSpec(const FileSpec &module_file_spec, const ArchSpec &arch,
                      ModuleSpec &module_spec) override;
 
-  lldb::user_id_t OpenFile(const FileSpec &file_spec, uint32_t flags,
+  lldb::user_id_t OpenFile(const FileSpec &file_spec, File::OpenOptions flags,
                            uint32_t mode, Status &error) override;
 
   bool CloseFile(lldb::user_id_t fd, Status &error) override;
@@ -70,8 +70,7 @@ public:
                          const Timeout<std::micro> &timeout) override;
 
   const char *GetHostname() override;
-  const char *GetUserName(uint32_t uid) override;
-  const char *GetGroupName(uint32_t gid) override;
+  UserIDResolver &GetUserIDResolver() override;
   lldb_private::Environment GetEnvironment() override;
 
   bool IsConnected() const override;

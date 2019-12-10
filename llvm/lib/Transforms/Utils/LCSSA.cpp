@@ -31,11 +31,12 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/LoopPass.h"
+#include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
-#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -44,6 +45,7 @@
 #include "llvm/IR/PredIteratorCache.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/Utils.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/SSAUpdater.h"
 using namespace llvm;
@@ -72,7 +74,8 @@ static bool isExitBlock(BasicBlock *BB,
 /// that are outside the current loop.  If so, insert LCSSA PHI nodes and
 /// rewrite the uses.
 bool llvm::formLCSSAForInstructions(SmallVectorImpl<Instruction *> &Worklist,
-                                    DominatorTree &DT, LoopInfo &LI) {
+                                    DominatorTree &DT, LoopInfo &LI,
+                                    ScalarEvolution *SE) {
   SmallVector<Use *, 16> UsesToRewrite;
   SmallSetVector<PHINode *, 16> PHIsToRemove;
   PredIteratorCache PredCache;
@@ -131,6 +134,11 @@ bool llvm::formLCSSAForInstructions(SmallVectorImpl<Instruction *> &Worklist,
     SmallVector<PHINode *, 4> InsertedPHIs;
     SSAUpdater SSAUpdate(&InsertedPHIs);
     SSAUpdate.Initialize(I->getType(), I->getName());
+
+    // Force re-computation of I, as some users now need to use the new PHI
+    // node.
+    if (SE)
+      SE->forgetValue(I);
 
     // Insert the LCSSA phi's into all of the exit blocks dominated by the
     // value, and add them to the Phi's map.
@@ -366,7 +374,7 @@ bool llvm::formLCSSA(Loop &L, DominatorTree &DT, LoopInfo *LI,
       Worklist.push_back(&I);
     }
   }
-  Changed = formLCSSAForInstructions(Worklist, DT, *LI);
+  Changed = formLCSSAForInstructions(Worklist, DT, *LI, SE);
 
   // If we modified the code, remove any caches about the loop from SCEV to
   // avoid dangling entries.
@@ -442,6 +450,8 @@ struct LCSSAWrapperPass : public FunctionPass {
     AU.addPreserved<GlobalsAAWrapperPass>();
     AU.addPreserved<ScalarEvolutionWrapperPass>();
     AU.addPreserved<SCEVAAWrapperPass>();
+    AU.addPreserved<BranchProbabilityInfoWrapperPass>();
+    AU.addPreserved<MemorySSAWrapperPass>();
 
     // This is needed to perform LCSSA verification inside LPPassManager
     AU.addRequired<LCSSAVerificationPass>();
@@ -485,5 +495,9 @@ PreservedAnalyses LCSSAPass::run(Function &F, FunctionAnalysisManager &AM) {
   PA.preserve<GlobalsAA>();
   PA.preserve<SCEVAA>();
   PA.preserve<ScalarEvolutionAnalysis>();
+  // BPI maps terminators to probabilities, since we don't modify the CFG, no
+  // updates are needed to preserve it.
+  PA.preserve<BranchProbabilityAnalysis>();
+  PA.preserve<MemorySSAAnalysis>();
   return PA;
 }

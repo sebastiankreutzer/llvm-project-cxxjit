@@ -1109,6 +1109,10 @@ public:
   APInt uadd_sat(const APInt &RHS) const;
   APInt ssub_sat(const APInt &RHS) const;
   APInt usub_sat(const APInt &RHS) const;
+  APInt smul_sat(const APInt &RHS) const;
+  APInt umul_sat(const APInt &RHS) const;
+  APInt sshl_sat(const APInt &RHS) const;
+  APInt ushl_sat(const APInt &RHS) const;
 
   /// Array-indexing support.
   ///
@@ -1467,6 +1471,13 @@ public:
       U.pVal[whichWord(BitPosition)] &= Mask;
   }
 
+  /// Set bottom loBits bits to 0.
+  void clearLowBits(unsigned loBits) {
+    assert(loBits <= BitWidth && "More bits than bitwidth");
+    APInt Keep = getHighBitsSet(BitWidth, BitWidth - loBits);
+    *this &= Keep;
+  }
+
   /// Set the sign bit to 0.
   void clearSignBit() {
     clearBit(BitWidth - 1);
@@ -1496,9 +1507,11 @@ public:
 
   /// Insert the bits from a smaller APInt starting at bitPosition.
   void insertBits(const APInt &SubBits, unsigned bitPosition);
+  void insertBits(uint64_t SubBits, unsigned bitPosition, unsigned numBits);
 
   /// Return an APInt with the extracted bits [bitPosition,bitPosition+numBits).
   APInt extractBits(unsigned numBits, unsigned bitPosition) const;
+  uint64_t extractBitsAsZExtValue(unsigned numBits, unsigned bitPosition) const;
 
   /// @}
   /// \name Value Characterization Functions
@@ -2207,11 +2220,26 @@ APInt RoundingSDiv(const APInt &A, const APInt &B, APInt::Rounding RM);
 /// coefficients.
 Optional<APInt> SolveQuadraticEquationWrap(APInt A, APInt B, APInt C,
                                            unsigned RangeWidth);
+
+/// Compare two values, and if they are different, return the position of the
+/// most significant bit that is different in the values.
+Optional<unsigned> GetMostSignificantDifferentBit(const APInt &A,
+                                                  const APInt &B);
+
 } // End of APIntOps namespace
 
 // See friend declaration above. This additional declaration is required in
 // order to compile LLVM with IBM xlC compiler.
 hash_code hash_value(const APInt &Arg);
-} // End of llvm namespace
+
+/// StoreIntToMemory - Fills the StoreBytes bytes of memory starting from Dst
+/// with the integer held in IntVal.
+void StoreIntToMemory(const APInt &IntVal, uint8_t *Dst, unsigned StoreBytes);
+
+/// LoadIntFromMemory - Loads the integer stored in the LoadBytes bytes starting
+/// from Src into IntVal, which is assumed to be wide enough and to hold zero.
+void LoadIntFromMemory(APInt &IntVal, uint8_t *Src, unsigned LoadBytes);
+
+} // namespace llvm
 
 #endif

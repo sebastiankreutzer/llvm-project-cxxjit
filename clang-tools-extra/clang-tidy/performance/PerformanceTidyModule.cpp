@@ -1,4 +1,4 @@
-//===--- PeformanceTidyModule.cpp - clang-tidy ----------------------------===//
+//===-- PerformanceTidyModule.cpp - clang-tidy ----------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -18,6 +18,7 @@
 #include "MoveConstArgCheck.h"
 #include "MoveConstructorInitCheck.h"
 #include "NoexceptMoveConstructorCheck.h"
+#include "TriviallyDestructibleCheck.h"
 #include "TypePromotionInMathFnCheck.h"
 #include "UnnecessaryCopyInitialization.h"
 #include "UnnecessaryValueParamCheck.h"
@@ -47,6 +48,8 @@ public:
         "performance-move-constructor-init");
     CheckFactories.registerCheck<NoexceptMoveConstructorCheck>(
         "performance-noexcept-move-constructor");
+    CheckFactories.registerCheck<TriviallyDestructibleCheck>(
+        "performance-trivially-destructible");
     CheckFactories.registerCheck<TypePromotionInMathFnCheck>(
         "performance-type-promotion-in-math-fn");
     CheckFactories.registerCheck<UnnecessaryCopyInitialization>(

@@ -456,7 +456,7 @@ CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
                          /*DisableValidation=*/false,
                          /*AllowPCHWithCompilerErrors*/ false);
 
-  Reader->setListener(llvm::make_unique<ASTInfoCollector>(
+  Reader->setListener(std::make_unique<ASTInfoCollector>(
       *PP, Ctx.get(), *HSOpts, *PPOpts, *Invocation->getLangOpts(), TargetOpts,
       Target, Counter));
 
@@ -550,7 +550,7 @@ CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
   }
 
   if (!IsForDev)
-    CJ = llvm::make_unique<ClangJIT>(LocalSymAddrs);
+    CJ = std::make_unique<ClangJIT>(LocalSymAddrs);
 
   if (IsForDev)
     for (unsigned i = 0; i < DeviceData[ForDev].FileDataCnt; ++i) {
@@ -1169,10 +1169,10 @@ extern "C"
       TUD.CD.reset(CD);
       auto DriverStr = std::getenv("CJ_DRIVER");
       if (DriverStr && std::strcmp(DriverStr, "tuner") == 0) {
-        TUD.CompilerDriver = llvm::make_unique<TunerDriver>(*CD);
+        TUD.CompilerDriver = std::make_unique<TunerDriver>(*CD);
         JIT_INFO(llvm::dbgs() << "JIT Tuning enabled\n");
       } else {
-        TUD.CompilerDriver = llvm::make_unique<SimpleDriver>(*CD);
+        TUD.CompilerDriver = std::make_unique<SimpleDriver>(*CD);
       }
       CDriver = TUD.CompilerDriver.get();
     } else {

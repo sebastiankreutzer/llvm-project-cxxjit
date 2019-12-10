@@ -295,7 +295,7 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
   // Begin by walking OrigHeader and populating ValueMap with an entry for
   // each Instruction.
   BasicBlock::iterator I = OrigHeader->begin(), E = OrigHeader->end();
-  ValueToValueMapTy ValueMap;
+  ValueToValueMapTy ValueMap, ValueMapMSSA;
 
   // For PHI nodes, the value available in OldPreHeader is just the
   // incoming value from OldPreHeader.
@@ -374,6 +374,9 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
       if (auto *II = dyn_cast<IntrinsicInst>(C))
         if (II->getIntrinsicID() == Intrinsic::assume)
           AC->registerAssumption(II);
+      // MemorySSA cares whether the cloned instruction was inserted or not, and
+      // not whether it can be remapped to a simplified value.
+      ValueMapMSSA[Inst] = C;
     }
   }
 
@@ -391,10 +394,11 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
   LoopEntryBranch->eraseFromParent();
 
   // Update MemorySSA before the rewrite call below changes the 1:1
-  // instruction:cloned_instruction_or_value mapping in ValueMap.
+  // instruction:cloned_instruction_or_value mapping.
   if (MSSAU) {
-    ValueMap[OrigHeader] = OrigPreheader;
-    MSSAU->updateForClonedBlockIntoPred(OrigHeader, OrigPreheader, ValueMap);
+    ValueMapMSSA[OrigHeader] = OrigPreheader;
+    MSSAU->updateForClonedBlockIntoPred(OrigHeader, OrigPreheader,
+                                        ValueMapMSSA);
   }
 
   SmallVector<PHINode*, 2> InsertedPHIs;
@@ -462,9 +466,8 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
     for (BasicBlock *ExitPred : ExitPreds) {
       // We only need to split loop exit edges.
       Loop *PredLoop = LI->getLoopFor(ExitPred);
-      if (!PredLoop || PredLoop->contains(Exit))
-        continue;
-      if (isa<IndirectBrInst>(ExitPred->getTerminator()))
+      if (!PredLoop || PredLoop->contains(Exit) ||
+          ExitPred->getTerminator()->isIndirectTerminator())
         continue;
       SplitLatchEdge |= L->getLoopLatch() == ExitPred;
       BasicBlock *ExitSplit = SplitCriticalEdge(
@@ -612,30 +615,9 @@ bool LoopRotate::simplifyLoopLatch(Loop *L) {
   LLVM_DEBUG(dbgs() << "Folding loop latch " << Latch->getName() << " into "
                     << LastExit->getName() << "\n");
 
-  // Hoist the instructions from Latch into LastExit.
-  Instruction *FirstLatchInst = &*(Latch->begin());
-  LastExit->getInstList().splice(BI->getIterator(), Latch->getInstList(),
-                                 Latch->begin(), Jmp->getIterator());
-
-  // Update MemorySSA
-  if (MSSAU)
-    MSSAU->moveAllAfterMergeBlocks(Latch, LastExit, FirstLatchInst);
-
-  unsigned FallThruPath = BI->getSuccessor(0) == Latch ? 0 : 1;
-  BasicBlock *Header = Jmp->getSuccessor(0);
-  assert(Header == L->getHeader() && "expected a backward branch");
-
-  // Remove Latch from the CFG so that LastExit becomes the new Latch.
-  BI->setSuccessor(FallThruPath, Header);
-  Latch->replaceSuccessorsPhiUsesWith(LastExit);
-  Jmp->eraseFromParent();
-
-  // Nuke the Latch block.
-  assert(Latch->empty() && "unable to evacuate Latch");
-  LI->removeBlock(Latch);
-  if (DT)
-    DT->eraseNode(Latch);
-  Latch->eraseFromParent();
+  DomTreeUpdater DTU(DT, DomTreeUpdater::UpdateStrategy::Eager);
+  MergeBlockIntoPredecessor(Latch, &DTU, LI, MSSAU, nullptr,
+                            /*PredecessorWithTwoSuccessors=*/true);
 
   if (MSSAU && VerifyMemorySSA)
     MSSAU->getMemorySSA()->verifyMemorySSA();

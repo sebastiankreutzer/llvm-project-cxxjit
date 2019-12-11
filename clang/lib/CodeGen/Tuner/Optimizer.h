@@ -12,6 +12,8 @@
 #include "CodeGenKnobs.h"
 #include "Tuners.h"
 
+#define POLLY_TUNER
+
 namespace llvm {
 namespace legacy {
 class PassManager;

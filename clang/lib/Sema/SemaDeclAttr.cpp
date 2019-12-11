@@ -4212,18 +4212,16 @@ OptimizeNoneAttr *Sema::mergeOptimizeNoneAttr(Decl *D,
   return ::new (Context) OptimizeNoneAttr(Context, CI);
 }
 
-JITFuncAttr *Sema::mergeJITFuncAttr(Decl *D, SourceRange Range,
-                                    unsigned AttrSpellingListIndex) {
+JITFuncAttr *Sema::mergeJITFuncAttr(Decl *D, const AttributeCommonInfo &CI) {
   if (D->hasAttr<JITFuncAttr>())
     return nullptr;
 
   if (!getLangOpts().isJITEnabled()) {
-    Diag(Range.getBegin(), diag::warn_jit_attribute_ignored);
+    Diag(CI.getRange().getBegin(), diag::warn_jit_attribute_ignored);
     return nullptr;
   }
 
-  return ::new (Context) JITFuncAttr(Range, Context,
-                                     AttrSpellingListIndex);
+  return ::new (Context) JITFuncAttr(Context, CI);
 }
 
 SpeculativeLoadHardeningAttr *Sema::mergeSpeculativeLoadHardeningAttr(
@@ -4255,7 +4253,7 @@ static void handleOptimizeNoneAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
 
 static void handleJITFuncAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (JITFuncAttr *JF = S.mergeJITFuncAttr(
-          D, AL.getRange(), AL.getAttributeSpellingListIndex()))
+          D, AL))
     D->addAttr(JF);
 }
 

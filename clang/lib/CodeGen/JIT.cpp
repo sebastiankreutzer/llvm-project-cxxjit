@@ -24,7 +24,6 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/LLVM.h"
-#include "clang/Basic/MemoryBufferCache.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
@@ -53,6 +52,7 @@
 #include "clang/Sema/Template.h"
 #include "clang/Sema/TemplateDeduction.h"
 #include "clang/Serialization/ASTReader.h"
+#include "clang/Serialization/InMemoryModuleCache.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/SmallString.h"
@@ -94,7 +94,6 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Mutex.h"
-#include "llvm/Support/MutexGuard.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -119,6 +118,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <mutex>
 
 using namespace llvm;
 using namespace clang;
@@ -394,9 +394,9 @@ CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
     CC1Args.push_back(ArgStr.begin());
 
   unsigned MissingArgIndex, MissingArgCount;
-  Opts = driver::createDriverOptTable();
+
   llvm::opt::InputArgList ParsedArgs =
-      Opts->ParseArgs(CC1Args, MissingArgIndex, MissingArgCount);
+                              driver::getDriverOptTable().ParseArgs(CC1Args, MissingArgIndex, MissingArgCount);
 
   DiagOpts = new DiagnosticOptions();
   ParseDiagnosticArgs(*DiagOpts, ParsedArgs);
@@ -410,8 +410,7 @@ CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
 
   Invocation.reset(new CompilerInvocation);
   CompilerInvocation::CreateFromArgs(
-      *Invocation, const_cast<const char **>(CC1Args.data()),
-      const_cast<const char **>(CC1Args.data()) + CC1Args.size(), *Diagnostics);
+      *Invocation, CC1Args, *Diagnostics);
   Invocation->getFrontendOpts().DisableFree = false;
   Invocation->getCodeGenOpts().DisableFree = false;
 
@@ -426,21 +425,23 @@ CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
   PCHContainerRdr.reset(new RawPCHContainerReader);
   SourceMgr = new SourceManager(*Diagnostics, *FileMgr,
                                 /*UserFilesAreVolatile*/ false);
-  PCMCache = new MemoryBufferCache;
+  ModuleCache = new InMemoryModuleCache;
   HSOpts = std::make_shared<HeaderSearchOptions>();
   HSOpts->ModuleFormat = PCHContainerRdr->getFormat();
-  HeaderInfo.reset(new HeaderSearch(HSOpts, *SourceMgr, *Diagnostics,
+  HeaderInfo.reset(new HeaderSearch(HSOpts,
+                                    *SourceMgr,
+                                    *Diagnostics,
                                     *Invocation->getLangOpts(),
-                                    /*Target=*/nullptr));
+      /*Target=*/nullptr));
   PPOpts = std::make_shared<PreprocessorOptions>();
 
   unsigned Counter;
 
-  PP = std::make_shared<Preprocessor>(PPOpts, *Diagnostics,
-                                      *Invocation->getLangOpts(), *SourceMgr,
-                                      *PCMCache, *HeaderInfo, ModuleLoader,
-                                      /*IILookup=*/nullptr,
-                                      /*OwnsHeaderSearch=*/false);
+  PP = std::make_shared<Preprocessor>(
+      PPOpts, *Diagnostics, *Invocation->getLangOpts(),
+      *SourceMgr, *HeaderInfo, ModuleLoader,
+      /*IILookup=*/nullptr,
+      /*OwnsHeaderSearch=*/false);
 
   // For parsing type names in strings later, we'll need to have Preprocessor
   // keep the Lexer around even after it hits the end of the each file (used
@@ -451,10 +452,10 @@ CompilerData::CompilerData(const void *CmdArgs, unsigned CmdArgsLen,
                        PP->getIdentifierTable(), PP->getSelectorTable(),
                        PP->getBuiltinInfo());
 
-  Reader = new ASTReader(*PP, Ctx.get(), *PCHContainerRdr, {},
-                         /*isysroot=*/"",
-                         /*DisableValidation=*/false,
-                         /*AllowPCHWithCompilerErrors*/ false);
+  Reader = new ASTReader(*PP, *ModuleCache, Ctx.get(), *PCHContainerRdr, {},
+      /*isysroot=*/"",
+      /*DisableValidation=*/ false,
+      /*AllowPCHWithCompilerErrors*/ false);
 
   Reader->setListener(std::make_unique<ASTInfoCollector>(
       *PP, Ctx.get(), *HSOpts, *PPOpts, *Invocation->getLangOpts(), TargetOpts,
@@ -1134,7 +1135,7 @@ extern "C"
   bool AssumeInitialized = false;
 
   {
-    llvm::MutexGuard Guard(IMutex);
+    llvm::sys::ScopedLock Guard(IMutex);
     auto II = Instantiations.find_as(ThisInstInfo(
         InstKey, NTTPValues, NTTPValuesSize, TypeStrings, TypeStringsCnt));
     if (II != Instantiations.end()) {
@@ -1147,7 +1148,7 @@ extern "C"
   Driver *CDriver;
   // CompilerData *CD;
   if (!AssumeInitialized) {
-    llvm::MutexGuard Guard(Mutex);
+    llvm::sys::ScopedLock Guard(Mutex);
 
     if (!InitializedTarget) {
       llvm::InitializeNativeTarget();
@@ -1191,7 +1192,7 @@ extern "C"
                        Idx);
 
   {
-    llvm::MutexGuard Guard(IMutex);
+    llvm::sys::ScopedLock Guard(IMutex);
     Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings,
                             TypeStringsCnt)] = InstData;
   }

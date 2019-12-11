@@ -549,7 +549,7 @@ public:
             InMemoryModuleCache &ModuleCache,
             ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
             bool IncludeTimestamps = true,
-            bool TreatAllFilesAsTransient = false);
+             bool TreatAllFilesAsTransient = false);
   ~ASTWriter() override;
 
   const LangOptions &getLangOpts() const;

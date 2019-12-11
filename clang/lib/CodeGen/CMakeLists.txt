@@ -18,6 +18,7 @@ set(LLVM_LINK_COMPONENTS
   Object
   Option
   OrcJIT
+  OrcError
   Passes
   ProfileData
   RuntimeDyld

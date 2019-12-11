@@ -1182,7 +1182,7 @@ namespace serialization {
       TYPE_DEPENDENT_SIZED_VECTOR = 48,
 
       /// A type defined in a macro.
-      TYPE_MACRO_QUALIFIED = 49
+      TYPE_MACRO_QUALIFIED = 49,
 
       /// A JITFromString record.
       TYPE_JIT_FROM_STRING = 50

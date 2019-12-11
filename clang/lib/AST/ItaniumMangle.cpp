@@ -556,7 +556,6 @@ private:
   void mangleTemplateArgs(const TemplateArgument *TemplateArgs,
                           unsigned NumTemplateArgs);
   void mangleTemplateArgs(const TemplateArgumentList &AL);
-  void mangleTemplateArg(TemplateArgument A);
 
   void mangleTemplateParameter(unsigned Depth, unsigned Index);
 

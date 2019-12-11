@@ -116,9 +116,24 @@ void Optimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
   PM.add(new TargetLibraryInfoWrapperPass(*TLII));
   FPM.add(new TargetLibraryInfoWrapperPass(*TLII));
 
+#ifdef POLLY_TUNER
+  // Run polly before other optimizations
+  // TOOD: Investigate best time to apply polly transformations. For example, the inliner may need to run before polly to allow vectorization.
+  PMB.addExtension(llvm::PassManagerBuilder::EP_ModuleOptimizerEarly,
+                     [=] (auto const& Builder, auto &PM) {
+                       // PM.add(llvm::createPrintModulePass(llvm::errs(), "\n;------------\n\n\n\n\n; Before Polly\n"));
+
+//                       polly::registerCanonicalicationPasses(PM);
+//                       polly::registerPollyPasses(PM);
+
+                       // PM.add(llvm::createPrintModulePass(llvm::errs(), "\n\n\n\n\n; After Polly\n"));
+                     });
+#endif
   PMB.populateModulePassManager(PM);
   PMB.populateFunctionPassManager(FPM);
+
 }
+
 
 void Optimizer::init(Module *M) {
   this->ModToOptimize = M;

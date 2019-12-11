@@ -340,7 +340,7 @@ void TemplateInstantiationHelper::processTemplateArgs(const void *NTTPValues, co
                                   ElemTy->isFloatingType())) {
                     QualType ArrTy =
                         Ctx->getConstantArrayType(ElemTy,
-                                                  Sz, clang::ArrayType::Normal, 0);
+                                                  Sz, nullptr, clang::ArrayType::Normal, 0);
 
                     SmallVector<Expr *, 16> Vals;
                     unsigned ElemSize = Ctx->getTypeSizeInChars(ElemTy).getQuantity();

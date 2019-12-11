@@ -1806,12 +1806,12 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
 #define NON_CANONICAL_TYPE(Class, Base)
 #define DEPENDENT_TYPE(Class, Base) case Type::Class:
 #define NON_CANONICAL_UNLESS_DEPENDENT_TYPE(Class, Base)                       \
-  case Type::Class:                                                            \
+case Type::Class:                                                            \
   assert(!T->isDependentType() && "should not see dependent types here");      \
   return getTypeInfo(cast<Class##Type>(T)->desugar().getTypePtr());
-#include "clang/AST/TypeNodes.def"
-  case Type::JITFromString:
-    llvm_unreachable("Should not see dependent types");
+#include "clang/AST/TypeNodes.inc"
+    case Type::JITFromString:
+      llvm_unreachable("Should not see dependent types");
 
   case Type::FunctionNoProto:
   case Type::FunctionProto:
@@ -7157,7 +7157,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string &S,
   case Type::KIND:
 #define NON_CANONICAL_UNLESS_DEPENDENT_TYPE(KIND, BASE) \
   case Type::KIND:
-#include "clang/AST/TypeNodes.def"
+#include "clang/AST/TypeNodes.inc"
   case Type::JITFromString:
     llvm_unreachable("@encode for dependent type!");
   }

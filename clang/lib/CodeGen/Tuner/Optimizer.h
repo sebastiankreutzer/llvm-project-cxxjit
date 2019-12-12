@@ -12,8 +12,6 @@
 #include "CodeGenKnobs.h"
 #include "Tuners.h"
 
-#define POLLY_TUNER
-
 namespace llvm {
 namespace legacy {
 class PassManager;
@@ -24,6 +22,8 @@ class FunctionPassManager;
 namespace tuner {
 
 class Optimizer {
+
+  static std::once_flag IsPollyInitialized;
 
   clang::DiagnosticsEngine &Diags;
   const clang::HeaderSearchOptions &HSOpts;

@@ -132,3 +132,19 @@ add_clang_library(clangCodeGen
   clangSema
   clangSerialization
   )
+
+if ("polly" IN_LIST LLVM_ENABLE_PROJECTS)
+  option(CLANG_JIT_POLLY "Enable polly for JIT tuning." OFF)
+  if (CLANG_JIT_POLLY)
+
+    set(Polly_DIR "${LLVM_BINARY_DIR}/lib/cmake/polly")
+    message(STATUS "Using PollyConfig.cmake in ${Polly_DIR}")
+    find_package(Polly REQUIRED CONFIG)
+
+    include_directories(${Polly_INCLUDE_DIRS})
+    add_definitions(${Polly_DEFINITIONS})
+    add_definitions("-DPOLLY_TUNER")
+
+    target_link_libraries(clangCodeGen PUBLIC Polly)
+  endif()
+endif()

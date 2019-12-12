@@ -4,23 +4,33 @@
 
 #include "Optimizer.h"
 
+#include "Passes.h"
 #include "Debug.h"
+
+#ifdef POLLY_TUNER
+#include "polly/RegisterPasses.h"
+#include "polly/Canonicalization.h"
+#include "polly/ScopDetection.h"
+#endif
+
 #include "clang/Basic/CodeGenOptions.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
 #include "llvm/Transforms/Utils/Cloning.h"
 
-#include "Passes.h"
 
 using namespace clang;
 using namespace llvm;
 
 namespace tuner {
+
+std::once_flag Optimizer::IsPollyInitialized;
 
 //
 // Copied from BackendUtil.cpp
@@ -116,17 +126,28 @@ void Optimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
   PM.add(new TargetLibraryInfoWrapperPass(*TLII));
   FPM.add(new TargetLibraryInfoWrapperPass(*TLII));
 
+
 #ifdef POLLY_TUNER
+  JIT_DEBUG(dbgs() << "Initializing polly passes...\n");
+
+  std::call_once(IsPollyInitialized, [] {
+    polly::PollyProcessUnprofitable = true;
+    // polly::PollyInvariantLoadHoisting = true; // TODO: should this be on?
+
+    llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
+    polly::initializePollyPasses(Registry);
+  });
+
   // Run polly before other optimizations
   // TOOD: Investigate best time to apply polly transformations. For example, the inliner may need to run before polly to allow vectorization.
   PMB.addExtension(llvm::PassManagerBuilder::EP_ModuleOptimizerEarly,
-                     [=] (auto const& Builder, auto &PM) {
-                       // PM.add(llvm::createPrintModulePass(llvm::errs(), "\n;------------\n\n\n\n\n; Before Polly\n"));
+                     [=] (PassManagerBuilder const& Builder, PassManagerBase &PM) {
+                        JIT_DEBUG(PM.add(llvm::createPrintModulePass(llvm::dbgs(), "\n;------------\n\n\n\n\n; Before Polly\n")));
 
-//                       polly::registerCanonicalicationPasses(PM);
-//                       polly::registerPollyPasses(PM);
+                       polly::registerCanonicalicationPasses(PM);
+                       polly::registerPollyPasses(PM);
 
-                       // PM.add(llvm::createPrintModulePass(llvm::errs(), "\n\n\n\n\n; After Polly\n"));
+                       JIT_DEBUG(PM.add(llvm::createPrintModulePass(llvm::dbgs(), "\n\n\n\n\n; After Polly\n")));
                      });
 #endif
   PMB.populateModulePassManager(PM);

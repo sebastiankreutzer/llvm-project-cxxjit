@@ -8,7 +8,8 @@
 #include "ConfigMath.h"
 #include "Tuner.h"
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 struct GenInitialVerticesFn : public KnobSetFn {
 
@@ -38,7 +39,7 @@ struct GenInitialVerticesFn : public KnobSetFn {
 
   void operator()(LoopKnob &K) override {
 
-    outs() << "Generating vertices for knob: " <<  K.getName() << ":\n";
+    outs() << "Generating vertices for knob: " << K.getName() << ":\n";
     for (unsigned i = 0; i < LoopTransformConfig::NUM_PARAMS; i++) {
       auto Param = (LoopTransformConfig::Parameter) i;
       if (!K.isTunable(Param))
@@ -51,7 +52,7 @@ struct GenInitialVerticesFn : public KnobSetFn {
       auto Max = K.getMax(Param);
       auto Val = perturbInt(LoopCfg.Vals[i], Min, Max);
       outs() << "Attribute " << Param << " is tunable: min=" << Min << ", max=" << Max << ", val=" << Val << "\n";
-      LoopCfg.Vals[i] = (unsigned)Val;
+      LoopCfg.Vals[i] = (unsigned) Val;
       K.setVal(X, LoopCfg);
       Vertices.push_back(X);
     }
@@ -113,7 +114,9 @@ public:
     float Sigma{0.5f};
   };
 
-  enum State { REFLECT, EVAL_REFLECTED, EVAL_EXPANDED, EVAL_CONTRACTED };
+  enum State {
+    REFLECT, EVAL_REFLECTED, EVAL_EXPANDED, EVAL_CONTRACTED
+  };
 
   explicit SimplexTuner(KnobSet Knobs)
       : Knobs(std::move(Knobs)), Mapping(&this->Knobs) {
@@ -147,6 +150,7 @@ private:
   unsigned IterCount;
 };
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_SIMPLEXTUNER_H

@@ -12,10 +12,10 @@
 namespace clang {
 namespace jit {
 
-class TemplateArgKnob : public tuner::IntKnob {
+class TemplateArgKnob : public IntKnob {
 public:
   TemplateArgKnob(unsigned Index, int Min, int Max, int Dflt)
-      : tuner::IntKnob(Min, Max, Dflt, "Tunable Arg"), Index(Index){};
+      : IntKnob(Min, Max, Dflt, "Tunable Arg"), Index(Index){};
 
   unsigned getArgIndex() const { return Index; }
 
@@ -28,9 +28,9 @@ using VersionID = unsigned;
 struct StatsTracker {
   bool HasBest{false};
   VersionID BestVersion;
-  tuner::TimingStats BestStats;
+  TimingStats BestStats;
 
-  void update(unsigned ID, tuner::TimingStats Stats) {
+  void update(unsigned ID, TimingStats Stats) {
     if (!HasBest || Stats.betterThan(BestStats)) {
       BestVersion = ID;
       BestStats = Stats;
@@ -64,7 +64,7 @@ struct JITContext {
   // recompilations depend on.
   VersionID PrimaryVersion{0};
   // Optimizer instance for this module
-  std::unique_ptr<tuner::Optimizer> Opt{nullptr};
+  std::unique_ptr<StaticOptimizer> Opt{nullptr};
 };
 
 struct TunedCodeVersion {
@@ -72,19 +72,19 @@ struct TunedCodeVersion {
   TunedCodeVersion() = default;
 
   TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr,
-                   tuner::TimingGlobals Globals,
-                   tuner::ConfigEvalRequest Request)
+                   TimingGlobals Globals,
+                   ConfigEvalRequest Request)
       : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals),
         Request(std::move(Request)) {}
 
-  tuner::TimingStats updateStats() {
+  TimingStats updateStats() {
     if (!Globals.Valid()) {
       return {};
     }
     auto CallCount = *Globals.CallCount;
     auto Mean = *Globals.MeanCycles;
     auto Var = *Globals.VarN / CallCount;
-    auto NewStats = tuner::TimingStats(CallCount, Mean, Var);
+    auto NewStats = TimingStats(CallCount, Mean, Var);
     *Request.Stats = NewStats;
     return NewStats;
   }
@@ -92,8 +92,8 @@ struct TunedCodeVersion {
   VersionID ID{0};
   orc::VModuleKey ModKey{0};
   void *FPtr{nullptr};
-  tuner::TimingGlobals Globals;
-  tuner::ConfigEvalRequest Request;
+  TimingGlobals Globals;
+  ConfigEvalRequest Request;
   // TimingStats Stats;
   // TODO: Place info about instantiation specific optimization here
 };
@@ -158,7 +158,7 @@ struct JITTemplateInstantiation {
   // Holds information that is needed for recompilation/reoptimization
   JITContext Context;
 
-  tuner::ConfigEvalRequest Request;
+  ConfigEvalRequest Request;
 
   // Holds a list of instantiations
   llvm::DenseMap<VersionID, TunedCodeVersion> Instantiations;
@@ -189,12 +189,12 @@ public:
     TAKnobSet.add(Knobs[Idx].get());
   }
 
-  tuner::KnobSet getKnobSet() { return TAKnobSet; }
+  KnobSet getKnobSet() { return TAKnobSet; }
 
   bool isTunable() { return TAKnobSet.count() > 0; }
 
   llvm::SmallVector<TemplateArgument, 8>
-  getArgsForConfig(ASTContext &Ctx, const tuner::KnobConfig &Cfg) {
+  getArgsForConfig(ASTContext &Ctx, const KnobConfig &Cfg) {
     llvm::SmallVector<TemplateArgument, 8> Args(BaseArgs);
     for (auto &It : Knobs) {
       unsigned Idx = It.first;
@@ -210,7 +210,7 @@ public:
 private:
   llvm::SmallVector<TemplateArgument, 8> BaseArgs;
   llvm::DenseMap<unsigned, std::unique_ptr<TemplateArgKnob>> Knobs;
-  tuner::KnobSet TAKnobSet;
+  KnobSet TAKnobSet;
 };
 
 class BilevelTuningPolicy {
@@ -221,19 +221,19 @@ public:
 };
 
 struct ConfigMapInfo {
-  static inline tuner::KnobConfig getEmptyKey() {
-    auto Cfg = tuner::KnobConfig();
-    Cfg.IntCfg[tuner::InvalidKnobID] = DenseMapInfo<int>::getEmptyKey();
+  static inline KnobConfig getEmptyKey() {
+    auto Cfg = KnobConfig();
+    Cfg.IntCfg[InvalidKnobID] = DenseMapInfo<int>::getEmptyKey();
     return Cfg;
   }
 
-  static inline tuner::KnobConfig getTombstoneKey() {
-    auto Cfg = tuner::KnobConfig();
-    Cfg.IntCfg[tuner::InvalidKnobID] = DenseMapInfo<int>::getTombstoneKey();
+  static inline KnobConfig getTombstoneKey() {
+    auto Cfg = KnobConfig();
+    Cfg.IntCfg[InvalidKnobID] = DenseMapInfo<int>::getTombstoneKey();
     return Cfg;
   }
 
-  static unsigned getHashValue(const tuner::KnobConfig &Cfg) {
+  static unsigned getHashValue(const KnobConfig &Cfg) {
     using llvm::hash_code;
     using llvm::hash_combine;
     using llvm::hash_combine_range;
@@ -252,8 +252,8 @@ struct ConfigMapInfo {
     return (unsigned)h;
   }
 
-  static bool isEqual(const tuner::KnobConfig &LHS,
-                      const tuner::KnobConfig &RHS) {
+  static bool isEqual(const KnobConfig &LHS,
+                      const KnobConfig &RHS) {
     if (LHS.getNumDimensions() != RHS.getNumDimensions())
       return false;
     for (auto It : LHS.IntCfg) {
@@ -274,20 +274,20 @@ struct TemplateTuningData {
   unsigned Idx;
 
   // Template argument tuner.
-  std::unique_ptr<tuner::Tuner> TATuner;
+  std::unique_ptr<Tuner> TATuner;
   TunableArgList TunableArgs;
 
   BilevelTuningPolicy Policy;
 
   // TODO: Change to another key type?
-  llvm::DenseMap<tuner::KnobConfig, JITTemplateInstantiation, ConfigMapInfo>
+  llvm::DenseMap<KnobConfig, JITTemplateInstantiation, ConfigMapInfo>
       Specializations;
 
-  tuner::KnobConfig ActiveConfig;
+  KnobConfig ActiveConfig;
   bool Initialized;
 
   TemplateTuningData(CompilerData &CD, unsigned Idx,
-                     std::unique_ptr<tuner::Tuner> TATuner,
+                     std::unique_ptr<Tuner> TATuner,
                      TunableArgList TunableArgs)
       : CD(CD), Idx(Idx), TATuner(std::move(TATuner)),
         TunableArgs(std::move(TunableArgs)) {
@@ -308,7 +308,7 @@ struct TemplateTuningData {
 
       auto Set = TunableArgs.getKnobSet();
       JIT_DEBUG(dbgs() << "Selected specialization:\n");
-      JIT_DEBUG(tuner::KnobState(Set, ActiveConfig).dump());
+      JIT_DEBUG(KnobState(Set, ActiveConfig).dump());
 
       if (Specializations.find(ActiveConfig) == Specializations.end()) {
         auto TAs = TunableArgs.getArgsForConfig(*CD.Ctx, ActiveConfig);
@@ -326,8 +326,8 @@ struct TemplateTuningData {
     return nullptr;
   }
 
-  llvm::Optional<std::pair<tuner::KnobConfig, JITTemplateInstantiation*>> computeOverallBest() {
-    std::pair<tuner::KnobConfig, JITTemplateInstantiation*> CurrentBest;
+  llvm::Optional<std::pair<KnobConfig, JITTemplateInstantiation*>> computeOverallBest() {
+    std::pair<KnobConfig, JITTemplateInstantiation*> CurrentBest;
     TimingStats BestStats;
     for (auto& It : Specializations) {
       auto& Inst = It.second;
@@ -346,7 +346,7 @@ struct TemplateTuningData {
 
 private:
   JITTemplateInstantiation instantiate(TAList TAs,
-                                       tuner::ConfigEvalRequest Request) {
+                                       ConfigEvalRequest Request) {
     //    for (auto& TA: TAs) {
     //      TA.dump();
     //      errs() << ", ";
@@ -366,7 +366,7 @@ private:
 
     JIT_DEBUG(dumpModule(*Mod, "Module after linking"));
 
-    auto Opt = std::make_unique<tuner::Optimizer>(
+    auto Opt = std::make_unique<StaticOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
         *CD.TargetOpts, *CD.Invocation->getLangOpts(),
         CD.CJ->getTargetMachine());

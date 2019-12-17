@@ -12,7 +12,8 @@
 #include "SimpleKnobs.h"
 #include "Util.h"
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 using TunerRNE = std::mt19937_64;
 
@@ -56,6 +57,7 @@ using SharedEvalStats = std::shared_ptr<TimingStats>;
 class ConfigEvalRequest {
 public:
   ConfigEvalRequest() = default;
+
   explicit ConfigEvalRequest(KnobConfig Cfg)
       : Cfg(std::move(Cfg)), Stats(std::make_shared<TimingStats>()) {}
 
@@ -75,7 +77,7 @@ struct CompareConfigEval {
 
 class Tuner {
 public:
-  virtual ~Tuner(){};
+  virtual ~Tuner() {};
 
   virtual void reset(KnobSet Knobs) = 0;
 
@@ -91,9 +93,10 @@ struct GenDefaultConfigFn : public KnobSetFn {
   KnobConfig Cfg;
 };
 
-template <typename RNETy> struct GenRandomConfigFn : public KnobSetFn {
+template<typename RNETy>
+struct GenRandomConfigFn : public KnobSetFn {
 
-  explicit GenRandomConfigFn(RNETy &RNE) : RNE(RNE){};
+  explicit GenRandomConfigFn(RNETy &RNE) : RNE(RNE) {};
 
   void operator()(IntKnob &K) override {
     std::uniform_int_distribution<int> dist(K.min(), K.max());
@@ -116,7 +119,7 @@ inline void setEnableLoopTransform(KnobConfig &Cfg, bool Enable) {
   }
 }
 
-template <typename RNETy>
+template<typename RNETy>
 KnobConfig createRandomConfig(RNETy &RNE, KnobSet &Set) {
   GenRandomConfigFn<RNETy> Fn(RNE);
   apply(Fn, Set);
@@ -158,7 +161,7 @@ public:
 
 class BilevelTuner {
 public:
-  explicit BilevelTuner(Tuner &L1Tuner) : L1Tuner(L1Tuner){};
+  explicit BilevelTuner(Tuner &L1Tuner) : L1Tuner(L1Tuner) {};
 
   virtual bool updatePartialConfig() = 0;
 
@@ -186,7 +189,7 @@ protected:
 
 class SimpleBilevelTuner : public BilevelTuner {
 public:
-  explicit SimpleBilevelTuner(Tuner &L1Tuner) : BilevelTuner(L1Tuner){};
+  explicit SimpleBilevelTuner(Tuner &L1Tuner) : BilevelTuner(L1Tuner) {};
 
   bool updatePartialConfig() override {
     if (CurrentL2Configs.size() >= 8) {
@@ -201,6 +204,7 @@ public:
 //  virtual llvm::Optional<double> eval(unsigned ID) = 0;
 //};
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_TUNER_H

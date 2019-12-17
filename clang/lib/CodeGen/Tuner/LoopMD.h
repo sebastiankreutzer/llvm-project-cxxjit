@@ -9,7 +9,8 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Metadata.h"
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 static const char *NameTag = "loop.name";
 
@@ -56,20 +57,24 @@ inline MDNode *addTaggedInt32(MDNode *LoopMD, StringRef Tag, int Val) {
   return addTaggedConstantMD(LoopMD, Tag, C);
 }
 
-inline MDNode *assignLoopName(Loop *Loop, unsigned Name) {
+inline MDNode *assignLoopName(Loop* Loop, StringRef Name) {
   LLVMContext &Ctx = Loop->getHeader()->getContext();
   auto TagMD = MDString::get(Ctx, NameTag);
-  auto NameStr = MDString::get(Ctx, std::to_string(Name));
+  auto NameStr = MDString::get(Ctx, Name);
   auto NameMD = MDNode::get(Ctx, {TagMD, NameStr});
   auto LoopID = addToLoopMD(getOrCreateLoopID(Loop), NameMD);
   Loop->setLoopID(LoopID);
   return NameMD;
 }
 
-inline unsigned getLoopName(Loop *Loop) {
+inline MDNode *assignLoopName(Loop *Loop, unsigned Name) {
+  return assignLoopName(Loop, std::to_string(Name));
+}
+
+inline StringRef getLoopName(Loop* Loop) {
   auto LoopID = Loop->getLoopID();
   if (!LoopID || LoopID->getNumOperands() < 2) {
-    return InvalidKnobID;
+    return "";
   }
   for (auto &Op : LoopID->operands()) {
     auto MD = dyn_cast<MDNode>(Op);
@@ -83,16 +88,25 @@ inline unsigned getLoopName(Loop *Loop) {
       errs() << "Malformed loop name metadata\n";
       break;
     }
-    unsigned Name = InvalidKnobID;
-    if (NameMD->getString().getAsInteger(10, Name)) {
-      errs() << "Loop name must be an integer\n";
-      break;
-    }
-    return Name;
+    return NameMD->getString();
   }
-  return InvalidKnobID;
+  return "";
 }
 
-} // namespace tuner
+inline unsigned getLoopNameAsInt(Loop *Loop) {
+
+  StringRef Name = getLoopName(Loop);
+
+  unsigned NameAsInt = InvalidKnobID;
+  if (Name.empty() || Name.getAsInteger(10, NameAsInt)) {
+    errs() << "Loop name must be an integer\n";
+    return InvalidKnobID;
+  }
+  return NameAsInt;
+}
+
+
+}
+}
 
 #endif // CLANG_LOOPMD_H

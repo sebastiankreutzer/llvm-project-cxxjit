@@ -107,7 +107,7 @@ add_clang_library(clangCodeGen
   VarBypassDetector.cpp
   JIT.cpp
 
-  Tuner/Optimizer.cpp
+  Tuner/StaticOptimizer.cpp
   Tuner/Tuner.cpp
   Tuner/LoopKnobCreator.cpp
   Tuner/KnobSet.cpp
@@ -115,6 +115,9 @@ add_clang_library(clangCodeGen
   Tuner/TimingHelper.cpp
   Tuner/SimplexTuner.cpp
   Tuner/TunerDriver.cpp
+        Tuner/LoopTransformTreeCreator.cpp
+  Tuner/LoopTransformTree.cpp
+  Tuner/TransformTreeOptimizer.cpp
   Driver.cpp
 
   DEPENDS

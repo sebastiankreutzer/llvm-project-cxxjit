@@ -10,11 +10,14 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Twine.h"
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
-template <typename T> class ScalarKnob : public Knob<T> {
+template<typename T>
+class ScalarKnob : public Knob<T> {
 public:
   virtual T min() const = 0;
+
   virtual T max() const = 0;
 };
 
@@ -48,11 +51,14 @@ private:
 };
 
 namespace traits {
-template <class T> struct is_int_knob : public std::is_base_of<T, IntKnob> {};
+template<class T>
+struct is_int_knob : public std::is_base_of<T, IntKnob> {
+};
 
-template <class T> using is_int_knob_t = typename is_int_knob<T>::value_type;
+template<class T> using is_int_knob_t = typename is_int_knob<T>::value_type;
 } // namespace traits
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_KNOBS_H

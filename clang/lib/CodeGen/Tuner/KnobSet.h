@@ -13,9 +13,11 @@
 
 using namespace llvm;
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 class IntKnob;
+
 class LoopKnob;
 
 // A KnobSet is a collection of tuning knobs.
@@ -67,6 +69,7 @@ public:
 
 struct KnobSetFn {
   virtual void operator()(IntKnob &) = 0;
+
   virtual void operator()(LoopKnob &) = 0;
 };
 
@@ -79,6 +82,7 @@ inline void apply(KnobSetFn &Fn, KnobSet &Set) {
   }
 }
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_KNOBSET_H

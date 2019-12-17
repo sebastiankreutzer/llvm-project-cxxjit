@@ -7,7 +7,8 @@
 
 #include <chrono>
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 namespace util {
 
@@ -18,6 +19,7 @@ inline unsigned genSeed() {
 
 } // namespace util
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_UTIL_H

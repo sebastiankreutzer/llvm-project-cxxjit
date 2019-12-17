@@ -15,7 +15,8 @@
 // class Value;
 //}
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 struct TimingGlobals {
   double *VarN{nullptr};
@@ -38,13 +39,14 @@ class TimingHelper {
   llvm::Value *insertRDTSCP(llvm::IRBuilder<> &IRB);
 
   llvm::Value *instrumentPreCall(llvm::IRBuilder<> &IRB);
+
   void instrumentPostCall(llvm::IRBuilder<> &IRB,
                           llvm::GlobalVariable *CallCount,
                           llvm::GlobalVariable *CycleCount,
                           llvm::GlobalVariable *MeanCycles,
                           llvm::GlobalVariable *VarN, llvm::Value *StartCycles);
 
-  template <typename T, typename F>
+  template<typename T, typename F>
   T *fetchGlobal(F &&SymLookupFn, llvm::StringRef Name) {
     auto Addr = SymLookupFn(Name);
     return reinterpret_cast<T *>(Addr);
@@ -54,7 +56,8 @@ public:
   explicit TimingHelper(llvm::Function *TimedFunction)
       : TimedFunction(TimedFunction) {}
 
-  template <typename F> TimingGlobals lookupGlobals(F &&SymLookupFn) {
+  template<typename F>
+  TimingGlobals lookupGlobals(F &&SymLookupFn) {
     TimingGlobals TG;
     TG.CallCount =
         fetchGlobal<int64_t>(std::forward<F>(SymLookupFn), CallCountGlobalName);
@@ -69,6 +72,7 @@ public:
   llvm::Function *createTimingWrapper();
 };
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_TIMINGHELPER_H

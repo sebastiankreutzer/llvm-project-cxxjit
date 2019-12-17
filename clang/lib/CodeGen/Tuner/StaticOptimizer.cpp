@@ -2,7 +2,7 @@
 // Created by sebastian on 20.09.19.
 //
 
-#include "Optimizer.h"
+#include "StaticOptimizer.h"
 
 #include "Passes.h"
 #include "Debug.h"
@@ -28,9 +28,11 @@
 using namespace clang;
 using namespace llvm;
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
-std::once_flag Optimizer::IsPollyInitialized;
+
+std::once_flag StaticOptimizer::IsPollyInitialized;
 
 //
 // Copied from BackendUtil.cpp
@@ -65,14 +67,14 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
   }
 
   switch (CodeGenOpts.getVecLib()) {
-  case CodeGenOptions::Accelerate:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate);
-    break;
-  case CodeGenOptions::SVML:
-    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML);
-    break;
-  default:
-    break;
+    case CodeGenOptions::Accelerate:
+      TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate);
+      break;
+    case CodeGenOptions::SVML:
+      TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML);
+      break;
+    default:
+      break;
   }
   return TLII;
 }
@@ -81,13 +83,13 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
 //
 //
 
-TargetIRAnalysis Optimizer::getTargetIRAnalysis() {
+TargetIRAnalysis StaticOptimizer::getTargetIRAnalysis() {
   return TM.getTargetIRAnalysis();
 }
 
-void Optimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
-                             legacy::FunctionPassManager &FPM,
-                             KnobConfig &Cfg) {
+void StaticOptimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
+                                   legacy::FunctionPassManager &FPM,
+                                   KnobConfig &Cfg) {
   auto OptLevel = 3;     // OptLvl.getVal(Cfg);
   auto OptSizeLevel = 1; // OptSizeLvl.getVal(Cfg); // FIXME TODO
 
@@ -141,14 +143,15 @@ void Optimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
   // Run polly before other optimizations
   // TOOD: Investigate best time to apply polly transformations. For example, the inliner may need to run before polly to allow vectorization.
   PMB.addExtension(llvm::PassManagerBuilder::EP_ModuleOptimizerEarly,
-                     [=] (PassManagerBuilder const& Builder, PassManagerBase &PM) {
-                        JIT_DEBUG(PM.add(llvm::createPrintModulePass(llvm::dbgs(), "\n;------------\n\n\n\n\n; Before Polly\n")));
+                   [=](PassManagerBuilder const &Builder, PassManagerBase &PM) {
+                     JIT_DEBUG(PM.add(
+                         llvm::createPrintModulePass(llvm::dbgs(), "\n;------------\n\n\n\n\n; Before Polly\n")));
 
-                       polly::registerCanonicalicationPasses(PM);
-                       polly::registerPollyPasses(PM);
+                     polly::registerCanonicalicationPasses(PM);
+                     polly::registerPollyPasses(PM);
 
-                       JIT_DEBUG(PM.add(llvm::createPrintModulePass(llvm::dbgs(), "\n\n\n\n\n; After Polly\n")));
-                     });
+                     JIT_DEBUG(PM.add(llvm::createPrintModulePass(llvm::dbgs(), "\n\n\n\n\n; After Polly\n")));
+                   });
 #endif
   PMB.populateModulePassManager(PM);
   PMB.populateFunctionPassManager(FPM);
@@ -156,7 +159,7 @@ void Optimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
 }
 
 
-void Optimizer::init(Module *M) {
+void StaticOptimizer::init(Module *M) {
   this->ModToOptimize = M;
 
   // Create loop knobs
@@ -170,7 +173,7 @@ void Optimizer::init(Module *M) {
 }
 
 //#define DUMP_MOD_WITH_ATTRIBUTES
-ConfigEvalRequest Optimizer::optimize(Module *M, bool UseDefault) {
+ConfigEvalRequest StaticOptimizer::optimize(Module *M, bool UseDefault) {
   assert(ModToOptimize && "Optimizer is not initialized!");
 
   setCommandLineOpts(CodeGenOpts);
@@ -247,4 +250,5 @@ ConfigEvalRequest Optimizer::optimize(Module *M, bool UseDefault) {
   return Request;
 }
 
-} // namespace tuner
+}
+}

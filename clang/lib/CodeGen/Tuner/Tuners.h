@@ -8,7 +8,6 @@
 #include "Tuner.h"
 #include "SimplexTuner.h"
 
-using namespace tuner;
 
 namespace clang {
 namespace jit {

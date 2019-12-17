@@ -6,11 +6,12 @@
 #include "LoopKnob.h"
 #include "SimpleKnobs.h"
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 unsigned KnobSet::countTunable() const {
   auto Count = IntKnobs.size();
-  for (auto& LK : LoopKnobs) {
+  for (auto &LK : LoopKnobs) {
     Count += LK.second->getTunableDimension();
   }
   return Count;
@@ -30,4 +31,5 @@ void KnobState::dump(raw_ostream &OS) {
   }
 }
 
-} // namespace tuner
+}
+}

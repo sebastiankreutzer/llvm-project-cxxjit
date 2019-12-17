@@ -9,7 +9,8 @@ namespace llvm {
 struct raw_ostream;
 }
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 class LoopKnob;
 
@@ -67,37 +68,38 @@ struct LoopTransformConfig {
   bool DisableNonForced{true};
 
   bool getVectorizePredicateEnabled() const {
-    return (bool)Vals[VECTORIZE_PREDICATE_ENABLE];
+    return (bool) Vals[VECTORIZE_PREDICATE_ENABLE];
   }
 
-  bool getDisableLICM() const { return (bool)Vals[DISABLE_LICM]; }
+  bool getDisableLICM() const { return (bool) Vals[DISABLE_LICM]; }
 
   bool getDisableLICMVersioning() const {
-    return (bool)Vals[DISABLE_LICM_VERSIONING];
+    return (bool) Vals[DISABLE_LICM_VERSIONING];
   }
 
-  bool getDistribute() const { return (bool)Vals[DISTRIBUTE]; }
+  bool getDistribute() const { return (bool) Vals[DISTRIBUTE]; }
 
-  bool getUnrollAndJam() const { return (bool)Vals[UNROLL_AND_JAM]; }
+  bool getUnrollAndJam() const { return (bool) Vals[UNROLL_AND_JAM]; }
 
   unsigned getInterleaveCount() const {
-    return (unsigned)1 << Vals[INTERLEAVE_COUNT];
+    return (unsigned) 1 << Vals[INTERLEAVE_COUNT];
   }
 
   unsigned getVectorizeWidth() const {
-    return (unsigned)1 << Vals[VECTORIZE_WIDTH];
+    return (unsigned) 1 << Vals[VECTORIZE_WIDTH];
   }
 
-  unsigned getUnrollCount() const { return (unsigned)1 << Vals[UNROLL_COUNT]; }
+  unsigned getUnrollCount() const { return (unsigned) 1 << Vals[UNROLL_COUNT]; }
 
   void dump(llvm::raw_ostream &OS, unsigned Indent = 0) const;
-  void dump(llvm::raw_ostream &OS, const LoopKnob& Knob, unsigned Indent = 0) const;
+
+  void dump(llvm::raw_ostream &OS, const LoopKnob &Knob, unsigned Indent = 0) const;
 
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
                               const LoopTransformConfig &);
 
-} // namespace tuner
-
+}
+}
 #endif // CLANG_KNOBDATATYPES_H

@@ -5,6 +5,9 @@
 #ifndef CLANG_JIT_H
 #define CLANG_JIT_H
 
+#include <tuple>
+#include <functional>
+
 namespace clang {
 namespace jit {
 

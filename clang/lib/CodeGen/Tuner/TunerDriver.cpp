@@ -11,7 +11,6 @@
 namespace clang {
 namespace jit {
 
-using namespace tuner;
 
 namespace {
 void printReport(JITTemplateInstantiation &TemplateInst) {
@@ -346,7 +345,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   // Instrument optimized function for tuning
   auto SMF = Mod->getFunction(FName);
 
-  tuner::TimingHelper TH(SMF);
+  TimingHelper TH(SMF);
   TH.createTimingWrapper();
 
   // Add to the JIT engine.

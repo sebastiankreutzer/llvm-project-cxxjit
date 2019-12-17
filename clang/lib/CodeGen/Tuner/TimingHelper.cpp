@@ -10,7 +10,8 @@
 
 using namespace llvm;
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 Function *TimingHelper::createTimingWrapper() {
   std::string FName = TimedFunction->getName().str();
@@ -153,4 +154,5 @@ void TimingHelper::instrumentPostCall(
   IRB.SetInsertPoint(RetBB);
 }
 
-} // namespace tuner
+}
+}

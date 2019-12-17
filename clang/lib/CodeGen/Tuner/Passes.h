@@ -5,15 +5,23 @@
 #ifndef CLANG_PASSES_H
 #define CLANG_PASSES_H
 
+#include "LoopTransformTree.h"
+
 namespace llvm {
 class Pass;
 }
 
-namespace tuner {
+namespace clang {
+namespace jit {
+
 
 Pass *createLoopKnobCreatorPass(KnobSet &KS);
+
+Pass *createLoopTransformTreeCreatorPass(SmallVectorImpl<LoopTransformTree> &LoopTrees);
+
 Pass *createApplyLoopKnobPass(KnobConfig &KnobCfg);
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_PASSES_H

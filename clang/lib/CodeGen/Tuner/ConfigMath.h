@@ -12,10 +12,12 @@
 #include <cassert>
 #include <vector>
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 // TODO: Inefficient vector implementation, but will do for now
-template <typename T> class Vector {
+template<typename T>
+class Vector {
   using VecT = Vector<T>;
 
 public:
@@ -25,7 +27,7 @@ public:
     }
   }
 
-  Vector() : Vector(1){};
+  Vector() : Vector(1) {};
 
   Vector(const Vector &Other) = default;
 
@@ -99,7 +101,7 @@ private:
   std::vector<T> Vals;
 };
 
-template <typename T, typename Iterator>
+template<typename T, typename Iterator>
 Vector<T> centroid(Iterator Begin, Iterator End) {
   Vector<T> C(*Begin);
   int Count = 1;
@@ -111,7 +113,8 @@ Vector<T> centroid(Iterator Begin, Iterator End) {
   return C;
 }
 
-template <typename T> struct VectorMapping {
+template<typename T>
+struct VectorMapping {
   explicit VectorMapping(KnobSet *Knobs) { remap(Knobs); }
 
   void remap(KnobSet *Knobs) {
@@ -156,7 +159,7 @@ template <typename T> struct VectorMapping {
     return Cfg;
   }
 
-  Vector<T>&  legalize(Vector<T>& Vec) {
+  Vector<T> &legalize(Vector<T> &Vec) {
 
     auto Restrict = [&Vec](unsigned Idx, unsigned Min, unsigned Max) {
       Vec[Idx] = std::min(Max, std::max(Min, Vec[Idx]));
@@ -179,6 +182,7 @@ private:
   KnobSet *Knobs;
 };
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_CONFIGMATH_H

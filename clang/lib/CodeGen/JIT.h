@@ -7,7 +7,7 @@
 
 #include "Tuner/Tuner.h"
 #include "Tuner/Debug.h"
-#include "Tuner/Optimizer.h"
+#include "Tuner/StaticOptimizer.h"
 #include "Tuner/TimingHelper.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "CodeGenModule.h"

@@ -10,7 +10,8 @@
 
 using namespace llvm;
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 class LoopKnobCreator : public llvm::LoopPass {
 
@@ -18,18 +19,19 @@ private:
   unsigned LoopIDs = 0;
   KnobSet *Knobs;
 
-  unsigned getMaxDepth(Loop* L) {
-    auto& SubLoops = L->getSubLoops();
+  unsigned getMaxDepth(Loop *L) {
+    auto &SubLoops = L->getSubLoops();
     unsigned Depth = 0;
-    for (auto* SL : SubLoops) {
+    for (auto *SL : SubLoops) {
       Depth = std::max(Depth, getMaxDepth(SL));
     }
     return Depth + 1;
   }
 
-  LoopKnob* createKnob(Loop* L) {
+  LoopKnob *createKnob(Loop *L) {
     // TODO: Can we somehow get the real variable name?
-    auto Name = L->getCanonicalInductionVariable() && L->getCanonicalInductionVariable()->hasName() ? L->getCanonicalInductionVariable()->getName() : "unknown";
+    auto Name = L->getCanonicalInductionVariable() && L->getCanonicalInductionVariable()->hasName()
+                ? L->getCanonicalInductionVariable()->getName() : "unknown";
     // TODO: Hello memory leak! Figure out who should own the knob.
     //       For now it's not a big deal since loop knobs should probably not be
     //       deleted before termination.
@@ -80,7 +82,7 @@ private:
     auto LMD = assignLoopName(L, LK->getID());
     JIT_INFO(dbgs() << "Loop knob created with ID=" << LK->getID() << "\n");
 
-    for (auto& SubLoop : L->getSubLoops()) {
+    for (auto &SubLoop : L->getSubLoops()) {
       LK->addSubLoopKnob(createKnob(SubLoop));
     }
     return LK;
@@ -89,7 +91,7 @@ private:
 public:
   static char ID;
 
-  LoopKnobCreator() : LoopPass(ID), Knobs(nullptr){};
+  LoopKnobCreator() : LoopPass(ID), Knobs(nullptr) {};
 
   void setKnobs(KnobSet *KS) { this->Knobs = KS; }
 
@@ -129,4 +131,5 @@ llvm::Pass *createLoopKnobCreatorPass(KnobSet &KS) {
   return LKC;
 }
 
-} // namespace tuner
+}
+}

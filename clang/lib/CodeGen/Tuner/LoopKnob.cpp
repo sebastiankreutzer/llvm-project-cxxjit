@@ -9,7 +9,8 @@
 #include "llvm/Support/FormatAdapters.h"
 #include <llvm/Support/FormatVariadic.h>
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 static const char *DISABLE_NON_FORCED_TAG = "llvm.loop.disable_nonforced";
 static const char *INTERLEAVE_COUNT_TAG = "llvm.loop.interleave.count";
@@ -39,7 +40,7 @@ private:
 public:
   static char ID;
 
-  ApplyLoopKnobs() : LoopPass(ID), KnobCfg(nullptr){};
+  ApplyLoopKnobs() : LoopPass(ID), KnobCfg(nullptr) {};
 
   void setKnobConfig(KnobConfig *Cfg) { this->KnobCfg = Cfg; }
 
@@ -182,7 +183,7 @@ void LoopTransformConfig::dump(llvm::raw_ostream &OS, unsigned Indent) const {
      << getVectorizePredicateEnabled() << "\n";
 }
 
-void LoopTransformConfig::dump(llvm::raw_ostream &OS, const LoopKnob& Knob, unsigned Indent) const {
+void LoopTransformConfig::dump(llvm::raw_ostream &OS, const LoopKnob &Knob, unsigned Indent) const {
   auto I = llvm::formatv("{0}", llvm::fmt_repeat(" ", Indent));
   if (DisableLoopTransform) {
     OS << I << "Explicit loop transform disabled"
@@ -224,4 +225,5 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
   return OS;
 }
 
-} // namespace tuner
+}
+}

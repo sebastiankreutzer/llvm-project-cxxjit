@@ -7,18 +7,20 @@
 #ifndef CLANG_CODEGENKNOBS_H
 #define CLANG_CODEGENKNOBS_H
 
-namespace tuner {
+namespace clang {
+namespace jit {
 
 class OptLvlKnob : public IntKnob {
 public:
-  OptLvlKnob() : IntKnob(0, 3, 3, "OptLvl"){};
+  OptLvlKnob() : IntKnob(0, 3, 3, "OptLvl") {};
 };
 
 class OptSizeKnob : public IntKnob {
 public:
-  OptSizeKnob() : IntKnob(0, 2, 0, "OptSizeLvl"){};
+  OptSizeKnob() : IntKnob(0, 2, 0, "OptSizeLvl") {};
 };
 
-} // namespace tuner
+}
+}
 
 #endif // CLANG_CODEGENKNOBS_H

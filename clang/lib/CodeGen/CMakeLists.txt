@@ -115,8 +115,10 @@ add_clang_library(clangCodeGen
   Tuner/TimingHelper.cpp
   Tuner/SimplexTuner.cpp
   Tuner/TunerDriver.cpp
-        Tuner/LoopTransformTreeCreator.cpp
+  Tuner/LoopTransformTreeCreator.cpp
+  Tuner/LoopTransformTreeApplicator.cpp
   Tuner/LoopTransformTree.cpp
+  Tuner/Transformations.cpp
   Tuner/TransformTreeOptimizer.cpp
   Driver.cpp
 

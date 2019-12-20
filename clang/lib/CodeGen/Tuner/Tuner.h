@@ -56,7 +56,8 @@ using SharedEvalStats = std::shared_ptr<TimingStats>;
 
 class ConfigEvalRequest {
 public:
-  ConfigEvalRequest() = default;
+  ConfigEvalRequest() : Stats(std::make_shared<TimingStats>()){
+  };
 
   explicit ConfigEvalRequest(KnobConfig Cfg)
       : Cfg(std::move(Cfg)), Stats(std::make_shared<TimingStats>()) {}

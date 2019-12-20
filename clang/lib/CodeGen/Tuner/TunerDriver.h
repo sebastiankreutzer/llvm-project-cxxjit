@@ -8,6 +8,8 @@
 #include "../Driver.h"
 #include "Debug.h"
 #include "Tuner.h"
+#include "Optimizer.h"
+#include "TransformTreeOptimizer.h"
 
 namespace clang {
 namespace jit {
@@ -64,7 +66,7 @@ struct JITContext {
   // recompilations depend on.
   VersionID PrimaryVersion{0};
   // Optimizer instance for this module
-  std::unique_ptr<StaticOptimizer> Opt{nullptr};
+  std::unique_ptr<Optimizer> Opt{nullptr};
 };
 
 struct TunedCodeVersion {
@@ -366,10 +368,19 @@ private:
 
     JIT_DEBUG(dumpModule(*Mod, "Module after linking"));
 
+    // TODO: Make this configurable
+#define TRANSFORM_TREE_OPT
+#ifdef TRANSFORM_TREE_OPT
+    auto Opt = std::make_unique<TransformTreeOptimizer>(
+        *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
+        *CD.TargetOpts, *CD.Invocation->getLangOpts(),
+        CD.CJ->getTargetMachine());
+#else
     auto Opt = std::make_unique<StaticOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
         *CD.TargetOpts, *CD.Invocation->getLangOpts(),
         CD.CJ->getTargetMachine());
+#endif
     Opt->init(Mod.get());
 
     JITContext JITCtx;

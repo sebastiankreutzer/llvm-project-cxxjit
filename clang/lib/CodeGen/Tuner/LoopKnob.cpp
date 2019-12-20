@@ -58,7 +58,7 @@ public:
       return false;
     }
 
-    KnobID ID = getLoopName(Loop);
+    KnobID ID = getLoopNameAsInt(Loop);
     if (ID == InvalidKnobID) {
       errs() << "Loop name not found: can't apply attributes (in function "
              << Loop->getHeader()->getParent()->getName() << ")\n";
@@ -126,23 +126,23 @@ private:
                                 Cfg.getUnrollCount());
       }
     } else {
-      LoopMD = addTagMD(LoopMD, UNROLL_DISABLE_TAG);
-      LoopMD = addTagMD(LoopMD, UNROLL_AND_JAM_DISABLE_TAG);
+      LoopMD = addTag(LoopMD, UNROLL_DISABLE_TAG);
+      LoopMD = addTag(LoopMD, UNROLL_AND_JAM_DISABLE_TAG);
     }
 
     if (Cfg.getDisableLICMVersioning()) {
-      LoopMD = addTagMD(LoopMD, LICM_VERSIONING_DISABLE_TAG);
+      LoopMD = addTag(LoopMD, LICM_VERSIONING_DISABLE_TAG);
     }
 
     // TODO: This seems to always fail anyway, so it is disabled for now
     //LoopMD = addTaggedBool(LoopMD, DISTRIBUTE_ENABLE_TAG, Cfg.getDistribute());
 
     if (Cfg.getDisableLICM()) {
-      LoopMD = addTagMD(LoopMD, LICM_DISABLE_TAG);
+      LoopMD = addTag(LoopMD, LICM_DISABLE_TAG);
     }
 
     if (Cfg.DisableNonForced) {
-      LoopMD = addTagMD(LoopMD, DISABLE_NON_FORCED_TAG);
+      LoopMD = addTag(LoopMD, DISABLE_NON_FORCED_TAG);
     }
 
     Loop->setLoopID(LoopMD);

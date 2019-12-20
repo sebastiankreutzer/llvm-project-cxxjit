@@ -9,19 +9,34 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Metadata.h"
 
+#include "Knob.h"
+
 namespace clang {
 namespace jit {
 
-static const char *NameTag = "loop.name";
+using namespace llvm;
+
+static const char *NameTag = "loop.loop.id";
+
+inline MDNode *createSelfReferencingMD(LLVMContext& Ctx, ArrayRef<Metadata*> Ops) {
+  auto Dummy = MDNode::get(Ctx, {});
+  SmallVector<Metadata*, 4> MDList{Dummy};
+  MDList.insert(MDList.end(), Ops.begin(), Ops.end());
+  auto Node = MDNode::get(Ctx, MDList);
+  Node->replaceOperandWith(0, Node);
+  return Node;
+}
 
 inline MDNode *getOrCreateLoopID(Loop *Loop) {
   LLVMContext &Ctx = Loop->getHeader()->getContext();
   auto LoopID = Loop->getLoopID();
   if (!LoopID) {
-    auto Dummy = MDNode::get(Ctx, {});
-    LoopID = MDNode::get(Ctx, {Dummy});
-    LoopID->replaceOperandWith(0, LoopID);
+    LoopID = createSelfReferencingMD(Ctx, {});
     Loop->setLoopID(LoopID);
+//    auto Dummy = MDNode::get(Ctx, {});
+//    LoopID = MDNode::get(Ctx, {Dummy});
+//    LoopID->replaceOperandWith(0, LoopID);
+//    Loop->setLoopID(LoopID);
   }
   return LoopID;
 }
@@ -34,7 +49,7 @@ inline MDNode *addToLoopMD(MDNode *LoopMD, MDNode *Node) {
   return NewMD;
 }
 
-inline MDNode *addTagMD(MDNode *LoopMD, StringRef Tag) {
+inline MDNode *addTag(MDNode *LoopMD, StringRef Tag) {
   auto StrMD = MDString::get(LoopMD->getContext(), Tag);
   auto TagMD = MDNode::get(LoopMD->getContext(), {StrMD});
   return addToLoopMD(LoopMD, TagMD);
@@ -47,14 +62,27 @@ inline MDNode *addTaggedConstantMD(MDNode *LoopMD, StringRef Tag, Constant *C) {
   return addToLoopMD(LoopMD, NewMD);
 }
 
+inline MDNode* addTaggedString(MDNode *LoopMD, StringRef Tag, StringRef Val) {
+  auto TagMD = MDString::get(LoopMD->getContext(), Tag);
+  auto ValMD = MDString::get(LoopMD->getContext(), Val);
+  auto NewMD = MDNode::get(LoopMD->getContext(), {TagMD, ValMD});
+  return addToLoopMD(LoopMD, NewMD);
+}
+
 inline MDNode *addTaggedBool(MDNode *LoopMD, StringRef Tag, bool Val) {
-  auto C = ConstantInt::get(Type::getInt1Ty(LoopMD->getContext()), Val ? 1 : 0);
+  auto C = ConstantInt::get(llvm::Type::getInt1Ty(LoopMD->getContext()), Val ? 1 : 0);
   return addTaggedConstantMD(LoopMD, Tag, C);
 }
 
 inline MDNode *addTaggedInt32(MDNode *LoopMD, StringRef Tag, int Val) {
-  auto C = ConstantInt::get(Type::getInt32Ty(LoopMD->getContext()), Val);
+  auto C = ConstantInt::get(llvm::Type::getInt32Ty(LoopMD->getContext()), Val);
   return addTaggedConstantMD(LoopMD, Tag, C);
+}
+
+inline MDNode *addTaggedMD(MDNode* LoopMD, StringRef Tag, MDNode* OtherMD) {
+  auto TagMD = MDString::get(LoopMD->getContext(), Tag);
+  auto NewMD = MDNode::get(LoopMD->getContext(), {TagMD, OtherMD});
+  return addToLoopMD(LoopMD, NewMD);
 }
 
 inline MDNode *assignLoopName(Loop* Loop, StringRef Name) {
@@ -104,6 +132,79 @@ inline unsigned getLoopNameAsInt(Loop *Loop) {
   }
   return NameAsInt;
 }
+
+class LoopMDBuilder {
+public:
+
+  LoopMDBuilder(LLVMContext& Ctx, Loop* L = nullptr) : Ctx(Ctx), L(L) {
+    if (L)
+      LoopMD = getOrCreateLoopID(L);
+    else
+    LoopMD = createSelfReferencingMD(Ctx, {});
+  }
+
+  ~LoopMDBuilder() {
+    if (L)
+      L->setLoopID(LoopMD);
+  }
+
+  MDNode* getResult() {
+    return LoopMD;
+  }
+
+  void append(MDNode *Node) {
+    auto AddedMD = MDNode::get(Ctx, {Node});
+    auto NewMD = MDNode::concatenate(LoopMD, AddedMD);
+    NewMD->replaceOperandWith(0, NewMD);
+    LoopMD = NewMD;
+  }
+
+
+  MDNode *addTaggedConstantMD(StringRef Tag, Constant *C) {
+    auto StrMD = MDString::get(Ctx, Tag);
+    auto ConstMD = ConstantAsMetadata::get(C);
+    auto NewMD = MDNode::get(Ctx, {StrMD, ConstMD});
+    append(NewMD);
+    return NewMD;
+  }
+
+  MDNode* addTag(StringRef Tag) {
+    auto TagMD = MDString::get(Ctx, Tag);
+    auto NewMD = MDNode::get(Ctx, {TagMD});
+    append(NewMD);
+    return NewMD;
+  }
+
+  MDNode* addTaggedString(StringRef Tag, StringRef Val) {
+    auto TagMD = MDString::get(Ctx, Tag);
+    auto ValMD = MDString::get(Ctx, Val);
+    auto NewMD = MDNode::get(Ctx, {TagMD, ValMD});
+    append(NewMD);
+    return NewMD;
+  }
+
+  inline MDNode *addTaggedBool(StringRef Tag, bool Val) {
+    auto C = ConstantInt::get(llvm::Type::getInt1Ty(Ctx), Val ? 1 : 0);
+    return addTaggedConstantMD(Tag, C);
+  }
+
+  inline MDNode *addTaggedInt32(StringRef Tag, int Val) {
+    auto C = ConstantInt::get(llvm::Type::getInt32Ty(Ctx), Val);
+    return addTaggedConstantMD(Tag, C);
+  }
+
+  inline MDNode *addTaggedMD(StringRef Tag, MDNode* OtherMD) {
+    auto TagMD = MDString::get(Ctx, Tag);
+    auto NewMD = MDNode::get(Ctx, {TagMD, OtherMD});
+    append(NewMD);
+    return NewMD;
+  }
+
+private:
+  LLVMContext& Ctx;
+  Loop* L;
+  MDNode* LoopMD;
+};
 
 
 }

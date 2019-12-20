@@ -14,14 +14,14 @@
 #include "Optimizer.h"
 #include "LoopTransformTree.h"
 
-using namespace llvm;
-
 namespace clang {
 namespace jit {
 
 
 class TransformTreeOptimizer: public Optimizer {
 public:
+
+  static std::once_flag IsPollyInitialized;
 
   TransformTreeOptimizer(clang::DiagnosticsEngine &Diags,
                          const clang::HeaderSearchOptions &HeaderOpts,
@@ -32,9 +32,19 @@ public:
         TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr) {
   }
 
-  void init(Module* M) override;
+  void init(llvm::Module* M) override;
 
   ConfigEvalRequest optimize(llvm::Module *M, bool UseDefault) override;
+
+  const KnobSet& getKnobs() override {
+    return Knobs;
+  }
+
+private:
+  TargetIRAnalysis getTargetIRAnalysis();
+  void createPasses(const llvm::Module &M, legacy::PassManager &PM,
+                                            legacy::FunctionPassManager &FPM,
+                                            KnobConfig &Cfg);
 
 private:
   clang::DiagnosticsEngine &Diags;
@@ -44,7 +54,9 @@ private:
   const clang::LangOptions &LangOpts;
   llvm::TargetMachine &TM;
   Module *ModToOptimize;
-  SmallVector<LoopTransformTree, 2> LoopTrees;
+  SmallVector<LoopTransformTreePtr, 2> LoopTrees;
+
+  KnobSet Knobs;
 };
 
 

@@ -66,7 +66,7 @@ public:
   // that init() was called with.
   ConfigEvalRequest optimize(llvm::Module *M, bool UseDefault);
 
-  const KnobSet &getKnobs() {
+  const KnobSet &getKnobs() override {
     return Knobs;
   }
 

@@ -17,9 +17,11 @@ namespace jit {
 
 Pass *createLoopKnobCreatorPass(KnobSet &KS);
 
-Pass *createLoopTransformTreeCreatorPass(SmallVectorImpl<LoopTransformTree> &LoopTrees);
-
 Pass *createApplyLoopKnobPass(KnobConfig &KnobCfg);
+
+Pass *createLoopTransformTreeCreatorPass(SmallVectorImpl<LoopTransformTreePtr> &LoopTrees);
+
+Pass *createLoopTransformTreeApplicatorPass(ArrayRef<LoopTransformTree*> LoopTrees);
 
 }
 }

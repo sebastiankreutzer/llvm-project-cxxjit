@@ -15,13 +15,13 @@ namespace jit {
 class LoopTransformTreeCreator : public llvm::LoopPass {
 
 private:
-  SmallVectorImpl<LoopTransformTree>& LoopTrees;
-
+  SmallVectorImpl<LoopTransformTreePtr>* LoopTrees;
 
   LoopNode* createSubTree(LoopTransformTree& Tree, Loop* Loop, LoopNode* Parent) {
 
     auto LoopMD = getOrCreateLoopID(Loop);
     LoopNode* Root = Tree.makeNode();
+    Root->addTagAttribute(MDTags::DISABLE_NONFORCED, true);
     auto LoopName = assignLoopName(Loop, Root->getLoopName());
     for (auto L : Loop->getSubLoops()) {
       auto SubTree = createSubTree(Tree, L, Root);
@@ -34,9 +34,14 @@ private:
 public:
   static char ID;
 
-  explicit LoopTransformTreeCreator(SmallVectorImpl<LoopTransformTree>& LoopTrees) : LoopPass(ID), LoopTrees(LoopTrees){};
+  explicit LoopTransformTreeCreator() : LoopPass(ID){};
+
+  void writeResultsTo(SmallVectorImpl<LoopTransformTreePtr>& LoopTrees) {
+    this->LoopTrees = &LoopTrees;
+  }
 
   bool runOnLoop(Loop *Loop, LPPassManager &LPM) override {
+    assert(LoopTrees && "Result vector not set");
 
     if (Loop->getHeader()->getParent()->isDeclarationForLinker()) {
       // We don't want to consider loops in functions that are marked available_externally
@@ -44,10 +49,10 @@ public:
     }
 
     if (!Loop->getParentLoop()) {
-      LoopTransformTree Tree;
-      auto Root = createSubTree(Tree, Loop, nullptr);
-      Tree.setRoot(Root);
-      LoopTrees.push_back(std::move(Tree));
+      LoopTransformTreePtr Tree = std::make_unique<LoopTransformTree>();
+      auto Root = createSubTree(*Tree, Loop, nullptr);
+      Tree->setRoot(Root);
+      LoopTrees->push_back(std::move(Tree));
       return true;
     }
     return false;
@@ -62,8 +67,9 @@ static RegisterPass<LoopTransformTreeCreator> Register("loop-tree-creator",
                                               false /* only looks at CFG*/,
                                               false /* analysis pass */);
 
-llvm::Pass *createLoopTransformTreeCreatorPass(SmallVectorImpl<LoopTransformTree> &LoopTrees) {
-  auto LTC = new LoopTransformTreeCreator(LoopTrees);
+llvm::Pass *createLoopTransformTreeCreatorPass(SmallVectorImpl<LoopTransformTreePtr> &LoopTrees) {
+  auto LTC = new LoopTransformTreeCreator();
+  LTC->writeResultsTo(LoopTrees);
   return LTC;
 }
 

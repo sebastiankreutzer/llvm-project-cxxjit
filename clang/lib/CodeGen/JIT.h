@@ -121,17 +121,6 @@
 namespace clang {
 namespace jit {
 
-inline void loadDebugFlag() {
-  auto DebugStr = std::getenv("CJ_DEBUG");
-  unsigned Lvl = LOG_NONE;
-  if (DebugStr) {
-    int StrInt = std::atoi(DebugStr);
-    if (StrInt >= 0 && StrInt <= LOG_DEBUG)
-      Lvl = StrInt;
-  }
-  LogLvl = Lvl;
-}
-
 inline void fatal() {
   report_fatal_error("Clang JIT failed!");
 }
@@ -598,6 +587,7 @@ struct InstMapInfo {
   }
 };
 
+void updateActiveInstantiation(const InstInfo&, InstData);
 
 }
 }

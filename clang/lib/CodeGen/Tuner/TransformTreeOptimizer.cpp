@@ -9,6 +9,7 @@
 #endif
 
 #include "clang/CodeGen/BackendUtil.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -23,6 +24,7 @@
 #include "Passes.h"
 #include "Debug.h"
 #include "LoopTransformTreeTraits.h"
+#include "Util.h"
 
 using namespace llvm;
 
@@ -43,6 +45,8 @@ static void setCommandLineOpts(const CodeGenOptions &CodeGenOpts) {
     BackendArgs.push_back("-limit-float-precision");
     BackendArgs.push_back(CodeGenOpts.LimitFloatPrecision.c_str());
   }
+  BackendArgs.push_back("-polly-use-llvm-names");
+//  BackendArgs.push_back("--debug-only=polly-ast");
   BackendArgs.push_back(nullptr);
   llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1, BackendArgs.data());
 }
@@ -87,6 +91,7 @@ void TransformTreeOptimizer::init(Module *M) {
     polly::PollyProcessUnprofitable = true;
     // polly::PollyInvariantLoadHoisting = true; // TODO: should this be on?
 
+
     llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
     polly::initializePollyPasses(Registry);
   });
@@ -95,7 +100,14 @@ void TransformTreeOptimizer::init(Module *M) {
 
   // Create loop knobs
   initializeLoopInfoWrapperPassPass(*PassRegistry::getPassRegistry());
+  initializeScalarEvolutionWrapperPassPass(*PassRegistry::getPassRegistry());
+
   legacy::PassManager PM;
+  PM.add(createCFGSimplificationPass());
+  PM.add(createSROAPass());
+  PM.add(createEarlyCSEPass());
+  PM.add(createLoopRotatePass());
+  PM.add(createIndVarSimplifyPass());
   PM.add(createLoopTransformTreeCreatorPass(LoopTrees));
   PM.run(*M);
 
@@ -105,6 +117,9 @@ void TransformTreeOptimizer::init(Module *M) {
   }
   JIT_INFO(dbgs() << "Number of detected loop trees: " << LoopTrees.size() << "\n");
 
+
+//  CurrentTransformationIdx = 0;
+//  Level = 0;
 
 //  for (auto It = Tree.nodes_begin();  It != Tree.nodes_end(); ++It) {
 //    errs() << "Node: " << (*It)->getLoopName() << "\n";
@@ -151,7 +166,6 @@ ConfigEvalRequest TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefa
 //    Request = OptTuner->generateNextConfig();
 //  }
 //
-   auto &Cfg = Request.Cfg;
 //
 //  KnobState KS(Knobs, Cfg);
 //  JIT_DEBUG(dbgs() << "Optimizer Configuration: "
@@ -169,17 +183,163 @@ ConfigEvalRequest TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefa
 
   auto& Tree = *LoopTrees.front();
 
-  auto ClonedTree = Tree.clone();
+  if (UseDefault) {
+    if (!BaseLine) {
+      BaseLine = Request;
+    } else {
+      JIT_INFO(errs() << "Warning: evaluating default configs again\n");
+    }
+  } else {
 
-  if (!UseDefault) {
-    applyTiling(ClonedTree.get());
+    if (!DecisionTree) {
+      assert(BaseLine && "Baseline must be evaluated before the tree can be created");
+      DecisionTree = std::make_unique<TransformDecisionTree>(Tree.clone(), *BaseLine->Stats);
+      CurrentNode = &DecisionTree->getRoot();
+    }
+
+    assert(CurrentNode && "No node selected");
+    if (CurrentNode->isEvaluated()) {
+
+      // Find new transformations based on current best
+      CurrentNode->finalize();
+
+      auto Best = CurrentNode->TTuner->getBest();
+      assert(Best && "No result");
+      auto& BestVal = Best.getValue();
+
+      JIT_INFO(dbgs() << "----------------------------------------\n");
+      JIT_INFO(dbgs() << "Transformation fully evaluated - ");
+
+      if (BestVal.Stats->betterThan(*BestNode.second.Stats)) {
+        outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats));
+        CurrentNode->printPath(outs()) << "\n";
+        BestNode = {CurrentNode, BestVal};
+        JIT_INFO(dbgs() << "speedup is " << computeSpeedup(*BestVal.Stats) << " with the following configuration:\n");
+        JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), BestVal.Cfg).dump());
+      } else {
+        JIT_INFO(dbgs() << "no speedup\n");
+      }
+      JIT_INFO(dbgs() << "----------------------------------------\n");
+
+      // Expand the tree
+      auto& Promising = DecisionTree->getMostPromisingNode();
+      JIT_INFO(dbgs() << "Selected node to expand: kind=" << getTransformationName(Promising.Transformation.Kind) << ", depth=" << Promising.getDepth() << ", nesting_depth=" << Promising.LoopTree->getRoot()->getMaxDepth() <<"\n");
+      JIT_INFO(dbgs() << "Available transformations: ");
+      unsigned NumAvailable = Promising.FeasibleTransformations.size();
+      for (int i = Promising.UnexploredIdx; i < NumAvailable; i++) {
+        JIT_INFO(dbgs() << getTransformationName(Promising.FeasibleTransformations[i].Kind) << (i+1 < NumAvailable ? ", " : "\n"));
+      }
+      auto& NewNode = Promising.expand();
+      outs() << "Tuning " << getTransformationName(NewNode.Transformation.Kind) << "\n";
+      JIT_INFO(dbgs() << "Expanded Tree:\n");
+      // TODO: print tree path
+      NewNode.printPath() << "\n";
+
+      CurrentNode = &NewNode;
+    }
+
+    Request = CurrentNode->TTuner->getNext();
+    JIT_INFO(dbgs() << "Applying transformation on loop " << CurrentNode->Transformation.Root << ":\n");
+    JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), Request.Cfg).dump());
+//    ViewGraph(ClonedTree.get(), "ClonedTree");
+
+    auto TransformedTree = CurrentNode->getTransformedTree(Request.Cfg);
+    // Add config values of previous transformations to uniquely identify this code version
+    // FIXME: Config may be empty for non-tunable transformations (interchange)
+    Request.Cfg.addAll(CurrentNode->FullConfig);
+
+    legacy::PassManager TransformPasses;
+    TransformPasses.add(createLoopTransformTreeApplicatorPass({TransformedTree.get()}));
+
+    {
+      PrettyStackTraceString CrashInfo("Apply transformation attributes to module");
+      TransformPasses.run(*M);
+      JIT_DEBUG(util::dumpModule(*M, "With transformation attributes"));
+    }
+
+
   }
 
-//  ViewGraph(ClonedTree.get(), "After tiling");
 
+#if 0
+  // Old code:
 
-  legacy::PassManager TransformPasses;
-  TransformPasses.add(createLoopTransformTreeApplicatorPass({ClonedTree.get()}));
+  // Find valid new transformations and reset tuner
+  auto resetQueue = [&]() {
+    TransformationQueue = findTransformations(&Tree);
+    if (TransformationQueue.empty()) {
+      JIT_ERROR(errs() << "No valid transformations found");
+      llvm_unreachable("implement behavior"); // TODO
+    }
+    JIT_INFO(dbgs() << "Number of found transformations: " << TransformationQueue.size() << "\n");
+    CurrentTransformationIdx = 0;
+    BestTransformation = {0, ConfigEvalRequest()};
+    TTuner = std::make_unique<TransformationTuner>(TransformationQueue[CurrentTransformationIdx]);
+  };
+
+  if (UseDefault) {
+    if (!BaseLine) {
+      BaseLine = Request;
+    } else {
+      JIT_INFO(errs() << "Warning: evaluating default configs again\n");
+    }
+  } else {
+    if (TransformationQueue.empty()) {
+      resetQueue();
+    }
+    //  auto& CurrentTransformation = TransformationQueue[CurrentTransformationIdx];
+
+    if (TTuner->isDone()) {
+      auto Best = TTuner->getBest();
+      assert(Best && "No result");
+      auto& BestVal = Best.getValue();
+
+      JIT_INFO(dbgs() << "----------------------------------------\n");
+      JIT_INFO(dbgs() << "Transformation fully evaluated - ");
+
+      if (BestVal.Stats->betterThan(*BestTransformation.second.Stats)) {
+        BestTransformation = {CurrentTransformationIdx, BestVal};
+        JIT_INFO(dbgs() << "speedup is " << computeSpeedup(*BestVal.Stats) << " with the following configuration:\n");
+        JIT_INFO(KnobState(TTuner->getKnobs(), BestVal.Cfg).dump());
+      } else {
+        JIT_INFO(dbgs() << "no speedup\n");
+      }
+      JIT_INFO(dbgs() << "----------------------------------------\n");
+
+      // All transformations tried, keep the best transformation with the best parameters
+      if (++CurrentTransformationIdx >= TransformationQueue.size()) {
+        JIT_INFO(dbgs() << "Level " << Level << " transformation tuning complete!\n");
+        apply(TransformationQueue[BestTransformation.first], Tree, BestTransformation.second.Cfg);
+        FullConfig.addAll(BestTransformation.second.Cfg);
+        Level++;
+        resetQueue();
+      } else {
+        TTuner = std::make_unique<TransformationTuner>(TransformationQueue[CurrentTransformationIdx]);
+      }
+    }
+
+    Request = TTuner->getNext();
+    JIT_INFO(dbgs() << "Applying transformation on loop " << TransformationQueue[CurrentTransformationIdx].Root << ":\n");
+    JIT_INFO(KnobState(TTuner->getKnobs(), Request.Cfg).dump());
+//    ViewGraph(ClonedTree.get(), "ClonedTree");
+
+    auto ClonedTree = Tree.clone();
+    apply(TransformationQueue[CurrentTransformationIdx], *ClonedTree, Request.Cfg);
+    // Add config values of previous transformations to uniquely identify this code version
+    // FIXME: Config may be empty for non-tunable transformations (interchange)
+    Request.Cfg.addAll(FullConfig);
+
+    legacy::PassManager TransformPasses;
+    TransformPasses.add(createLoopTransformTreeApplicatorPass({ClonedTree.get()}));
+
+    {
+      PrettyStackTraceString CrashInfo("Apply transformation attributes to module");
+      TransformPasses.run(*M);
+      JIT_DEBUG(util::dumpModule(*M, "With transformation attributes"));
+    }
+  }
+#endif
+
 
   legacy::PassManager PerModulePasses;
   PerModulePasses.add(
@@ -189,26 +349,13 @@ ConfigEvalRequest TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefa
   PerFunctionPasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
 
-  createPasses(*M, PerModulePasses, PerFunctionPasses, Cfg);
+  createPasses(*M, PerModulePasses, PerFunctionPasses, Request.Cfg);
 
   // Before executing passes, print the final values of the LLVM options.
   cl::PrintOptionValues();
 
   // Run passes. For now we do all passes at once, but eventually we
   // would like to have the option of streaming code generation.
-
-  {
-    PrettyStackTraceString CrashInfo("Apply knobs to module");
-    TransformPasses.run(*M);
-#ifdef DUMP_MOD_WITH_ATTRIBUTES
-    outs() << "*****************************\n";
-    outs() << "With transform attributes\n";
-    outs() << "*****************************\n";
-    outs().flush();
-    M->dump();
-    errs().flush();
-#endif
-  }
 
   {
     PrettyStackTraceString CrashInfo("Per-function optimization");
@@ -225,8 +372,23 @@ ConfigEvalRequest TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefa
     PerModulePasses.run(*M);
   }
 
+  if (UseDefault) {
+    JIT_INFO(util::dumpModule(*M, "Default optimized module"));
+  }
+
   return Request;
 
+}
+
+float TransformTreeOptimizer::computeSpeedup(TimingStats& Stats) {
+  if (!BaseLine)
+    return 0;
+  auto& BaseLineStats = *BaseLine.getValue().Stats;
+  if (!BaseLineStats.Valid())
+    return 0;
+  if (!Stats.Valid())
+    return 0;
+  return BaseLineStats.Mean / Stats.Mean;
 }
 
 TargetIRAnalysis TransformTreeOptimizer::getTargetIRAnalysis() {

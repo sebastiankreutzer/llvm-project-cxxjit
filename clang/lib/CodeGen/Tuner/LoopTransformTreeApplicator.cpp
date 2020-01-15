@@ -51,6 +51,9 @@ private:
 //      LoopMD = addTaggedInt32(LoopMD, IntAttr.Name, IntAttr.Val);
         saveInheritable(Builder.addTaggedInt32(IntAttr.Name, IntAttr.Val), IntAttr.Inherit);
     }
+    for (auto& IntListAttr : Attributes.IntListAttrs) {
+      saveInheritable(Builder.addTaggedInt32List(IntListAttr.Name, IntListAttr.Val), IntListAttr.Inherit);
+    }
     for (auto& StringAttr : Attributes.StringAttrs) {
 //      LoopMD = addTaggedString(LoopMD, StringAttr.Name, StringAttr.Val);
         saveInheritable(Builder.addTaggedString(StringAttr.Name, StringAttr.Val), StringAttr.Inherit);

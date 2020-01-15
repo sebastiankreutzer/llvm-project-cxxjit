@@ -14,7 +14,7 @@ namespace clang {
 namespace jit {
 
 enum LogLevel {
-  LOG_NONE = 0,
+  LOG_ERROR = 0,
   LOG_INFO = 1,
   LOG_REPORT = 2,
   LOG_DEBUG = 3
@@ -38,6 +38,7 @@ extern unsigned LogLvl;
 #define JIT_INFO(X) JIT_LOG(clang::jit::LOG_INFO, X)
 #define JIT_REPORT(X) JIT_LOG(clang::jit::LOG_REPORT, X)
 #define JIT_DEBUG(X) JIT_LOG(clang::jit::LOG_DEBUG, X)
+#define JIT_ERROR(X) JIT_LOG(clang::jit::LOG_ERROR, X)
 #define JIT_LOG_IF(COND, LVL, X)                                                  \
   do {                                                                         \
     if (COND && LVL <= clang::jit::LogLvl)                                   \

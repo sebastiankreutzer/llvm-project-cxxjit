@@ -5616,11 +5616,11 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
 
   S.setScheduleTree(NewSchedule);
   S.markAsOptimized();
-
-  if (OptimizedScops)
-    errs() << S;
-
-  S.dump();
+//
+//  if (OptimizedScops)
+//    errs() << S;
+//
+//  S.dump();
 
   return false;
 }

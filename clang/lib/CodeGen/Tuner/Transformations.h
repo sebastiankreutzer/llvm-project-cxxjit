@@ -5,6 +5,7 @@
 #ifndef LLVM_TRANSFORMATIONS_H
 #define LLVM_TRANSFORMATIONS_H
 
+#include "SimpleKnobs.h"
 #include "KnobSet.h"
 #include "LoopTransformTree.h"
 
@@ -13,19 +14,87 @@ namespace jit {
 
 class LoopTransformTree;
 
-struct LoopTransform {
+namespace transform_defaults {
+constexpr unsigned UNROLL_MIN = 1;
+constexpr unsigned UNROLL_MAX = 64;
+constexpr unsigned UNROLL_AND_JAM_MIN = 1;
+constexpr unsigned UNROLL_AND_JAM_MAX = 16;
+
+constexpr unsigned UNROLL_DFLT = 8;
+constexpr unsigned TILE_MIN = 1;
+constexpr unsigned TILE_MAX = 4096; // TODO: Use cache size as baseline
+constexpr unsigned TILE_DFLT = 512; // TODO: Use cache size as baseline
+}
+
+struct LoopTransformation {
   enum TransformKind {
-    TILE, INTERCHANGE
+    NONE,
+    TILE,
+    INTERCHANGE,
+    UNROLL,
+    UNROLL_AND_JAM,
+    ARRAY_PACK,
+    VECTORIZE
   };
 
-  TransformKind Kind;
+  TransformKind Kind{NONE};
+  SmallString<8> Root;
+  SmallVector<int, 4> IntParams;
   KnobSet Knobs;
+  // NOTE: Identifying knobs with strings is probably not very efficient but avoids the need for polymorphism.
+  StringMap<SmallVector<KnobID, 4>> KnobMap;
+
+
+  void addKnob(IntKnob* Knob, StringRef Category = "") {
+    Knobs.add(Knob);
+    if (!Category.empty()) {
+      KnobMap[Category].push_back(Knob->getID());
+    }
+  }
+
+  ArrayRef<KnobID> getKnobs(StringRef Category) const {
+    auto It = KnobMap.find(Category);
+    if (It == KnobMap.end()) {
+      return {};
+    }
+    return It->second;
+  }
 
 };
 
-void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransform>& Transformations);
+inline const char* getTransformationName(LoopTransformation::TransformKind Kind) {
+  switch(Kind) {
+    case LoopTransformation::TILE:
+      return "TILE";
+    case LoopTransformation::INTERCHANGE:
+      return "INTERCHANGE";
+    case LoopTransformation::UNROLL:
+      return "UNROLL";
+    case LoopTransformation::UNROLL_AND_JAM:
+      return "UNROLL_AND_JAM";
+    case LoopTransformation::ARRAY_PACK:
+      return "ARRAY_PACK";
+    case LoopTransformation::VECTORIZE:
+      return "VECTORIZE";
+  }
+  return "UNKNOWN";
+}
 
-SmallVector<LoopTransform, 4> findTransformations(LoopTransformTree* Tree);
+void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation>& Transformations);
+
+SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree* Tree);
+
+void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConfig& Cfg);
+
+void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts);
+
+void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts);
+
+void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, StringRef PeelType = "rectangular");
+
+void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation);
+
+void viewTree(LoopTransformTree& Tree);
 
 
 }

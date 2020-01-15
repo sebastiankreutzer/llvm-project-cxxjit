@@ -8,6 +8,25 @@
 #include "Tuners.h"
 #include "clang/CodeGen/Tuning.h"
 
+
+namespace {
+
+using namespace clang;
+using namespace clang::jit;
+
+struct PtrData {
+  PtrData(TunerDriver* Driver, const InstInfo& Inst) : Driver(Driver), Inst(Inst) {
+
+  }
+
+  TunerDriver* Driver;
+  InstInfo Inst;
+};
+
+DenseMap<void*, PtrData> PtrToInstInfo;
+}
+
+
 namespace clang {
 namespace jit {
 
@@ -340,7 +359,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   auto EvalRequest = TemplateInst.Context.Opt->optimize(
       Mod.get(), !TemplateInst.Context.Emitted);
 
-  JIT_DEBUG(dumpModule(*Mod, "Module after optimization"));
+  JIT_DEBUG(util::dumpModule(*Mod, "Module after optimization"));
 
   // Instrument optimized function for tuning
   auto SMF = Mod->getFunction(FName);
@@ -381,6 +400,9 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     return reinterpret_cast<void *>(Addr.get());
   });
 
+  PtrToInstInfo.insert({FPtr, PtrData(this, InstInfo(Inst.InstKey, Inst.NTTPValues, Inst.NTTPValuesSize,
+                                 Inst.TypeStrings, Inst.TypeStringsCnt))});
+
   TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, Globals,
                            std::move(EvalRequest));
   TemplateInst.add(std::move(Version));
@@ -388,6 +410,40 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       true; // TODO: We probably don't need this anymore
 
   return {FPtr, false};
+}
+
+void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
+  auto It = TuningDataMap.find(Inst);
+  if (It == TuningDataMap.end()) {
+    llvm::errs() << "Could not find tuning data for instantiation\n";
+    return nullptr;
+  }
+  auto& TuningData = It->second;
+  auto Best = TuningData->computeOverallBest();
+  if (!Best) {
+    llvm::errs() << "No template instantiation found\n";
+    return nullptr;
+  }
+  auto* BestVersion = Best->second->getCurrentBest();
+  if (!BestVersion) {
+    llvm::errs() << "No optimized instantiation found\n";
+    return nullptr;
+  }
+  InstData IData = {BestVersion->FPtr, true};
+  updateActiveInstantiation(Inst, IData);
+  JIT_INFO(dbgs() << "Finished tuning: " << Inst.Key << "\n");
+  return IData.FPtr;
+}
+
+
+void* finish_tuning(void* FPtr) {
+  auto It = PtrToInstInfo.find(FPtr);
+  if (It != PtrToInstInfo.end()) {
+    auto& PtrData = It->second;
+    auto& Driver = PtrData.Driver;
+    return Driver->finishTuning(PtrData.Inst);
+  }
+  return nullptr;
 }
 
 } // namespace jit

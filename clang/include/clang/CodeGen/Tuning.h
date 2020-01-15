@@ -7,6 +7,7 @@
 
 #include <tuple>
 #include <functional>
+#include <chrono>
 
 namespace clang {
 namespace jit {
@@ -19,8 +20,48 @@ struct tunable_range {
   T Max;
 };
 
-}
+enum class SearchType {
+  RANDOM,
+  SIMPLEX,
+};
+
+struct TunerConfig {
+  SearchType TemplateParamSearchType;
+  SearchType TransformationParamSearchType;
+
+};
+
+void __clang_jit_enable_tuning(clang::jit::TunerConfig);
+void __clang_jit_disable_tuning();
+
+void* finish_tuning(void*);
+
+class TuningScope {
+public:
+  TuningScope(TunerConfig Cfg) {
+    __clang_jit_enable_tuning(Cfg);
+  }
+
+  ~TuningScope() {
+    __clang_jit_disable_tuning();
+  }
+};
+
+
+class TimedTuner {
+public:
+  TimedTuner(size_t TimeLimit) : TimeLimit(TimeLimit) {
+
+  }
+
+
+
+private:
+  size_t TimeLimit;
+};
 
 }
+}
+
 
 #endif //CLANG_JIT_H

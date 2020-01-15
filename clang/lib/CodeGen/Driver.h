@@ -76,15 +76,6 @@ private:
 
 };
 
-inline void dumpModule(const llvm::Module& M, llvm::StringRef Status) {
-  dbgs() << "*****************************\n";
-  dbgs() << Status << "\n";
-  dbgs() << "*****************************\n";
-  M.dump();
-  dbgs().flush();
-}
-
-
 template<typename SpecialArgHandler>
 void TemplateInstantiationHelper::processTemplateArgs(const void *NTTPValues, const char **TypeStrings, SmallVectorImpl<TemplateArgument>& ArgList, SpecialArgHandler&& HandleSpecialArg) {
 

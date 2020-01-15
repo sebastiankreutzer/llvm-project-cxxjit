@@ -11,11 +11,264 @@
 #include "clang/Basic/TargetOptions.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include "SimplexTuner.h"
 #include "Optimizer.h"
 #include "LoopTransformTree.h"
+#include "Transformations.h"
+#include "Debug.h"
+#include "Tuners.h"
 
 namespace clang {
 namespace jit {
+
+class TransformationTuner {
+public:
+  TransformationTuner(LoopTransformation& Transformation, unsigned MaxWithoutImprovement) : Transformation(Transformation), MaxWithoutImprovement(MaxWithoutImprovement) {
+    HasKnobs = Transformation.Knobs.count() != 0;
+    if (HasKnobs) {
+      TTuner = createTuner(loadSearchAlgoEnv(), Transformation.Knobs);
+    }
+    JIT_INFO(dbgs() << "Tuning transformation of kind " << getTransformationName(Transformation.Kind) << "\n");
+    NeedsUpdate = true;
+    BestIdx = -1;
+    RequestsSinceImprovement = 0;
+  }
+
+  ConfigEvalRequest getNext() {
+
+    RequestsSinceImprovement++;
+    NeedsUpdate = true;
+    ConfigEvalRequest Request;
+    if (HasKnobs) {
+      Request = TTuner->generateNextConfig();
+    }
+    Configs.push_back(Request);
+    return Request;
+  }
+
+  llvm::Optional<ConfigEvalRequest> getBest() {
+    if (NeedsUpdate)
+      updateBest();
+    if (BestIdx >= 0)
+      return Configs[BestIdx];
+    return None;
+  }
+
+  bool isDone() {
+    if (!HasKnobs && RequestsSinceImprovement > 0)
+      return true;
+    if (NeedsUpdate)
+      updateBest();
+
+    //outs() << "************************\n";
+    //outs() << "No improvement for: " << RequestsSinceImprovement << "\n";
+    return RequestsSinceImprovement >= MaxWithoutImprovement;
+  }
+
+  KnobSet& getKnobs() {
+    return Transformation.Knobs;
+  }
+private:
+  void updateBest() {
+    NeedsUpdate = false;
+    int NewBestIdx = -1;
+    TimingStats BestStats;
+
+    for (auto I = 0; I < Configs.size(); I++) {
+      auto& Cfg = Configs[I];
+      if (Cfg.Stats->betterThan(BestStats)) {
+        BestStats = *Cfg.Stats;
+        NewBestIdx = I;
+      }
+    }
+    if (NewBestIdx != BestIdx)
+      RequestsSinceImprovement = 0;
+    BestIdx = NewBestIdx;
+  }
+private:
+  bool HasKnobs;
+  LoopTransformation& Transformation;
+  std::unique_ptr<Tuner> TTuner;
+  SmallVector<ConfigEvalRequest, 16> Configs;
+  int BestIdx;
+  unsigned RequestsSinceImprovement;
+  unsigned MaxWithoutImprovement;
+  bool NeedsUpdate;
+
+};
+
+struct DecisionNode {
+
+  using NodePtr = std::unique_ptr<DecisionNode>;
+
+  DecisionNode(TimingStats Baseline, LoopTransformation Trans, LoopTransformTreePtr Tree, DecisionNode* Parent = nullptr) : Baseline(Baseline), Transformation(Trans), LoopTree(std::move(Tree)), Parent(Parent) {
+    assert(Baseline.Valid());
+
+    TTuner = std::make_unique<TransformationTuner>(Transformation, getMaxEvalLimit());
+    UnexploredIdx = 0;
+  }
+
+  unsigned getMaxEvalLimit() {
+    switch(getDepth()) {
+      case 1:
+      case 2:
+        return 35;
+      case 3:
+        return 20;
+      case 4:
+        return 15;
+      default:
+        return 10;
+    }
+    llvm_unreachable("");
+  }
+
+  static float getMultiplier(const LoopTransformation& LT) {
+    switch(LT.Kind) {
+      case LoopTransformation::TILE:
+        return 1.5;
+      case LoopTransformation::INTERCHANGE:
+        return 1.3;
+      case LoopTransformation::UNROLL_AND_JAM:
+        return 1.1;
+      case LoopTransformation::UNROLL:
+        return 1.0;
+      case LoopTransformation::ARRAY_PACK:
+        return 1.0;
+    }
+    llvm_unreachable("");
+  }
+
+  float getUnexploredMultiplier() {
+    if (UnexploredIdx < FeasibleTransformations.size()) {
+      return getMultiplier(FeasibleTransformations[UnexploredIdx]);
+    }
+    // All children expanded, nothing to do
+    return 0;
+  }
+
+  std::pair<float, DecisionNode*> getMostPromisingNode() {
+    float ThisScore = computeScore();
+    std::pair<float, DecisionNode*> MostPromising{ThisScore, this};
+    for (auto& Child : Children) {
+      if (!Child)
+        continue;
+      auto RecursiveBest = Child->getMostPromisingNode();
+      if (RecursiveBest.first > MostPromising.first)
+        MostPromising = RecursiveBest;
+    }
+    return MostPromising;
+  }
+
+  static constexpr float BadScore = -1;
+
+  float computeScore() {
+    float Multiplier = getUnexploredMultiplier();
+    if (Multiplier == 0)
+      return Multiplier;
+    auto Best = TTuner->getBest();
+    if (Best) {
+      auto Stats = Best.getValue().Stats;
+      if (!Stats->Valid())
+        return BadScore;
+      float Speedup = Baseline.Mean / Stats->Mean;
+      return Speedup * Multiplier;
+    }
+    return BadScore;
+  }
+
+  DecisionNode& expand() {
+    assert(UnexploredIdx < FeasibleTransformations.size() && "Node does not have any unexplored transformations");
+    auto& Trans = FeasibleTransformations[UnexploredIdx];
+    auto& Child = Children[UnexploredIdx];
+
+    auto Best = TTuner->getBest();
+    Child = std::make_unique<DecisionNode>(Baseline, Trans, TransformedTree->clone(), this);
+    Child->FullConfig = Best->Cfg;
+    Child->FullConfig.addAll(FullConfig);
+    UnexploredIdx++;
+    return *Child;
+  }
+
+  LoopTransformTreePtr getTransformedTree(KnobConfig& Cfg) {
+    auto Tree = LoopTree->clone();
+    apply(Transformation, *Tree, Cfg);
+    return Tree;
+  }
+
+  LoopTransformTreePtr applyBestConfig() {
+    auto Best = TTuner->getBest();
+    if (!Best)
+      return nullptr;
+    return getTransformedTree(Best->Cfg);
+  }
+
+  bool isEvaluated() {
+    return TTuner->isDone();
+  }
+
+  void finalize() {
+    assert(isEvaluated() && "Node must be evaluated before new transformations can be found");
+    assert(FeasibleTransformations.empty() && !TransformedTree && "Can only be called once"); // TODO: Allow to reevaluate with updated config
+    TransformedTree = applyBestConfig();
+    assert(TransformedTree);
+    FeasibleTransformations = findTransformations(TransformedTree.get());
+    std::sort(FeasibleTransformations.begin(), FeasibleTransformations.end(), [](const LoopTransformation& T1, const LoopTransformation& T2) {
+      return getMultiplier(T1) > getMultiplier(T2);
+    });
+    Children.resize(FeasibleTransformations.size());
+    UnexploredIdx = 0;
+  }
+
+  unsigned getDepth() const {
+    if (!Parent) {
+      return 1;
+    }
+    return Parent->getDepth()+1;
+  }
+
+
+  llvm::raw_ostream& printPath(llvm::raw_ostream& OS = outs()) {
+    if (!Parent) {
+      OS << "Root";
+      return OS;
+    }
+    Parent->printPath(OS);
+    OS << " --> " << getTransformationName(Transformation.Kind) << " [" << computeScore() << "]";
+    return OS;
+  }
+
+
+  TimingStats Baseline;
+  LoopTransformTreePtr LoopTree;
+  LoopTransformTreePtr TransformedTree;
+  std::unique_ptr<TransformationTuner> TTuner;
+  LoopTransformation Transformation;
+  DecisionNode* Parent;
+  KnobConfig FullConfig;
+  SmallVector<LoopTransformation, 4> FeasibleTransformations;
+  SmallVector<NodePtr, 4> Children;
+  unsigned UnexploredIdx;
+};
+
+class TransformDecisionTree {
+public:
+  TransformDecisionTree(LoopTransformTreePtr OriginalTree, TimingStats BaselineStats)
+    : Root(BaselineStats, LoopTransformation(), std::move(OriginalTree)) {
+  }
+
+  DecisionNode& getMostPromisingNode() {
+    return *Root.getMostPromisingNode().second;
+  }
+
+  DecisionNode& getRoot() {
+    return Root;
+  }
+
+
+private:
+  DecisionNode Root;
+};
 
 
 class TransformTreeOptimizer: public Optimizer {
@@ -46,6 +299,8 @@ private:
                                             legacy::FunctionPassManager &FPM,
                                             KnobConfig &Cfg);
 
+  float computeSpeedup(TimingStats& Stats);
+
 private:
   clang::DiagnosticsEngine &Diags;
   const clang::HeaderSearchOptions &HSOpts;
@@ -54,9 +309,27 @@ private:
   const clang::LangOptions &LangOpts;
   llvm::TargetMachine &TM;
   Module *ModToOptimize;
+  llvm::Optional<ConfigEvalRequest> BaseLine;
   SmallVector<LoopTransformTreePtr, 2> LoopTrees;
 
+  std::unique_ptr<TransformDecisionTree> DecisionTree;
+  DecisionNode* CurrentNode;
+  std::pair<DecisionNode*, ConfigEvalRequest> BestNode;
+  KnobSet Knobs; // FIXME: Not set
+
+  // Old code
+#if 0
+  LoopTransformTreePtr CurrentTree;
+  SmallVector<LoopTransformation, 4> AppliedTransformations;
+  SmallVector<LoopTransformation, 4> TransformationQueue;
+  unsigned CurrentTransformationIdx;
+  std::unique_ptr<TransformationTuner> TTuner;
+  std::pair<unsigned, ConfigEvalRequest> BestTransformation;
+  KnobConfig FullConfig;
   KnobSet Knobs;
+  int Level;
+#endif
+
 };
 
 

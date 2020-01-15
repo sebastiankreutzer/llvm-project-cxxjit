@@ -46,11 +46,20 @@ struct KnobConfig {
   //
   //  KnobSet* Knobs;
 
-  llvm::DenseMap<KnobID, int> IntCfg;
-  llvm::DenseMap<KnobID, LoopTransformConfig> LoopCfg;
+  llvm::SmallDenseMap<KnobID, int, 8> IntCfg;
+  llvm::SmallDenseMap<KnobID, LoopTransformConfig, 4> LoopCfg;
 
   unsigned getNumDimensions() const {
     return IntCfg.size() + LoopCfg.size() * LoopTransformConfig::NUM_PARAMS;
+  }
+
+  void addAll(KnobConfig& Other) {
+    for (auto& It : Other.IntCfg) {
+      IntCfg[It.first] = It.second;
+    }
+    for (auto& It : Other.LoopCfg) {
+      LoopCfg[It.first] = It.second;
+    }
   }
 };
 

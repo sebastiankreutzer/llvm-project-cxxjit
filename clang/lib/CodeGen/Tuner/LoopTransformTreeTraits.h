@@ -6,6 +6,7 @@
 #define LLVM_LOOPTRANSFORMTREETRAITS_H
 
 #include "llvm/ADT/GraphTraits.h"
+#include "llvm/Support/DOTGraphTraits.h"
 
 #include "LoopTransformTree.h"
 
@@ -96,6 +97,7 @@ struct DOTGraphTraits<LoopTransformTree*> : public DefaultDOTGraphTraits {
   std::string getNodeLabel(const LoopNode * Node, const LoopTransformTree*) {
     return Node->getLoopName();
   }
+
 };
 
 

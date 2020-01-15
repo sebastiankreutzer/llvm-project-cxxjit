@@ -87,6 +87,16 @@ public:
     return Res;
   }
 
+  bool equals(const VecT &Other, double eps) {
+    if (Size != Other.Size)
+      return false;
+    for (size_t i = 0; i < Size; i++) {
+      if (std::abs(Vals[i] - Other[i]) > eps)
+        return false;
+    }
+    return true;
+  }
+
   friend raw_ostream &operator<<(raw_ostream &OS, VecT V) {
     OS << "[ ";
     for (T Val : V.Vals) {
@@ -159,9 +169,15 @@ struct VectorMapping {
     return Cfg;
   }
 
+  Vector<T> legalized(const Vector<T> &Vec) {
+    auto Legalized = Vec;
+    legalize(Legalized);
+    return Legalized;
+  }
+
   Vector<T> &legalize(Vector<T> &Vec) {
 
-    auto Restrict = [&Vec](unsigned Idx, unsigned Min, unsigned Max) {
+    auto Restrict = [&Vec](unsigned Idx, T Min, T Max) {
       Vec[Idx] = std::min(Max, std::max(Min, Vec[Idx]));
     };
 
@@ -175,6 +191,7 @@ struct VectorMapping {
         Restrict(i0 + i, LK.second->getMin(Param), LK.second->getMax(Param));
       }
     }
+    return Vec;
   }
 
 private:

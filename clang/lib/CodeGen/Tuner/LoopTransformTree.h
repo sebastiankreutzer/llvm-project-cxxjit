@@ -88,7 +88,14 @@ extern const char *TILE_FOLLOWUP_TILE_TAG;
 extern const char *INTERCHANGE_ENABLE_TAG;
 extern const char *INTERCHANGE_DEPTH_TAG;
 extern const char *INTERCHANGE_PERMUTATION_TAG;
-extern const char *INTERCHAGNE_FOLLOWUP_TAG;
+extern const char *INTERCHANGE_FOLLOWUP_TAG;
+extern const char *UNROLL_AND_JAM_ENABLE_TAG;
+extern const char *UNROLL_AND_JAM_COUNT_TAG;
+extern const char *UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG;
+extern const char *UNROLL_ENABLE_TAG;
+extern const char *UNROLL_COUNT_TAG;
+extern const char *UNROLL_FULL_TAG;
+
 }
 
 class LoopNode;
@@ -110,10 +117,13 @@ struct MDAttr {
 };
 
 using IntAttr = MDAttr<int>;
+using IntListAttr = MDAttr<SmallVector<int, 4>>;
 using BoolAttr = MDAttr<bool>;
 using StringAttr = MDAttr<SmallString<8>>;
 using FollowupAttr = MDAttr<LoopNode*>;
 using TagAttr = MDAttr<nullptr_t>; // TODO: this is dumb
+
+
 
 
 class LoopTransformTree {
@@ -193,6 +203,7 @@ private:
 using LoopTransformTreePtr = std::unique_ptr<LoopTransformTree>;
 
 class LoopNode {
+
   LoopNode(LoopTransformTree* Tree, bool Virtual, StringRef LoopName, LoopNode* Parent=nullptr)
       : Tree(Tree), IsVirtualLoop(Virtual), LoopName(LoopName), Parent(Parent)
   {
@@ -204,18 +215,69 @@ class LoopNode {
   friend class LoopTransformTree;
 public:
 
+  enum TransformFlags {
+    TILED_TILE = 1,
+    TILED_FLOOR = 1 << 1,
+    INTERCHANGED = 1 << 2,
+    UNROLLED = 1 << 3,
+    JAMMED = 1 << 4
+  };
+
   using LoopList = SmallVector<LoopNode*, 2>;
+
+  struct TripCountInfo {
+    unsigned TripCount;
+    bool IsExact;
+
+    TripCountInfo(unsigned TripCount, bool IsExact) : TripCount(TripCount), IsExact(IsExact) {}
+
+    TripCountInfo() : TripCountInfo(0, false){}
+
+    bool hasInfo() {
+      return TripCount != 0;
+    }
+
+  };
 
   struct AttributeBag {
     SmallVector<TagAttr, 1> Tags;
     SmallVector<IntAttr, 4> IntAttrs;
     SmallVector<BoolAttr, 4> BoolAttrs;
     SmallVector<StringAttr, 2> StringAttrs;
+    SmallVector<IntListAttr, 1> IntListAttrs;
     SmallVector<FollowupAttr, 2> FollowupAttrs;
   };
 
+  TripCountInfo& getTripCountInfo() {
+    return TCI;
+  }
+
+  const TripCountInfo& getTripCountInfo() const {
+    return TCI;
+  }
+
   LoopTransformTree* getTransformTree() {
     return Tree;
+  }
+
+  unsigned getFlags() const {
+    return Flags;
+  }
+
+  void setFlag(unsigned Flag) {
+    Flags |= Flag;
+  }
+
+  void clearFlags() {
+    Flags = 0;
+  }
+
+  bool isSet(unsigned Flag) {
+    return (bool) (Flags & Flag);
+  }
+
+  bool isSetInPredecessors(unsigned Flag) {
+    return isSet(Flag) || (Predecessor ? Predecessor->isSetInPredecessors(Flag) : false);
   }
 
   void addSubLoop(LoopNode* LN) {
@@ -322,6 +384,12 @@ public:
     Attrs.IntAttrs.emplace_back(Name, Val, Inherit);
   }
 
+  void addIntListAttribute(StringRef Name, ArrayRef<int> Val, bool Inherit=false) {
+    SmallVector<int, 4> Perm;
+    Perm.insert(Perm.begin(), Val.begin(), Val.end());
+    Attrs.IntListAttrs.emplace_back(Name, std::move(Perm), Inherit);
+  }
+
   void addBoolAttribute(StringRef Name, bool Val, bool Inherit=false) {
     Attrs.BoolAttrs.emplace_back(Name, Val, Inherit);
   }
@@ -338,6 +406,14 @@ public:
     return Attrs;
   }
 
+  bool hasInterchangeBarrier() {
+    return InterchangeBarrier;
+  }
+
+  void setInterchangeBarrier() {
+    InterchangeBarrier = true;
+  }
+
 private:
   LoopTransformTree* Tree;
   bool IsVirtualLoop;
@@ -346,24 +422,14 @@ private:
   LoopList SubLoops;
   LoopNode* Predecessor{nullptr};
   LoopNode* Successor{nullptr};
+  unsigned Flags{0};
   AttributeBag Attrs;
+  TripCountInfo TCI;
+  bool InterchangeBarrier{false};
 };
 
 
 
-void applyTiling(LoopNode *RootNode);
-
-void applyInterchange(LoopNode* RootNode);
-
-inline void applyTiling(LoopTransformTree *Tree) {
-  assert(Tree->getRoot() && "Tree is empty");
-  applyTiling(Tree->getRoot());
-}
-
-inline void applyInterchange(LoopTransformTree *Tree) {
-  assert(Tree->getRoot() && "Tree is empty");
-  applyInterchange(Tree->getRoot());
-}
 
 }
 }

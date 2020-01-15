@@ -358,15 +358,15 @@ private:
 
     auto Mod = CD.createModule(Name);
 
-    JIT_DEBUG(dumpModule(*Mod, "Initial module"));
+    JIT_DEBUG(util::dumpModule(*Mod, "Initial module"));
 
     // TODO: Change module link time? This could be done for every
     // reoptimization, which would allow new definitions to
     //       be linked in too. However, this also introduces dependencies on
     //       other JIT modules.
-    CD.linkInAvailableDefs(*Mod, false);
+    //CD.linkInAvailableDefs(*Mod, false); // FIXME: Uncomment this!
 
-    JIT_DEBUG(dumpModule(*Mod, "Module after linking"));
+    JIT_DEBUG(util::dumpModule(*Mod, "Module after linking"));
 
     // TODO: Make this configurable
 #define TRANSFORM_TREE_OPT
@@ -399,6 +399,8 @@ public:
   explicit TunerDriver(CompilerData &CD) : Driver(CD){};
 
   InstData resolve(const ThisInstInfo &Inst, unsigned Idx) override;
+
+  void* finishTuning(const InstInfo& Inst);
 
 private:
   llvm::DenseMap<InstInfo, std::unique_ptr<TemplateTuningData>, InstMapInfo>

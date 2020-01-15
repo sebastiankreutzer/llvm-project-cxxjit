@@ -21,7 +21,14 @@ const char *TILE_FOLLOWUP_TILE_TAG = "llvm.loop.tile.followup_tile";
 const char *INTERCHANGE_ENABLE_TAG = "llvm.loop.interchange.enable";
 const char *INTERCHANGE_DEPTH_TAG = "llvm.loop.interchange.depth";
 const char *INTERCHANGE_PERMUTATION_TAG = "llvm.loop.interchange.permutation";
-const char *INTERCHAGNE_FOLLOWUP_TAG = "llvm.loop.interchange.followup_interchanged";
+const char *INTERCHANGE_FOLLOWUP_TAG = "llvm.loop.interchange.followup_interchanged";
+const char *UNROLL_AND_JAM_ENABLE_TAG = "llvm.loop.unroll_and_jam.enable";
+const char *UNROLL_AND_JAM_COUNT_TAG = "llvm.loop.unroll_and_jam.count";
+const char *UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG = "llvm.loop.unroll_and_jam.followup_outer_unrolled";
+const char *UNROLL_ENABLE_TAG = "llvm.loop.unroll.enable";
+const char *UNROLL_COUNT_TAG = "llvm.loop.unroll.count";
+const char *UNROLL_FULL_TAG = "llvm.loop.unroll.full";
+
 }
 
 LoopTransformTree::LoopTransformTree(LoopTransformTree &&Rhs) noexcept
@@ -35,7 +42,46 @@ LoopTransformTree::LoopTransformTree(LoopTransformTree &&Rhs) noexcept
 
 std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
   auto TreeClone = std::make_unique<LoopTransformTree>();
-  TreeClone->Root = TreeClone->cloneNode(this->Root);
+
+  // First create a copy of all nodes
+  for (auto& It : Nodes) {
+    auto& Node = It.second;
+    LoopNodePtr Clone = std::unique_ptr<LoopNode>(new LoopNode(TreeClone.get(), Node->IsVirtualLoop, Node->LoopName, nullptr));
+    Clone->Flags = Node->Flags;
+    Clone->TCI = Node->TCI;
+    Clone->InterchangeBarrier = Node->InterchangeBarrier;
+    TreeClone->Nodes[Clone->LoopName] = std::move(Clone);
+  }
+
+  auto getClonedNode = [&TreeClone](LoopNode* Original) -> LoopNode* {
+    if (Original)
+      return TreeClone->getNode(Original->LoopName);
+    return nullptr;
+  };
+
+  // Then fix edges, cross-references etc.
+  for (auto& It : TreeClone->Nodes) {
+    auto& Node = It.second;
+    auto* OrigNode = getNode(It.first());
+    Node->Parent = getClonedNode(OrigNode->Parent);
+
+    Node->Predecessor = getClonedNode(OrigNode->Predecessor);
+    for (auto *SubLoop : OrigNode->SubLoops) {
+      Node->SubLoops.push_back(getClonedNode(SubLoop));
+    }
+
+    Node->Successor = getClonedNode(OrigNode->Successor);
+
+    Node->Attrs = OrigNode->Attrs;
+
+    // Fix pointers in attributes
+    for (auto& Attr : Node->Attrs.FollowupAttrs) {
+      Attr.Val = getClonedNode(Attr.Val);
+    }
+
+  }
+
+  TreeClone->Root = getClonedNode(getRoot());
   // The node count will be temporarily false but that doesn't matter since all names will be copied.
   TreeClone->NodeCount = TreeClone->Nodes.size();
   assert(TreeClone->NodeCount == this->NodeCount && "The node count of the cloned tree does not match the original tree. Are there abandoned nodes?");
@@ -43,6 +89,7 @@ std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
 }
 
 LoopNode* LoopTransformTree::cloneNode(LoopNode* Node) {
+  llvm_unreachable("");
   if (!Node)
     return nullptr;
   auto* Existing = getNode(Node->LoopName);
@@ -55,19 +102,18 @@ LoopNode* LoopTransformTree::cloneNode(LoopNode* Node) {
   Nodes[Clone->LoopName] = std::move(Clone);
 
   ClonePtr->Predecessor = cloneNode(Node->Predecessor);
+  for (auto *SubLoop : Node->SubLoops) {
+    ClonePtr->SubLoops.push_back(cloneNode(SubLoop));
+  }
+
+  ClonePtr->Successor = cloneNode(Node->Successor);
+
   ClonePtr->Attrs = Node->Attrs;
 
   // Fix pointers in attributes
   for (auto& Attr : ClonePtr->Attrs.FollowupAttrs) {
     Attr.Val = cloneNode(Attr.Val);
   }
-
-  for (auto* SubLoop : Node->SubLoops) {
-    ClonePtr->SubLoops.push_back(cloneNode(SubLoop));
-  }
-
-  ClonePtr->Successor = cloneNode(Node->Successor);
-
 
   return ClonePtr;
 }
@@ -96,74 +142,6 @@ void LoopTransformTree::setRoot(LoopNode *Node) {
   this->Root = Node;
 }
 
-void findValidTransformations(LoopNode* RootNode) {
-
-}
-
-void applyInterchange(LoopNode* RootNode) {
-  if (!RootNode->isTightlyNested()) {
-    for (auto& SubLoop : RootNode->subLoops()) {
-      applyInterchange(&*SubLoop);
-    }
-    return; // TODO: Result of subloops
-  }
-
-  unsigned Depth = RootNode->getRelativeMaxDepth();
-
-  RootNode->addBoolAttribute(MDTags::INTERCHANGE_ENABLE_TAG, true);
-  RootNode->addIntAttribute(MDTags::INTERCHANGE_DEPTH_TAG, Depth);
-  RootNode->addStringAttribute(MDTags::INTERCHANGE_PERMUTATION_TAG, "");
-}
-
-void applyTiling(LoopNode *RootNode) {
-  if (!RootNode->isTightlyNested()) {
-    for (auto& SubLoop : RootNode->subLoops()) {
-      applyTiling(&*SubLoop);
-    }
-    return; // TODO: Result of subloops
-  }
-
-  unsigned Depth = RootNode->getRelativeMaxDepth();
-
-  RootNode->addBoolAttribute(MDTags::TILE_ENABLE_TAG, true);
-  RootNode->addIntAttribute(MDTags::TILE_DEPTH_TAG, Depth);
-  RootNode->addStringAttribute(MDTags::TILE_PEEL_TAG, "rectangular");
-
-  auto& Tree = *RootNode->getTransformTree();
-
-  // Add metadata and create virtual successor loops
-  LoopNode *Node = RootNode;
-  SmallVector<LoopNode*, 3> TileLoops;
-  LoopNode* LastFloor = nullptr;
-  while (true) {
-    Node->addIntAttribute(MDTags::TILE_SIZE_TAG, rand() % 128); // TODO: Setup loop knob here
-
-    auto *FloorNode = Tree.makeVirtualNode();
-    if (LastFloor)
-      LastFloor->addSubLoop(FloorNode); // TODO: Should they even be added here as subloops? Relationship is apparent from original structure
-    Node->addSuccesor(FloorNode);
-    Node->addRedirectAttribute(MDTags::TILE_FOLLOWUP_FLOOR_TAG, FloorNode);
-    LastFloor = FloorNode;
-
-    auto *TileNode = Tree.makeVirtualNode();
-    TileLoops.push_back(TileNode);
-    Node->addRedirectAttribute(MDTags::TILE_FOLLOWUP_TILE_TAG, TileNode);
-
-    auto *Child = Node->getFirstSubLoop(); // Perfect nesting
-    if (!Child)
-      break;
-    Node = Child;
-  }
-
-  // Place tile loops inside the innermost floor loop.
-  // NOTE: We do full tiling, i.e. the innermost tile loop may not have any subloops inherited by the original loop.
-  auto* Parent = LastFloor;
-  for (auto* TileNode : TileLoops) {
-    Parent->addSubLoop(TileNode);
-    Parent = TileNode;
-  }
-
-}
 
 }
 }

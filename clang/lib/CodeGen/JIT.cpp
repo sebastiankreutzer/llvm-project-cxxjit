@@ -290,12 +290,37 @@ llvm::DenseMap<const void *, TUData> TUCompilerData;
 llvm::sys::SmartMutex<false> IMutex;
 llvm::DenseMap<InstInfo, InstData, InstMapInfo> Instantiations;
 
+enum class DriverType {
+  FAST, TUNER
+};
+
+inline DriverType loadDriverTypeEnv() {
+  auto DriverStr = std::getenv("CJ_DRIVER");
+  if (DriverStr && std::strcmp(DriverStr, "tuner") == 0) {
+    return DriverType::TUNER;
+  } else {
+    return DriverType::FAST;
+  }
+}
+
+inline LogLevel loadDebugLvlEnv() {
+  auto DebugStr = std::getenv("CJ_DEBUG");
+  unsigned Lvl = LOG_ERROR;
+  if (DebugStr) {
+    int StrInt = std::atoi(DebugStr);
+    if (StrInt >= 0 && StrInt <= LOG_DEBUG)
+      Lvl = StrInt;
+  }
+  return static_cast<LogLevel>(Lvl);
+}
+
 } // anonymous namespace
 
 namespace clang {
 namespace jit {
 
-unsigned LogLvl = LOG_NONE;
+std::once_flag LogLvlLoaded;
+unsigned LogLvl = LOG_ERROR;
 
 void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
   Gen->HandleTranslationUnit(C);
@@ -1033,6 +1058,14 @@ void CompilerData::linkInAvailableDefs(llvm::Module &Mod,
     F.setName(UniqueName);
   }
 
+  // TODO: This is a bug, there should not be any comdats in the saved module. This should be adressed before saving.
+  for (auto &F : RunningMod->functions()) {
+    if (F.isDeclarationForLinker() && F.hasComdat()) {
+      errs() << "Saved module contains comdat for global " << F.getName() << ": deleting comdat\n";
+      F.setComdat(nullptr);
+    }
+  }
+
   prepareForLinking(&Mod, RunningMod.get());
   if (Linker::linkModules(Mod, llvm::CloneModule(*RunningMod),
                           Linker::Flags::OverrideFromSrc))
@@ -1111,8 +1144,15 @@ void CompilerData::makeDefsAvailable(std::unique_ptr<llvm::Module> NewMod) {
     fatal();
 }
 
+void updateActiveInstantiation(const InstInfo& Inst, InstData Data) {
+  llvm::sys::ScopedLock Guard(IMutex);
+  Instantiations[Inst] = std::move(Data);
+}
+
+
 } // namespace jit
 } // namespace clang
+
 
 extern "C"
 #ifdef _MSC_VER
@@ -1127,10 +1167,6 @@ extern "C"
                           const void *NTTPValues, unsigned NTTPValuesSize,
                           const char **TypeStrings, unsigned TypeStringsCnt,
                           const char *InstKey, unsigned Idx) {
-
-#ifdef ENABLE_JIT_DEBUG
-  loadDebugFlag();
-#endif
 
   bool AssumeInitialized = false;
 
@@ -1162,18 +1198,27 @@ extern "C"
 
     auto TUCDI = TUCompilerData.find(ASTBuffer);
     if (TUCDI == TUCompilerData.end()) {
+#ifdef ENABLE_JIT_DEBUG
+      std::call_once(LogLvlLoaded, []() {
+        clang::jit::LogLvl = loadDebugLvlEnv();
+      });
+#endif
+
       auto *CD =
           new CompilerData(CmdArgs, CmdArgsLen, ASTBuffer, ASTBufferSize,
                            IRBuffer, IRBufferSize, LocalPtrs, LocalPtrsCnt,
                            LocalDbgPtrs, LocalDbgPtrsCnt, DeviceData, DevCnt);
       auto &TUD = TUCompilerData[ASTBuffer];
       TUD.CD.reset(CD);
-      auto DriverStr = std::getenv("CJ_DRIVER");
-      if (DriverStr && std::strcmp(DriverStr, "tuner") == 0) {
-        TUD.CompilerDriver = std::make_unique<TunerDriver>(*CD);
-        JIT_INFO(llvm::dbgs() << "JIT Tuning enabled\n");
-      } else {
-        TUD.CompilerDriver = std::make_unique<SimpleDriver>(*CD);
+      static const auto ActiveDriverType = loadDriverTypeEnv();
+      switch(ActiveDriverType) {
+        case DriverType::TUNER:
+          JIT_INFO(llvm::dbgs() << "JIT Tuning enabled\n");
+          TUD.CompilerDriver = std::make_unique<TunerDriver>(*CD);
+          break;
+        case DriverType::FAST:
+          TUD.CompilerDriver = std::make_unique<SimpleDriver>(*CD);
+          break;
       }
       CDriver = TUD.CompilerDriver.get();
     } else {
@@ -1191,11 +1236,8 @@ extern "C"
                                     TypeStrings, TypeStringsCnt),
                        Idx);
 
-  {
-    llvm::sys::ScopedLock Guard(IMutex);
-    Instantiations[InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings,
-                            TypeStringsCnt)] = InstData;
-  }
+  updateActiveInstantiation(InstInfo(InstKey, NTTPValues, NTTPValuesSize, TypeStrings,
+                                     TypeStringsCnt), InstData);
 
   return InstData.FPtr;
 }

@@ -183,14 +183,26 @@ public:
     return NewMD;
   }
 
-  inline MDNode *addTaggedBool(StringRef Tag, bool Val) {
+  MDNode *addTaggedBool(StringRef Tag, bool Val) {
     auto C = ConstantInt::get(llvm::Type::getInt1Ty(Ctx), Val ? 1 : 0);
     return addTaggedConstantMD(Tag, C);
   }
 
-  inline MDNode *addTaggedInt32(StringRef Tag, int Val) {
+  MDNode *addTaggedInt32(StringRef Tag, int Val) {
     auto C = ConstantInt::get(llvm::Type::getInt32Ty(Ctx), Val);
     return addTaggedConstantMD(Tag, C);
+  }
+
+  MDNode* addTaggedInt32List(StringRef Tag, ArrayRef<int> Vals) {
+    MDNode* NewMD = MDNode::get(Ctx, {MDString::get(Ctx, Tag)});
+    for (auto i : Vals) {
+      auto C = ConstantInt::get(llvm::Type::getInt32Ty(Ctx), i);
+      auto ConstMD = MDNode::get(Ctx, {ConstantAsMetadata::get(C)});
+      NewMD = MDNode::concatenate(NewMD, ConstMD);
+    }
+    append(NewMD);
+    return NewMD;
+
   }
 
   inline MDNode *addTaggedMD(StringRef Tag, MDNode* OtherMD) {

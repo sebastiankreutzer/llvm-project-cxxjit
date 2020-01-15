@@ -8,7 +8,7 @@ namespace clang {
 namespace jit {
 
 void SimplexTuner::log(StringRef Msg) const {
-  outs() << "Simplex Tuner: " << Msg << "\n";
+//  outs() << "Simplex Tuner: " << Msg << "\n";
 }
 
 void SimplexTuner::init() {}
@@ -28,6 +28,7 @@ ConfigEvalRequest SimplexTuner::generateNextConfig() {
     auto DefaultCfg = createDefaultConfig(Knobs);
 
     ToEval = createInitialVertices(Knobs, DefaultCfg);
+    ToEval.push_back(DefaultCfg);
     IterCount = 0;
 
     log("Simplex has " + std::to_string(ToEval.size()) + " Vertices");
@@ -46,17 +47,35 @@ ConfigEvalRequest SimplexTuner::generateNextConfig() {
       CompareConfigEval Comp;
       std::sort(Simplex.begin(), Simplex.end(), Comp);
 
-      std::vector<Vector < float>>
-      MappedSimplex;
-      for (unsigned i = 0; i < Simplex.size() - 1; i++) {
-        //        outs() << "Vertex " << i << ": " << Mapping.map(Simplex[i].Cfg)
-        //        << "\n"; outs() << "Corresponding config: \n"; KnobState
-        //        KS(Knobs, Simplex[i].Cfg); KS.dump();
+      std::vector<Vector < float>> MappedSimplex;
+      for (unsigned i = 0; i < Simplex.size(); i++) {
+//                outs() << "Vertex " << i << ": " << Mapping.map(Simplex[i].Cfg)
+//                << "\n"; outs() << "Corresponding config: \n"; KnobState
+//                KS(Knobs, Simplex[i].Cfg); KS.dump();
         MappedSimplex.push_back(Mapping.map(Simplex[i].Cfg));
       }
+
+      // Check if all at one point
+      auto First = Mapping.legalized(MappedSimplex.front());
+      bool AllEqual = true;
+      for (auto Val : MappedSimplex) {
+        if (!Mapping.legalized(Val).equals(First, 1e-2)) {
+          AllEqual = false;
+          break;
+        }
+      }
+      if (AllEqual) {
+//        errs() << "All vertices are equal! Resetting...\n";
+        Simplex.clear();
+        Initialized = false;
+        State = REFLECT;
+        return generateNextConfig();
+      }
+
       // Worst point is left out
-      Centroid = centroid<float>(MappedSimplex.begin(), MappedSimplex.end() - 1);
-      auto ReflectedVec = Centroid + (Centroid - MappedSimplex.back()) * P.Alpha;
+      Centroid = Mapping.legalized(centroid<float>(MappedSimplex.begin(), MappedSimplex.end() - 1));
+
+      auto ReflectedVec = Mapping.legalized(Centroid + (Centroid - MappedSimplex.back()) * P.Alpha);
       Reflected = ConfigEvalRequest(Mapping.unmap(ReflectedVec));
       State = EVAL_REFLECTED;
       log("Reflection");
@@ -67,7 +86,7 @@ ConfigEvalRequest SimplexTuner::generateNextConfig() {
              "Evaluation not finished");
       if (Reflected.Stats->betterThan(*Simplex.front().Stats)) {
         auto ExpandedVec =
-            Centroid + (Mapping.map(Reflected.Cfg) - Centroid) * P.Gamma;
+            Mapping.legalized(Centroid + (Mapping.map(Reflected.Cfg) - Centroid) * P.Gamma);
         Expanded = ConfigEvalRequest(Mapping.unmap(ExpandedVec));
         log("Expansion");
         State = EVAL_EXPANDED;
@@ -82,7 +101,7 @@ ConfigEvalRequest SimplexTuner::generateNextConfig() {
       }
 
       auto ContractedVec =
-          Centroid + (Mapping.map(Simplex.back().Cfg) - Centroid) * P.Rho;
+          Mapping.legalized(Centroid + (Mapping.map(Simplex.back().Cfg) - Centroid) * P.Rho);
       Contracted = ConfigEvalRequest(Mapping.unmap(ContractedVec));
       State = EVAL_CONTRACTED;
       log("Contraction");

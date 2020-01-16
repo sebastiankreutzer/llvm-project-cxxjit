@@ -140,11 +140,15 @@ struct DecisionNode {
   }
 
   float getUnexploredMultiplier() {
-    if (UnexploredIdx < FeasibleTransformations.size()) {
-      return getMultiplier(FeasibleTransformations[UnexploredIdx]);
+    if (isFullyExplored()) {
+      // All children expanded, nothing to do
+      return 0;
     }
-    // All children expanded, nothing to do
-    return 0;
+    return getMultiplier(FeasibleTransformations[UnexploredIdx]);
+  }
+
+  bool isFullyExplored() {
+    return UnexploredIdx >= FeasibleTransformations.size();
   }
 
   std::pair<float, DecisionNode*> getMostPromisingNode() {
@@ -261,6 +265,10 @@ public:
     return *Root.getMostPromisingNode().second;
   }
 
+  bool isFullyExplored() {
+    return Root.isFullyExplored();
+  }
+
   DecisionNode& getRoot() {
     return Root;
   }
@@ -282,7 +290,7 @@ public:
                          const clang::TargetOptions &TOpts, const clang::LangOptions &LOpts,
                          llvm::TargetMachine &TM)
       : Diags(Diags), HSOpts(HeaderOpts), CodeGenOpts(CGOpts),
-        TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr) {
+        TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr), Done(false) {
   }
 
   void init(llvm::Module* M) override;
@@ -291,6 +299,10 @@ public:
 
   const KnobSet& getKnobs() override {
     return Knobs;
+  }
+
+  bool isDone() override {
+    return Done;
   }
 
 private:
@@ -302,6 +314,9 @@ private:
   float computeSpeedup(TimingStats& Stats);
 
 private:
+  using LoopTreeList = SmallVector<LoopTransformTreePtr, 2>;
+  using LoopTreeIterator = LoopTreeList::iterator ;
+
   clang::DiagnosticsEngine &Diags;
   const clang::HeaderSearchOptions &HSOpts;
   const clang::CodeGenOptions &CodeGenOpts;
@@ -310,11 +325,27 @@ private:
   llvm::TargetMachine &TM;
   Module *ModToOptimize;
   llvm::Optional<ConfigEvalRequest> BaseLine;
-  SmallVector<LoopTransformTreePtr, 2> LoopTrees;
 
+  // Trees corresponding to loop nests in the function
+  LoopTreeList LoopTrees;
+
+  // Iterator of the currently tuned loop nest
+  LoopTreeIterator CurrentLoopTree;
+  // Transformation decision tree for the current loop nest
   std::unique_ptr<TransformDecisionTree> DecisionTree;
+  // Node that is currently investigated
   DecisionNode* CurrentNode;
+  // Best node in the current tree, corresponds to a sequence of transformations
   std::pair<DecisionNode*, ConfigEvalRequest> BestNode;
+
+
+  // Loop nests are tuned one after the other. This list contains the ones that have been finished.
+  LoopTreeList FinalizedTrees;
+  KnobConfig FinalizedConfig;
+
+  // All loop nests have been tuned.
+  bool Done;
+
   KnobSet Knobs; // FIXME: Not set
 
   // Old code

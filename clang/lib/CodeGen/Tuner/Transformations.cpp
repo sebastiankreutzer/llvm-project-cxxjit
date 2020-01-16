@@ -300,26 +300,26 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConf
 
       // FIXME: Polly triggers an assertion when the trip count is a multiple of the tile size.
       //  This is a workaround that should be removed ASAP.
-      auto* Node = Root;
-      bool Change = true;
-      for (auto i = 0; i < Sizes.size(); i++) {
-        Node = Node->getLastSuccessor();
-        if (!Node->getOriginalLoop()->getTripCountInfo().hasInfo() || Node->getOriginalLoop()->getTripCountInfo().TripCount % Sizes[i] != 0) {
-          //errs() << "No change: " << Node->getTripCountInfo().TripCount << "\n";
-          Change = false;
-          break;
-        }
-        if (Node->getFirstSubLoop())
-          Node = Node->getFirstSubLoop();
-      }
-      if (Change) {
-        auto& Size = Sizes.back();
-        while (Node->getOriginalLoop()->getTripCountInfo().TripCount % Size == 0) {
-          JIT_INFO(errs() << "Warning: Changing tile size of loop from " << Size << " to " << Size + 1
-                 << " to work around polly bug\n");
-          Size++;
-        }
-      }
+//      auto* Node = Root;
+//      bool Change = true;
+//      for (auto i = 0; i < Sizes.size(); i++) {
+//        Node = Node->getLastSuccessor();
+//        if (!Node->getOriginalLoop()->getTripCountInfo().hasInfo() || Node->getOriginalLoop()->getTripCountInfo().TripCount % Sizes[i] != 0) {
+//          //errs() << "No change: " << Node->getTripCountInfo().TripCount << "\n";
+//          Change = false;
+//          break;
+//        }
+//        if (Node->getFirstSubLoop())
+//          Node = Node->getFirstSubLoop();
+//      }
+//      if (Change) {
+//        auto& Size = Sizes.back();
+//        while (Node->getOriginalLoop()->getTripCountInfo().TripCount % Size == 0) {
+//          JIT_INFO(errs() << "Warning: Changing tile size of loop from " << Size << " to " << Size + 1
+//                 << " to work around polly bug\n");
+//          Size++;
+//        }
+//      }
 
       unsigned Depth = Sizes.size();
       assert(Depth > 0);
@@ -499,7 +499,7 @@ void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, Strin
 
   Root->addBoolAttribute(MDTags::TILE_ENABLE_TAG, true);
   Root->addIntAttribute(MDTags::TILE_DEPTH_TAG, Depth);
-  Root->addStringAttribute(MDTags::TILE_PEEL_TAG, PeelType);
+  // Root->addStringAttribute(MDTags::TILE_PEEL_TAG, PeelType); // FIXME: Currently leads to a bug in polly
 
   auto& Tree = *Root->getTransformTree();
 

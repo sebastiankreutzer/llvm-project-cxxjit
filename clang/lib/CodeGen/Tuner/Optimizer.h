@@ -26,6 +26,10 @@ public:
 
   virtual const KnobSet& getKnobs() = 0;
 
+  virtual bool isDone() {
+    return false;
+  }
+
 };
 
 }

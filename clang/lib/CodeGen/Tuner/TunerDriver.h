@@ -312,13 +312,19 @@ struct TemplateTuningData {
       JIT_DEBUG(dbgs() << "Selected specialization:\n");
       JIT_DEBUG(KnobState(Set, ActiveConfig).dump());
 
-      if (Specializations.find(ActiveConfig) == Specializations.end()) {
+      Initialized = true;
+      auto It = Specializations.find(ActiveConfig);
+      if (It == Specializations.end()) {
         auto TAs = TunableArgs.getArgsForConfig(*CD.Ctx, ActiveConfig);
         Specializations[ActiveConfig] = instantiate(TAs, EvalRequest);
       }
-      Initialized = true;
+
     }
     return Specializations[ActiveConfig];
+  }
+  
+  bool hasTunableArgs() {
+    return TunableArgs.isTunable();
   }
 
   JITTemplateInstantiation* getSpecialization(const KnobConfig& Cfg) {

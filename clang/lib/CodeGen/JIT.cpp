@@ -322,6 +322,7 @@ namespace jit {
 std::once_flag LogLvlLoaded;
 unsigned LogLvl = LOG_ERROR;
 
+
 void BackendConsumer::HandleTranslationUnit(ASTContext &C) {
   Gen->HandleTranslationUnit(C);
 
@@ -361,12 +362,25 @@ ClangJIT::ClangJIT(DenseMap<StringRef, const void *> &LocalSymAddrs)
                     return ObjLayerT::Resources{
                         std::make_shared<SectionMemoryManager>(), Resolver};
                   }),
-      CompileLayer(ObjectLayer, llvm::orc::SimpleCompiler(*TM)),
+      CompileLayer(ObjectLayer, CopyingSimpleCompiler(*TM)),
       CXXRuntimeOverrides([this](const std::string &S) { return mangle(S); }) {
   llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 }
 
-llvm::orc::VModuleKey ClangJIT::addModule(std::unique_ptr<llvm::Module> M) {
+llvm::orc::VModuleKey ClangJIT::addPrecompiledModule(MemBufferPtr MCBuf) {
+  // TODO: We're not handling constructors/destructors yet!
+  auto K = ES.allocateVModule();
+  if (auto Err = ObjectLayer.addObject(K, std::move(MCBuf))) {
+    errs() << "Failed to restore object file: " << Err;
+    fatal(); // TODO: Fall back to normal instantiation instead.
+  }
+  ModuleKeys.push_back(K);
+
+  return K;
+
+}
+
+llvm::orc::VModuleKey ClangJIT::addModule(std::unique_ptr<llvm::Module> M, MemBufferPtr* MCCopyTarget) {
   // Record the static constructors and destructors. We have to do this before
   // we hand over ownership of the module to the JIT.
   std::vector<std::string> CtorNames, DtorNames;
@@ -377,9 +391,14 @@ llvm::orc::VModuleKey ClangJIT::addModule(std::unique_ptr<llvm::Module> M) {
     if (Dtor.Func && !Dtor.Func->hasAvailableExternallyLinkage())
       DtorNames.push_back(mangle(Dtor.Func->getName()));
 
+  // Copy generated machine code
+  CompileLayer.getCompiler().copyResultTo(MCCopyTarget);
+
   auto K = ES.allocateVModule();
   cantFail(CompileLayer.addModule(K, std::move(M)));
   ModuleKeys.push_back(K);
+
+  CompileLayer.getCompiler().disableCopy();
 
   // Run the static constructors, and save the static destructor runner for
   // execution when the JIT is torn down.

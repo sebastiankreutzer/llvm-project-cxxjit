@@ -52,6 +52,10 @@ struct JITContext {
   //
   //    }
 
+  std::string getMCFilename() const {
+    return (DeclName + ".jit.o").str();
+  }
+
   // Whether the function currently available in the JIT engine
   bool Emitted{false};
   // The unoptimized module
@@ -75,9 +79,10 @@ struct TunedCodeVersion {
 
   TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr,
                    TimingGlobals Globals,
-                   ConfigEvalRequest Request)
+                   ConfigEvalRequest Request,
+                   std::unique_ptr<MemoryBuffer> MCBuffer)
       : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals),
-        Request(std::move(Request)) {}
+        Request(std::move(Request)), MCBuffer(std::move(MCBuffer)) {}
 
   TimingStats updateStats() {
     if (!Globals.Valid()) {
@@ -96,9 +101,22 @@ struct TunedCodeVersion {
   void *FPtr{nullptr};
   TimingGlobals Globals;
   ConfigEvalRequest Request;
-  // TimingStats Stats;
-  // TODO: Place info about instantiation specific optimization here
+  std::unique_ptr<MemoryBuffer> MCBuffer;
 };
+
+inline bool serialize(TunedCodeVersion& Version, StringRef Filename) {
+  std::error_code Error;
+  llvm::raw_fd_ostream OS(Filename, Error, llvm::sys::fs::CD_CreateAlways);
+  if (Error) {
+    errs() << "Unable to write JIT object " << Filename << ":\n";
+    errs() << Error.message() << "\n";
+    return false;
+  }
+  auto MCBuf = Version.MCBuffer.get();
+  OS << MCBuf->getBuffer();
+  OS.close();
+  return true;
+}
 
 struct JITTemplateInstantiation {
 
@@ -111,7 +129,7 @@ struct JITTemplateInstantiation {
     auto It = Instantiations.find(Inst.ID);
     assert(It == Instantiations.end() &&
            "Instantiation with same ID already exists!");
-    Instantiations[Inst.ID] = Inst;
+    Instantiations[Inst.ID] = std::move(Inst);
   }
 
   JITTemplateInstantiation(JITContext &&Context)
@@ -122,8 +140,8 @@ struct JITTemplateInstantiation {
       errs() << "Invalid instantiation!\n";
       return;
     }
-    Instantiations[Inst.ID] = Inst;
     ActiveVersionID = Inst.ID;
+    Instantiations[Inst.ID] = std::move(Inst);
   }
 
   TunedCodeVersion *getCurrentBest() {
@@ -157,6 +175,10 @@ struct JITTemplateInstantiation {
       *Request.Stats = STracker.BestStats;
   }
 
+  bool empty() const {
+    return Instantiations.empty();
+  }
+
   // Holds information that is needed for recompilation/reoptimization
   JITContext Context;
 
@@ -170,6 +192,7 @@ struct JITTemplateInstantiation {
   VersionID ActiveVersionID{InvalidID};
 
   VersionID nextVersionID() { return VersionCounter++; }
+
 
 private:
   VersionID VersionCounter{InvalidID + 1};
@@ -322,7 +345,7 @@ struct TemplateTuningData {
     }
     return Specializations[ActiveConfig];
   }
-  
+
   bool hasTunableArgs() {
     return TunableArgs.isTunable();
   }
@@ -361,6 +384,8 @@ private:
     //    }
     TemplateInstantiationHelper InstHelper(CD, Idx);
     auto Name = InstHelper.instantiate(TAs);
+
+
 
     auto Mod = CD.createModule(Name);
 

@@ -125,6 +125,35 @@ inline void fatal() {
   report_fatal_error("Clang JIT failed!");
 }
 
+using MemBufferPtr = std::unique_ptr<MemoryBuffer>;
+
+// TODO: This is kinda hacky
+// It's probably cleaner to get to the MC by reimplementing the CompileLayer
+class CopyingSimpleCompiler: public llvm::orc::SimpleCompiler {
+public:
+
+  CopyingSimpleCompiler(TargetMachine &TM, ObjectCache *ObjCache = nullptr)
+      : SimpleCompiler(TM, ObjCache), CopyDst(nullptr) {}
+
+  void copyResultTo(CompileResult* CopyDst) {
+    this->CopyDst = CopyDst;
+  }
+
+  void disableCopy() {
+    CopyDst = nullptr;
+  }
+
+  CompileResult operator()(llvm::Module &M) {
+    auto Res = SimpleCompiler::operator()(M);
+    if (CopyDst) {
+      *CopyDst = MemoryBuffer::getMemBufferCopy(Res->getBuffer());
+    }
+    return Res;
+  }
+private:
+  CompileResult* CopyDst;
+
+};
 
 // This is a variant of ORC's LegacyLookupFnResolver with a cutomized
 // getResponsibilitySet behavior allowing us to claim responsibility for weak
@@ -189,7 +218,8 @@ createClangLookupResolver(llvm::orc::ExecutionSession &ES,
 class ClangJIT {
 public:
   using ObjLayerT = llvm::orc::LegacyRTDyldObjectLinkingLayer;
-  using CompileLayerT = llvm::orc::LegacyIRCompileLayer<ObjLayerT, llvm::orc::SimpleCompiler>;
+  //using CompileLayerT = llvm::orc::LegacyIRCompileLayer<ObjLayerT, llvm::orc::SimpleCompiler>;
+  using CompileLayerT = llvm::orc::LegacyIRCompileLayer<ObjLayerT, CopyingSimpleCompiler>;
 
   ClangJIT(DenseMap<StringRef, const void *> &LocalSymAddrs);
 
@@ -204,7 +234,9 @@ public:
 
   llvm::TargetMachine &getTargetMachine() { return *TM; }
 
-  llvm::orc::VModuleKey addModule(std::unique_ptr<llvm::Module> M);
+  llvm::orc::VModuleKey addPrecompiledModule(MemBufferPtr MCBuf);
+
+  llvm::orc::VModuleKey addModule(std::unique_ptr<llvm::Module> M, MemBufferPtr* CopyTarget = nullptr);
 
   void removeModule(llvm::orc::VModuleKey K);
 

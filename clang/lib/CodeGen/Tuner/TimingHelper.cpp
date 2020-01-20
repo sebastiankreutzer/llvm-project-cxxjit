@@ -55,7 +55,7 @@ Function *TimingHelper::createTimingWrapper() {
   auto VarNGlobal = make_global_double("var_n");
   VarNGlobalName = VarNGlobal->getName();
 
-  std::string FImplName = "__clangjit_impl_" + FName;
+  std::string FImplName = getImplName(FName);
   TimedFunction->setName(FImplName);
 
   Function *Wrapper = Function::Create(TimedFunction->getFunctionType(),

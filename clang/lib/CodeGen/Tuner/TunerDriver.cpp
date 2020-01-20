@@ -338,8 +338,10 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       // Add to the JIT engine.
       auto Key = CD.CJ->addPrecompiledModule(std::move(Buf.get()));
 
+      auto ImplName = TimingHelper::getImplName(FName.str());
+
       // Lookup the address of the generated function.
-      auto SpecSymbol = CD.CJ->findSymbol(FName.str());
+      auto SpecSymbol = CD.CJ->findSymbol(ImplName);
       assert(SpecSymbol && "Can't find the specialization just generated?");
 
       if (auto Err = SpecSymbol.takeError()) {

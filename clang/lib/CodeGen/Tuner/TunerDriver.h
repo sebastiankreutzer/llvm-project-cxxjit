@@ -14,15 +14,13 @@
 namespace clang {
 namespace jit {
 
-class TemplateArgKnob : public IntKnob {
-public:
-  TemplateArgKnob(unsigned Index, int Min, int Max, int Dflt)
-      : IntKnob(Min, Max, Dflt, "Tunable Arg"), Index(Index){};
 
-  unsigned getArgIndex() const { return Index; }
+struct TunableNTTA {
+  TunableNTTA(unsigned Index, long Min, long Max, long Dflt) : Index(Index), Param(Min, Max, Dflt, "Tunable NTTA"){
+  }
 
-private:
   unsigned Index;
+  SearchDim Param;
 };
 
 using VersionID = unsigned;
@@ -75,7 +73,7 @@ struct TunedCodeVersion {
 
   TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr,
                    TimingGlobals Globals,
-                   ConfigEvalRequest Request)
+                   ConfigEval Request)
       : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals),
         Request(std::move(Request)) {}
 
@@ -95,7 +93,7 @@ struct TunedCodeVersion {
   orc::VModuleKey ModKey{0};
   void *FPtr{nullptr};
   TimingGlobals Globals;
-  ConfigEvalRequest Request;
+  ConfigEval Request;
   // TimingStats Stats;
   // TODO: Place info about instantiation specific optimization here
 };
@@ -160,7 +158,7 @@ struct JITTemplateInstantiation {
   // Holds information that is needed for recompilation/reoptimization
   JITContext Context;
 
-  ConfigEvalRequest Request;
+  ConfigEval Request;
 
   // Holds a list of instantiations
   llvm::DenseMap<VersionID, TunedCodeVersion> Instantiations;
@@ -178,31 +176,40 @@ private:
 class TunableArgList {
 public:
   TunableArgList(llvm::SmallVector<TemplateArgument, 8> BaseArgs)
-      : BaseArgs(std::move(BaseArgs)) {}
+      : BaseArgs(std::move(BaseArgs)), Space(std::make_unique<SearchSpace>()) {}
 
   TunableArgList(const TunableArgList &) = delete;
   TunableArgList &operator=(const TunableArgList &) = delete;
 
   TunableArgList(TunableArgList &&) = default;
 
-  void add(std::unique_ptr<TemplateArgKnob> Knob) {
-    unsigned Idx = Knob->getArgIndex();
-    Knobs[Idx] = std::move(Knob);
-    TAKnobSet.add(Knobs[Idx].get());
+  void add(TunableNTTA TA) {
+    unsigned Idx = TA.Index;
+    Space->addDim(std::move(TA.Param));
+    TunableDimensions[Idx] = Space->getNumDimensions() - 1;
   }
 
-  KnobSet getKnobSet() { return TAKnobSet; }
+//  KnobSet getKnobSet() { return TAKnobSet; }
 
-  bool isTunable() { return TAKnobSet.count() > 0; }
+  SearchSpace& getSearchSpace() {
+    return *Space;
+  }
+
+  bool isTunable() { return Space->getNumDimensions() > 0; }
 
   llvm::SmallVector<TemplateArgument, 8>
-  getArgsForConfig(ASTContext &Ctx, const KnobConfig &Cfg) {
+  getArgsForConfig(ASTContext &Ctx, const ParamConfig& Cfg) {
     llvm::SmallVector<TemplateArgument, 8> Args(BaseArgs);
-    for (auto &It : Knobs) {
+    for (auto &It : TunableDimensions) {
       unsigned Idx = It.first;
-      auto Val = It.second->getVal(Cfg);
-      APSInt APVal(32, Val >= 0);
-      APVal = Val;
+      auto& Dim = Space->getDim(It.second);
+      auto Val = Cfg[It.second];
+      if (!Val.getIntVal()) {
+        report_fatal_error("Expected int value");
+      }
+      auto IntVal = cantFail(Val.getIntVal());
+      APSInt APVal(32, IntVal >= 0);
+      APVal = IntVal;
       Args[Idx] = TemplateArgument(Ctx, APVal,
                                    Args[Idx].getNonTypeTemplateArgumentType());
     }
@@ -211,8 +218,11 @@ public:
 
 private:
   llvm::SmallVector<TemplateArgument, 8> BaseArgs;
-  llvm::DenseMap<unsigned, std::unique_ptr<TemplateArgKnob>> Knobs;
-  KnobSet TAKnobSet;
+
+  std::unique_ptr<SearchSpace> Space;
+
+  // Maps from parameter index to the dimension in the search space.
+  llvm::DenseMap<unsigned, unsigned> TunableDimensions;
 };
 
 class BilevelTuningPolicy {
@@ -222,51 +232,51 @@ public:
   }
 };
 
-struct ConfigMapInfo {
-  static inline KnobConfig getEmptyKey() {
-    auto Cfg = KnobConfig();
-    Cfg.IntCfg[InvalidKnobID] = DenseMapInfo<int>::getEmptyKey();
+struct ParamConfigMapInfo {
+  static inline ParamConfig getEmptyKey() {
+    ParamConfig Cfg;
+    Cfg.Values = Vector<ParamVal>(1);
+    Cfg[0] = DenseMapInfo<long>::getEmptyKey();
     return Cfg;
   }
 
-  static inline KnobConfig getTombstoneKey() {
-    auto Cfg = KnobConfig();
-    Cfg.IntCfg[InvalidKnobID] = DenseMapInfo<int>::getTombstoneKey();
+  static inline ParamConfig getTombstoneKey() {
+    ParamConfig Cfg;
+    Cfg.Values = Vector<ParamVal>(1);
+    Cfg[0] = DenseMapInfo<long>::getTombstoneKey();
     return Cfg;
   }
 
-  static unsigned getHashValue(const KnobConfig &Cfg) {
+  static unsigned getHashValue(const ParamConfig& Cfg) {
     using llvm::hash_code;
     using llvm::hash_combine;
     using llvm::hash_combine_range;
 
-    // TODO: This is painfully inefficient. Check if it's worth to optimize.
-    std::vector<int> Keys(Cfg.IntCfg.size());
-    for (auto It : Cfg.IntCfg) {
-      Keys.push_back(It.first);
-    }
-    std::sort(Keys.begin(), Keys.end());
     hash_code h(1);
-    for (auto Key : Keys) {
-      h = hash_combine(Key, Cfg.IntCfg.find(Key)->second);
+    for (unsigned I = 0; I < Cfg.size(); I++) {
+      if (Cfg[I].Type == ParamType::INT)
+        h = hash_combine(h, cantFail(Cfg[I].getIntVal()));
     }
 
     return (unsigned)h;
+
   }
 
-  static bool isEqual(const KnobConfig &LHS,
-                      const KnobConfig &RHS) {
-    if (LHS.getNumDimensions() != RHS.getNumDimensions())
+  static bool isEqual(const ParamConfig& LHS, const ParamConfig& RHS) {
+    if (LHS.Space != RHS.Space)
       return false;
-    for (auto It : LHS.IntCfg) {
-      auto It2 = RHS.IntCfg.find(It.first);
-      if (It2 == RHS.IntCfg.end() || It.second != It2->second)
-        return false;
+    assert(LHS.size() == RHS.size() && "Same space but different number of values");
+    for (unsigned I = 0; I < LHS.size(); I++) {
+      if (LHS[I].Type == ParamType::INT) {
+        assert(RHS[I].Type == ParamType::INT && "Same space but different types");
+        if (cantFail(LHS[I].getIntVal()) != cantFail(RHS[I].getIntVal()))
+          return false;
+      }
     }
     return true;
-    // TODO: This is just checking the integer data
   }
 };
+
 
 struct TemplateTuningData {
 
@@ -282,10 +292,10 @@ struct TemplateTuningData {
   BilevelTuningPolicy Policy;
 
   // TODO: Change to another key type?
-  llvm::DenseMap<KnobConfig, JITTemplateInstantiation, ConfigMapInfo>
+  llvm::DenseMap<ParamConfig, JITTemplateInstantiation, ParamConfigMapInfo>
       Specializations;
 
-  KnobConfig ActiveConfig;
+  ParamConfig ActiveConfig;
   bool Initialized;
 
   TemplateTuningData(CompilerData &CD, unsigned Idx,
@@ -306,11 +316,12 @@ struct TemplateTuningData {
     }
     if (ShouldChange) {
       auto EvalRequest = TATuner->generateNextConfig();
-      ActiveConfig = EvalRequest.Cfg;
+      ActiveConfig = EvalRequest.Config;
 
-      auto Set = TunableArgs.getKnobSet();
+//      auto Set = TunableArgs.getKnobSet();
       JIT_DEBUG(dbgs() << "Selected specialization:\n");
-      JIT_DEBUG(KnobState(Set, ActiveConfig).dump());
+      // TODO
+//      JIT_DEBUG(KnobState(Set, ActiveConfig).dump());
 
       Initialized = true;
       auto It = Specializations.find(ActiveConfig);
@@ -327,15 +338,15 @@ struct TemplateTuningData {
     return TunableArgs.isTunable();
   }
 
-  JITTemplateInstantiation* getSpecialization(const KnobConfig& Cfg) {
+  JITTemplateInstantiation* getSpecialization(const ParamConfig& Cfg) {
     auto It = Specializations.find(Cfg);
     if (It != Specializations.end())
       return &It->second;
     return nullptr;
   }
 
-  llvm::Optional<std::pair<KnobConfig, JITTemplateInstantiation*>> computeOverallBest() {
-    std::pair<KnobConfig, JITTemplateInstantiation*> CurrentBest;
+  llvm::Optional<std::pair<ParamConfig, JITTemplateInstantiation*>> computeOverallBest() {
+    std::pair<ParamConfig, JITTemplateInstantiation*> CurrentBest;
     TimingStats BestStats;
     for (auto& It : Specializations) {
       auto& Inst = It.second;
@@ -354,7 +365,7 @@ struct TemplateTuningData {
 
 private:
   JITTemplateInstantiation instantiate(TAList TAs,
-                                       ConfigEvalRequest Request) {
+                                       ConfigEval Request) {
     //    for (auto& TA: TAs) {
     //      TA.dump();
     //      errs() << ", ";

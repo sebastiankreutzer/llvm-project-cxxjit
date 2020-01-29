@@ -14,11 +14,6 @@ class Pass;
 namespace clang {
 namespace jit {
 
-
-Pass *createLoopKnobCreatorPass(KnobSet &KS);
-
-Pass *createApplyLoopKnobPass(KnobConfig &KnobCfg);
-
 Pass *createLoopTransformTreeCreatorPass(SmallVectorImpl<LoopTransformTreePtr> &LoopTrees);
 
 Pass *createLoopTransformTreeApplicatorPass(ArrayRef<LoopTransformTree*> LoopTrees);

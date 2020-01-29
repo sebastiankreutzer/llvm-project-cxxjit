@@ -10,6 +10,7 @@
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/TargetOptions.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/IR/LegacyPassManager.h"
 
 #include "SimplexTuner.h"
 #include "Optimizer.h"
@@ -24,9 +25,9 @@ namespace jit {
 class TransformationTuner {
 public:
   TransformationTuner(LoopTransformation& Transformation, unsigned MaxWithoutImprovement) : Transformation(Transformation), MaxWithoutImprovement(MaxWithoutImprovement) {
-    HasKnobs = Transformation.Knobs.count() != 0;
-    if (HasKnobs) {
-      TTuner = createTuner(loadSearchAlgoEnv(), Transformation.Knobs);
+    HasTunableParams = Transformation.Space.getNumDimensions() > 0;
+    if (HasTunableParams) {
+      TTuner = createTuner(loadSearchAlgoEnv(), Transformation.Space);
     }
     JIT_INFO(dbgs() << "Tuning transformation of kind " << getTransformationName(Transformation.Kind) << "\n");
     NeedsUpdate = true;
@@ -34,19 +35,19 @@ public:
     RequestsSinceImprovement = 0;
   }
 
-  ConfigEvalRequest getNext() {
+  ConfigEval getNext() {
 
     RequestsSinceImprovement++;
     NeedsUpdate = true;
-    ConfigEvalRequest Request;
-    if (HasKnobs) {
+    ConfigEval Request;
+    if (HasTunableParams) {
       Request = TTuner->generateNextConfig();
     }
     Configs.push_back(Request);
     return Request;
   }
 
-  llvm::Optional<ConfigEvalRequest> getBest() {
+  llvm::Optional<ConfigEval> getBest() {
     if (NeedsUpdate)
       updateBest();
     if (BestIdx >= 0)
@@ -55,7 +56,7 @@ public:
   }
 
   bool isDone() {
-    if (!HasKnobs && RequestsSinceImprovement > 0)
+    if (!HasTunableParams && RequestsSinceImprovement > 0)
       return true;
     if (NeedsUpdate)
       updateBest();
@@ -65,9 +66,10 @@ public:
     return RequestsSinceImprovement >= MaxWithoutImprovement;
   }
 
-  KnobSet& getKnobs() {
-    return Transformation.Knobs;
+  SearchSpace& getSearchSpace() {
+    return Transformation.Space;
   }
+
 private:
   void updateBest() {
     NeedsUpdate = false;
@@ -86,10 +88,10 @@ private:
     BestIdx = NewBestIdx;
   }
 private:
-  bool HasKnobs;
+  bool HasTunableParams;
   LoopTransformation& Transformation;
   std::unique_ptr<Tuner> TTuner;
-  SmallVector<ConfigEvalRequest, 16> Configs;
+  SmallVector<ConfigEval, 16> Configs;
   int BestIdx;
   unsigned RequestsSinceImprovement;
   unsigned MaxWithoutImprovement;
@@ -188,13 +190,13 @@ struct DecisionNode {
 
     auto Best = TTuner->getBest();
     Child = std::make_unique<DecisionNode>(Baseline, Trans, TransformedTree->clone(), this);
-    Child->FullConfig = Best->Cfg;
-    Child->FullConfig.addAll(FullConfig);
+//    Child->FullConfig = Best->Cfg;
+//    Child->FullConfig.addAll(FullConfig);
     UnexploredIdx++;
     return *Child;
   }
 
-  LoopTransformTreePtr getTransformedTree(KnobConfig& Cfg) {
+  LoopTransformTreePtr getTransformedTree(ParamConfig& Cfg) {
     auto Tree = LoopTree->clone();
     apply(Transformation, *Tree, Cfg);
     return Tree;
@@ -204,7 +206,7 @@ struct DecisionNode {
     auto Best = TTuner->getBest();
     if (!Best)
       return nullptr;
-    return getTransformedTree(Best->Cfg);
+    return getTransformedTree(Best->Config);
   }
 
   bool isEvaluated() {
@@ -249,7 +251,7 @@ struct DecisionNode {
   std::unique_ptr<TransformationTuner> TTuner;
   LoopTransformation Transformation;
   DecisionNode* Parent;
-  KnobConfig FullConfig;
+//  KnobConfig FullConfig;
   SmallVector<LoopTransformation, 4> FeasibleTransformations;
   SmallVector<NodePtr, 4> Children;
   unsigned UnexploredIdx;
@@ -295,11 +297,14 @@ public:
 
   void init(llvm::Module* M) override;
 
-  ConfigEvalRequest optimize(llvm::Module *M, bool UseDefault) override;
+  ConfigEval optimize(llvm::Module *M, bool UseDefault) override;
 
-  const KnobSet& getKnobs() override {
-    return Knobs;
-  }
+//  const KnobSet& getKnobs() override {
+//    return Knobs;
+//  }
+
+//  const SearchSpace& getSearchSpace() override {
+//  }
 
   bool isDone() override {
     return Done;
@@ -309,7 +314,7 @@ private:
   TargetIRAnalysis getTargetIRAnalysis();
   void createPasses(const llvm::Module &M, legacy::PassManager &PM,
                                             legacy::FunctionPassManager &FPM,
-                                            KnobConfig &Cfg);
+                                            ParamConfig &Cfg);
 
   float computeSpeedup(TimingStats& Stats);
 
@@ -324,7 +329,7 @@ private:
   const clang::LangOptions &LangOpts;
   llvm::TargetMachine &TM;
   Module *ModToOptimize;
-  llvm::Optional<ConfigEvalRequest> BaseLine;
+  llvm::Optional<ConfigEval> BaseLine;
 
   // Trees corresponding to loop nests in the function
   LoopTreeList LoopTrees;
@@ -336,30 +341,16 @@ private:
   // Node that is currently investigated
   DecisionNode* CurrentNode;
   // Best node in the current tree, corresponds to a sequence of transformations
-  std::pair<DecisionNode*, ConfigEvalRequest> BestNode;
+  std::pair<DecisionNode*, ConfigEval> BestNode;
 
 
   // Loop nests are tuned one after the other. This list contains the ones that have been finished.
   LoopTreeList FinalizedTrees;
-  KnobConfig FinalizedConfig;
+
+ // KnobConfig FinalizedConfig;
 
   // All loop nests have been tuned.
   bool Done;
-
-  KnobSet Knobs; // FIXME: Not set
-
-  // Old code
-#if 0
-  LoopTransformTreePtr CurrentTree;
-  SmallVector<LoopTransformation, 4> AppliedTransformations;
-  SmallVector<LoopTransformation, 4> TransformationQueue;
-  unsigned CurrentTransformationIdx;
-  std::unique_ptr<TransformationTuner> TTuner;
-  std::pair<unsigned, ConfigEvalRequest> BestTransformation;
-  KnobConfig FullConfig;
-  KnobSet Knobs;
-  int Level;
-#endif
 
 };
 

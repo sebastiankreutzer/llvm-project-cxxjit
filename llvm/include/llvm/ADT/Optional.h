@@ -251,7 +251,7 @@ public:
   void reset() { Storage.reset(); }
 
   const T *getPointer() const { return &Storage.getValue(); }
-  T *getPointer() { return &Storage.getValue(); }
+  T *getPointer( ){ return &Storage.getValue(); }
   const T &getValue() const LLVM_LVALUE_FUNCTION { return Storage.getValue(); }
   T &getValue() LLVM_LVALUE_FUNCTION { return Storage.getValue(); }
 

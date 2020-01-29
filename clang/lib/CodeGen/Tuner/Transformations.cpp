@@ -5,7 +5,6 @@
 #include "LoopTransformTreeTraits.h"
 #include "llvm/Support/GraphWriter.h"
 #include "Transformations.h"
-#include "SimpleKnobs.h"
 #include "Debug.h"
 
 namespace clang {
@@ -32,8 +31,9 @@ void findUnrollTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformatio
     // Avoid extremely hight unroll counts
     auto Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX) : transform_defaults::UNROLL_MAX;
     auto Dflt = std::max(Min, Max / 4);
-    IntKnob* UnrollFactor = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(UnrollFactor, "unroll");
+    Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+    //IntKnob* UnrollFactor = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
+    //Trans.addKnob(UnrollFactor, "unroll");
     Transformations.push_back(Trans);
   }
   for (auto& SL : Node->subLoops()) {
@@ -99,8 +99,9 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
     auto Max = TTI.hasInfo() ? std::min(TTI.TripCount, LevelMax) : LevelMax;
 
     auto Dflt = std::max(Min, Max / 4);
-    IntKnob* UnrollFactor = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(UnrollFactor, "unroll");
+    Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+    //IntKnob* UnrollFactor = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
+    //Trans.addKnob(UnrollFactor, "unroll");
     Node = Node->getFirstSubLoop();
   }
   Transformations.push_back(Trans);
@@ -198,38 +199,38 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
   //outs() << "Found " << NumValid << " valid permutations\n";
 }
 
-void findInterchangeTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation> & Transformations) {
-  Root = Root->getLastSuccessor();
-
-  if (!Root->hasSubLoop())
-    return;
-
-  if (!Root->isTightlyNested()) {
-    for (auto& SubLoop : Root->subLoops()) {
-      findInterchangeTransformations(&*SubLoop, Transformations);
-    }
-    return;
-  }
-
-  unsigned Depth = Root->getRelativeMaxDepth();
-  LoopTransformation Trans;
-  Trans.Root = Root->getLoopName();
-  Trans.Kind = LoopTransformation::INTERCHANGE;
-  LoopNode* Node = Root;
-  for (unsigned i = 1; i <= Depth; i++) {
-    assert(Node && "Node is null");
-    Node = Node->getLastSuccessor();
-    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED))
-      return;
-    auto Name = ("Loop " + Node->getLoopName() + " - Interchange priority").str();
-    // TODO: Interchange permutation is a structural transformation, should not be controlled with knobs!
-    //  Instead enumerate all legal permutations, respecting dependencies induced by previous transformations
-    IntKnob* InterchangePriority = new IntKnob(1, 256, 1, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(InterchangePriority, "interchange");
-    Node = Node->getFirstSubLoop();
-  }
-  Transformations.push_back(std::move(Trans));
-}
+//void findInterchangeTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation> & Transformations) {
+//  Root = Root->getLastSuccessor();
+//
+//  if (!Root->hasSubLoop())
+//    return;
+//
+//  if (!Root->isTightlyNested()) {
+//    for (auto& SubLoop : Root->subLoops()) {
+//      findInterchangeTransformations(&*SubLoop, Transformations);
+//    }
+//    return;
+//  }
+//
+//  unsigned Depth = Root->getRelativeMaxDepth();
+//  LoopTransformation Trans;
+//  Trans.Root = Root->getLoopName();
+//  Trans.Kind = LoopTransformation::INTERCHANGE;
+//  LoopNode* Node = Root;
+//  for (unsigned i = 1; i <= Depth; i++) {
+//    assert(Node && "Node is null");
+//    Node = Node->getLastSuccessor();
+//    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED))
+//      return;
+//    auto Name = ("Loop " + Node->getLoopName() + " - Interchange priority").str();
+//    // TODO: Interchange permutation is a structural transformation, should not be controlled with knobs!
+//    //  Instead enumerate all legal permutations, respecting dependencies induced by previous transformations
+//    IntKnob* InterchangePriority = new IntKnob(1, 256, 1, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
+//    Trans.addKnob(InterchangePriority, "interchange");
+//    Node = Node->getFirstSubLoop();
+//  }
+//  Transformations.push_back(std::move(Trans));
+//}
 
 
 void findTilingTransformations(LoopNode *Root, SmallVectorImpl<LoopTransformation> &Transformations) {
@@ -255,8 +256,9 @@ void findTilingTransformations(LoopNode *Root, SmallVectorImpl<LoopTransformatio
     auto Min = transform_defaults::TILE_MIN;
     auto Max = TTI.hasInfo() ? TTI.TripCount / 2 : transform_defaults::TILE_MAX;
     auto Dflt = std::max(Min, Max / 4);
-    IntKnob* TilingSize = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(TilingSize, "size");
+    Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+//    IntKnob* TilingSize = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
+//    Trans.addKnob(TilingSize, "size");
     Node = Node->getFirstSubLoop();
   }
   Transformations.push_back(std::move(Trans));
@@ -280,7 +282,7 @@ SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree *Tree) 
 }
 
 
-void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConfig& Cfg) {
+void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg) {
   if (Transformation.Kind == LoopTransformation::NONE) {
     return;
   }
@@ -288,15 +290,21 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConf
   assert(Root && "Root node of transformation does not exist in tree");
   switch(Transformation.Kind) {
     case LoopTransformation::TILE: {
-      ArrayRef<KnobID> SizeKnobs = Transformation.getKnobs("size");
+//      ArrayRef<KnobID> SizeKnobs = Transformation.getKnobs("size");
+
       SmallVector<unsigned, 4> Sizes;
-      for (auto ID : SizeKnobs) {
-        auto Knob = Transformation.Knobs.IntKnobs[ID];
-        assert(Knob);
-        auto Val = Knob->getVal(Cfg);
-        Sizes.push_back(Val);
-        //outs() << "Tile size: " << Knob->getVal(Cfg) << "\n";
+      for (auto& Val : Cfg){
+        auto IntVal = cantFail(Val.getIntVal());
+        Sizes.push_back(IntVal);
       }
+//
+//      for (auto ID : SizeKnobs) {
+//        auto Knob = Transformation.Knobs.IntKnobs[ID];
+//        assert(Knob);
+//        auto Val = Knob->getVal(Cfg);
+//        Sizes.push_back(Val);
+//        //outs() << "Tile size: " << Knob->getVal(Cfg) << "\n";
+//      }
 
       // FIXME: Polly triggers an assertion when the trip count is a multiple of the tile size.
       //  This is a workaround that should be removed ASAP.
@@ -352,26 +360,34 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConf
       break;
     }
     case LoopTransformation::UNROLL_AND_JAM: {
-      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
+//      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
       SmallVector<unsigned, 4> Counts;
-      for (auto ID : CountKnobs) {
-        auto Knob = Transformation.Knobs.IntKnobs[ID];
-        assert(Knob);
-        Counts.push_back(Knob->getVal(Cfg));
-        //outs() << "Unroll(-and-jam) count: " << Knob->getVal(Cfg) << "\n";
+      for (auto& Val : Cfg){
+        auto IntVal = cantFail(Val.getIntVal());
+        Counts.push_back(IntVal);
       }
+//      for (auto ID : CountKnobs) {
+//        auto Knob = Transformation.Knobs.IntKnobs[ID];
+//        assert(Knob);
+//        Counts.push_back(Knob->getVal(Cfg));
+//        //outs() << "Unroll(-and-jam) count: " << Knob->getVal(Cfg) << "\n";
+//      }
       applyUnrollAndJam(Root, Counts);
       break;
     }
     case LoopTransformation::UNROLL: {
-      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
+//      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
       SmallVector<unsigned, 4> Counts;
-      for (auto ID : CountKnobs) {
-        auto Knob = Transformation.Knobs.IntKnobs[ID];
-        assert(Knob);
-        Counts.push_back(Knob->getVal(Cfg));
-        //outs() << "Unroll count: " << Knob->getVal(Cfg) << "\n";
+      for (auto& Val : Cfg){
+        auto IntVal = cantFail(Val.getIntVal());
+        Counts.push_back(IntVal);
       }
+//      for (auto ID : CountKnobs) {
+//        auto Knob = Transformation.Knobs.IntKnobs[ID];
+//        assert(Knob);
+//        Counts.push_back(Knob->getVal(Cfg));
+//        //outs() << "Unroll count: " << Knob->getVal(Cfg) << "\n";
+//      }
       applyUnroll(Root, Counts);
       break;
     }

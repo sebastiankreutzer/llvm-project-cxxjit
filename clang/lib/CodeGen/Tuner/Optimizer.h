@@ -22,9 +22,9 @@ public:
   // Optimize the given module.
   // It is assumed that the module is a (slightly modified) clone of the module
   // that init() was called with.
-  virtual ConfigEvalRequest optimize(llvm::Module *M, bool UseDefault) = 0;
+  virtual ConfigEval optimize(llvm::Module *M, bool UseDefault) = 0;
 
-  virtual const KnobSet& getKnobs() = 0;
+//  virtual const KnobSet& getKnobs() = 0;
 
   virtual bool isDone() {
     return false;

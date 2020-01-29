@@ -7,9 +7,7 @@
 
 #include <random>
 
-#include "KnobSet.h"
-#include "LoopKnob.h"
-#include "SimpleKnobs.h"
+#include "Search.h"
 #include "Util.h"
 
 namespace clang {
@@ -54,6 +52,7 @@ struct TimingStats {
 
 using SharedEvalStats = std::shared_ptr<TimingStats>;
 
+#if 0
 class ConfigEvalRequest {
 public:
   ConfigEvalRequest() : Stats(std::make_shared<TimingStats>()){
@@ -84,80 +83,114 @@ public:
 
   virtual ConfigEvalRequest generateNextConfig() = 0;
 };
+#endif
 
-struct GenDefaultConfigFn : public KnobSetFn {
+struct ConfigEval {
+  ConfigEval() : Stats(std::make_shared<TimingStats>()) {
 
-  void operator()(IntKnob &K) override { K.setVal(Cfg, K.getDefault()); }
+  }
 
-  void operator()(LoopKnob &K) override { K.setVal(Cfg, K.getDefault()); }
+  explicit ConfigEval(SearchSpace* Space) : Config(*Space), Stats(std::make_shared<TimingStats>()) {
 
-  KnobConfig Cfg;
+  }
+
+  explicit ConfigEval(ParamConfig Config) : Config(std::move(Config)), Stats(std::make_shared<TimingStats>()) {
+
+  }
+
+  bool isConfigEmpty() const {
+    return Config.isEmpty();
+  }
+
+  ParamConfig Config;
+  SharedEvalStats Stats;
+
 };
 
-template<typename RNETy>
-struct GenRandomConfigFn : public KnobSetFn {
-
-  explicit GenRandomConfigFn(RNETy &RNE) : RNE(RNE) {};
-
-  void operator()(IntKnob &K) override {
-    std::uniform_int_distribution<int> dist(K.min(), K.max());
-    auto Val = dist(RNE);
-    K.setVal(Cfg, Val);
+struct CompareConfigEval {
+  bool operator()(ConfigEval &A, ConfigEval &B) {
+    if (!A.Stats || !A.Stats->Valid())
+      return false;
+    if (!B.Stats || !B.Stats->Valid())
+      return true;
+    return A.Stats->betterThan(*B.Stats);
   }
-
-  void operator()(LoopKnob &K) override {
-    auto LCfg = createRandomLoopConfig(K, RNE);
-    K.setVal(Cfg, LCfg);
-  }
-
-  RNETy &RNE;
-  KnobConfig Cfg;
 };
 
-inline void setEnableLoopTransform(KnobConfig &Cfg, bool Enable) {
-  for (auto &It : Cfg.LoopCfg) {
-    It.second.DisableLoopTransform = !Enable;
-  }
-}
+class Tuner {
+public:
+  virtual ~Tuner() {}
 
-template<typename RNETy>
-KnobConfig createRandomConfig(RNETy &RNE, KnobSet &Set) {
-  GenRandomConfigFn<RNETy> Fn(RNE);
-  apply(Fn, Set);
-  return Fn.Cfg;
-}
+  virtual ConfigEval generateNextConfig() = 0;
+};
 
-inline KnobConfig createDefaultConfig(KnobSet &Set) {
-  GenDefaultConfigFn Fn;
-  apply(Fn, Set);
-  return Fn.Cfg;
-}
+//struct GenDefaultConfigFn : public KnobSetFn {
+//
+//  void operator()(IntKnob &K) override { K.setVal(Cfg, K.getDefault()); }
+//
+//  void operator()(LoopKnob &K) override { K.setVal(Cfg, K.getDefault()); }
+//
+//  KnobConfig Cfg;
+//};
+//
+//template<typename RNETy>
+//struct GenRandomConfigFn : public KnobSetFn {
+//
+//  explicit GenRandomConfigFn(RNETy &RNE) : RNE(RNE) {};
+//
+//  void operator()(IntKnob &K) override {
+//    std::uniform_int_distribution<int> dist(K.min(), K.max());
+//    auto Val = dist(RNE);
+//    K.setVal(Cfg, Val);
+//  }
+//
+//  void operator()(LoopKnob &K) override {
+//    auto LCfg = createRandomLoopConfig(K, RNE);
+//    K.setVal(Cfg, LCfg);
+//  }
+//
+//  RNETy &RNE;
+//  KnobConfig Cfg;
+//};
+//
+//inline void setEnableLoopTransform(KnobConfig &Cfg, bool Enable) {
+//  for (auto &It : Cfg.LoopCfg) {
+//    It.second.DisableLoopTransform = !Enable;
+//  }
+//}
+//
+//template<typename RNETy>
+//KnobConfig createRandomConfig(RNETy &RNE, KnobSet &Set) {
+//  GenRandomConfigFn<RNETy> Fn(RNE);
+//  apply(Fn, Set);
+//  return Fn.Cfg;
+//}
+//
+//inline KnobConfig createDefaultConfig(KnobSet &Set) {
+//  GenDefaultConfigFn Fn;
+//  apply(Fn, Set);
+//  return Fn.Cfg;
+//}
 
 class RandomTuner : public Tuner {
 public:
-  explicit RandomTuner(KnobSet Knobs)
-      : Knobs(std::move(Knobs)), RNE(TunerRNE(util::genSeed())) {}
+  explicit RandomTuner(SearchSpace& Space)
+      : Space(Space), RNE(TunerRNE(util::genSeed())) {}
 
-  void reset(KnobSet Knobs) override { this->Knobs = std::move(Knobs); }
+//  void reset(KnobSet Knobs) override { this->Knobs = std::move(Knobs); }
 
-  ConfigEvalRequest generateNextConfig() override {
+  ConfigEval generateNextConfig() override {
     //    for (auto It : Knobs.IntKnobs)
     //      outs() << It.first << ": " << It.second->getName() << "\n";
     //    for (auto It : Knobs.LoopKnobs)
     //      outs() << It.first << ": " << It.second->getName() << "\n";
-    CurrentConfig = createRandomConfig(RNE, Knobs);
-    return ConfigEvalRequest(CurrentConfig);
+    return ConfigEval(createRandomConfig(RNE, Space));
   }
 
 private:
-  KnobSet Knobs;
+//  KnobSet Knobs;
+  SearchSpace& Space;
   TunerRNE RNE;
-  KnobConfig CurrentConfig;
-};
-
-class TunerFactory {
-public:
-  virtual std::unique_ptr<Tuner> createTuner() = 0;
 };
 
 class BilevelTuner {
@@ -166,16 +199,16 @@ public:
 
   virtual bool updatePartialConfig() = 0;
 
-  KnobConfig getPartialConfig() const { return PartialConfig; }
+  ParamConfig getPartialConfig() const { return PartialConfig; }
 
-  ConfigEvalRequest generateNextL2Config(Tuner &L2Tuner) {
+  ConfigEval generateNextL2Config(Tuner &L2Tuner) {
     auto EvalRequest = L2Tuner.generateNextConfig();
     CurrentL2Configs.push_back(EvalRequest);
     return EvalRequest;
   }
 
 protected:
-  void changeL1Config(KnobConfig L1Cfg) {
+  void changeL1Config(ParamConfig L1Cfg) {
     PartialConfig = std::move(L1Cfg);
     CurrentL2Configs.clear();
   }
@@ -183,9 +216,9 @@ protected:
 protected:
   Tuner &L1Tuner;
 
-  KnobConfig PartialConfig;
+  ParamConfig PartialConfig;
 
-  SmallVector<ConfigEvalRequest, 8> CurrentL2Configs;
+  llvm::SmallVector<ConfigEval, 8> CurrentL2Configs;
 };
 
 class SimpleBilevelTuner : public BilevelTuner {
@@ -194,16 +227,12 @@ public:
 
   bool updatePartialConfig() override {
     if (CurrentL2Configs.size() >= 8) {
-      changeL1Config(L1Tuner.generateNextConfig().Cfg);
+      changeL1Config(L1Tuner.generateNextConfig().Config);
     }
     return false;
   }
 };
 
-// struct CostFunction {
-// public:
-//  virtual llvm::Optional<double> eval(unsigned ID) = 0;
-//};
 
 }
 }

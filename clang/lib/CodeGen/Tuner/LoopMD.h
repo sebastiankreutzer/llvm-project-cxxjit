@@ -9,7 +9,6 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Metadata.h"
 
-#include "Knob.h"
 
 namespace clang {
 namespace jit {
@@ -125,10 +124,10 @@ inline unsigned getLoopNameAsInt(Loop *Loop) {
 
   StringRef Name = getLoopName(Loop);
 
-  unsigned NameAsInt = InvalidKnobID;
+  unsigned NameAsInt = 0;
   if (Name.empty() || Name.getAsInteger(10, NameAsInt)) {
     errs() << "Loop name must be an integer\n";
-    return InvalidKnobID;
+    return 0;
   }
   return NameAsInt;
 }

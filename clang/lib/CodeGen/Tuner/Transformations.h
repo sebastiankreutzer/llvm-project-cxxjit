@@ -5,9 +5,8 @@
 #ifndef LLVM_TRANSFORMATIONS_H
 #define LLVM_TRANSFORMATIONS_H
 
-#include "SimpleKnobs.h"
-#include "KnobSet.h"
 #include "LoopTransformTree.h"
+#include "Search.h"
 
 namespace clang {
 namespace jit {
@@ -40,25 +39,29 @@ struct LoopTransformation {
   TransformKind Kind{NONE};
   SmallString<8> Root;
   SmallVector<int, 4> IntParams;
-  KnobSet Knobs;
+  SearchSpace Space;
+//  KnobSet Knobs;
   // NOTE: Identifying knobs with strings is probably not very efficient but avoids the need for polymorphism.
-  StringMap<SmallVector<KnobID, 4>> KnobMap;
+//  StringMap<SmallVector<KnobID, 4>> KnobMap;
 
-
-  void addKnob(IntKnob* Knob, StringRef Category = "") {
-    Knobs.add(Knob);
-    if (!Category.empty()) {
-      KnobMap[Category].push_back(Knob->getID());
-    }
+  void addSearchDim(SearchDim Dim) {
+    Space.addDim(std::move(Dim));
   }
 
-  ArrayRef<KnobID> getKnobs(StringRef Category) const {
-    auto It = KnobMap.find(Category);
-    if (It == KnobMap.end()) {
-      return {};
-    }
-    return It->second;
-  }
+//  void addKnob(IntKnob* Knob, StringRef Category = "") {
+//    Knobs.add(Knob);
+//    if (!Category.empty()) {
+//      KnobMap[Category].push_back(Knob->getID());
+//    }
+//  }
+//
+//  ArrayRef<KnobID> getKnobs(StringRef Category) const {
+//    auto It = KnobMap.find(Category);
+//    if (It == KnobMap.end()) {
+//      return {};
+//    }
+//    return It->second;
+//  }
 
 };
 
@@ -84,7 +87,7 @@ void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation>& Tr
 
 SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree* Tree);
 
-void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConfig& Cfg);
+void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg);
 
 void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts);
 

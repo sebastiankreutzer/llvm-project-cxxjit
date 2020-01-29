@@ -25,13 +25,13 @@ inline TunerSearchAlgo loadSearchAlgoEnv() {
   }
 }
 
-inline std::unique_ptr<Tuner> createTuner(TunerSearchAlgo Search, KnobSet& Knobs) {
+inline std::unique_ptr<Tuner> createTuner(TunerSearchAlgo Search, SearchSpace& Space) {
   switch(Search) {
     case TunerSearchAlgo::Simplex:
-      return std::make_unique<SimplexTuner>(Knobs);
+      return std::make_unique<SimplexTuner>(Space);
     case TunerSearchAlgo::Random:
     default:
-      return std::make_unique<RandomTuner>(Knobs);
+      return std::make_unique<RandomTuner>(Space);
   }
 }
 

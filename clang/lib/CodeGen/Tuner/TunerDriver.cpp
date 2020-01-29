@@ -109,9 +109,9 @@ void printShortReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) 
   OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
   OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
 
-  auto TAKnobs = Data.TunableArgs.getKnobSet();
-  KnobState(TAKnobs, OverallBest.getValue().first).dump();
-  KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
+//  auto TAKnobs = Data.TunableArgs.getKnobSet();
+//  KnobState(TAKnobs, OverallBest.getValue().first).dump();
+//  KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
 
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 
@@ -190,9 +190,10 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
     OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     OS << "Found configuration: \n";
-    auto TAKnobs = Data.TunableArgs.getKnobSet();
-    KnobState(TAKnobs, OverallBest.getValue().first).dump();
-    KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
+    OS << "TODO\n";
+//    auto TAKnobs = Data.TunableArgs.getKnobSet();
+//    KnobState(TAKnobs, OverallBest.getValue().first).dump();
+//    KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
     OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
   }
 }
@@ -254,14 +255,15 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     JIT_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
 
     // TODO: move to fdata (?)
-    SmallVector<std::unique_ptr<TemplateArgKnob>, 4> TAKnobs;
+//    SmallVector<std::unique_ptr<TemplateArgKnob>, 4> TAKnobs;
+    SmallVector<TunableNTTA, 4> TunableNTTAs;
 
     llvm::SmallVector<TemplateArgument, 8> BaseArgs;
 
     TemplateInstantiationHelper InstHelper(CD, Idx);
     InstHelper.processTemplateArgs(
         Inst.NTTPValues, Inst.TypeStrings, BaseArgs,
-        [this, &TAKnobs](QualType CanonType, unsigned Pos,
+        [this, &TunableNTTAs](QualType CanonType, unsigned Pos,
                          const SmallVectorImpl<uint64_t> &IntWords)
             -> Optional<TemplateArgument> {
           // errs() << "Instantiating NTTA with " << Size << " bytes: \n";
@@ -289,8 +291,9 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
             llvm::APSInt SIntVal(32); // TODO allow varying bit widths
             SIntVal = Range.Min;
 
-            TAKnobs.push_back(std::make_unique<TemplateArgKnob>(
-                Pos, Range.Min, Range.Max, Range.Min));
+            TunableNTTAs.emplace_back(Pos, Range.Min, Range.Max, Range.Min);
+//            TAKnobs.push_back(std::make_unique<TemplateArgKnob>(
+//                Pos, Range.Min, Range.Max, Range.Min));
 
             return TemplateArgument(
                 *CD.Ctx, SIntVal,
@@ -303,14 +306,17 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     JIT_INFO(dbgs() << "Looking for tunable template arguments..." << "\n");
     TunableArgList TAL(BaseArgs);
-    for (auto &Knob : TAKnobs) {
-      JIT_INFO(dbgs() << "Template argument marked tunable: "
-                       << Knob->getArgIndex() << "\n");
-      TAL.add(std::move(Knob));
+    for (auto& NTTA : TunableNTTAs) {
+      TAL.add(NTTA);
     }
+//    for (auto &Knob : TAKnobs) {
+//      JIT_INFO(dbgs() << "Template argument marked tunable: "
+//                       << Knob->getArgIndex() << "\n");
+//      TAL.add(std::move(Knob));
+//    }
 
-    KnobSet TAKnobSet = TAL.getKnobSet();
-    std::unique_ptr<Tuner> TATuner = createTuner(loadSearchAlgoEnv(), TAKnobSet);
+//    KnobSet TAKnobSet = TAL.getKnobSet();
+    std::unique_ptr<Tuner> TATuner = createTuner(loadSearchAlgoEnv(), TAL.getSearchSpace());
     auto NewTuningData = std::make_unique<TemplateTuningData>(
         CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();

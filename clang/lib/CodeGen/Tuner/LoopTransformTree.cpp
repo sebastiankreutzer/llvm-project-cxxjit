@@ -88,36 +88,6 @@ std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
   return TreeClone;
 }
 
-LoopNode* LoopTransformTree::cloneNode(LoopNode* Node) {
-  llvm_unreachable("");
-  if (!Node)
-    return nullptr;
-  auto* Existing = getNode(Node->LoopName);
-  if (Existing)
-    return Existing;
-  auto* ParentClone = cloneNode(Node->Parent);
-  // Can't use make_unique here because the constructor is private
-  LoopNodePtr Clone = std::unique_ptr<LoopNode>(new LoopNode(this, Node->IsVirtualLoop, Node->LoopName, ParentClone));
-  auto* ClonePtr = Clone.get();
-  Nodes[Clone->LoopName] = std::move(Clone);
-
-  ClonePtr->Predecessor = cloneNode(Node->Predecessor);
-  for (auto *SubLoop : Node->SubLoops) {
-    ClonePtr->SubLoops.push_back(cloneNode(SubLoop));
-  }
-
-  ClonePtr->Successor = cloneNode(Node->Successor);
-
-  ClonePtr->Attrs = Node->Attrs;
-
-  // Fix pointers in attributes
-  for (auto& Attr : ClonePtr->Attrs.FollowupAttrs) {
-    Attr.Val = cloneNode(Attr.Val);
-  }
-
-  return ClonePtr;
-}
-
 
 LoopNode *LoopTransformTree::makeVirtualNode() {
   auto Name = std::to_string(NodeCount++);

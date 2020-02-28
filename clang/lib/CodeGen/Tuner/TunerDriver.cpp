@@ -316,7 +316,11 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 //    }
 
 //    KnobSet TAKnobSet = TAL.getKnobSet();
-    std::unique_ptr<Tuner> TATuner = createTuner(loadSearchAlgoEnv(), TAL.getSearchSpace());
+    std::unique_ptr<Tuner> TATuner;
+    if (TAL.isTunable()) {
+      TATuner = createTuner(loadSearchAlgoEnv(), TAL.getSearchSpace());
+    }
+
     auto NewTuningData = std::make_unique<TemplateTuningData>(
         CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();

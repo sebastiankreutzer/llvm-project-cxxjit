@@ -308,8 +308,12 @@ inline LogLevel loadDebugLvlEnv() {
   unsigned Lvl = LOG_ERROR;
   if (DebugStr) {
     int StrInt = std::atoi(DebugStr);
-    if (StrInt >= 0 && StrInt <= LOG_DEBUG)
+    if (StrInt >= 0 && StrInt <= LOG_DEBUG) {
       Lvl = StrInt;
+      outs() << "[JIT] Debug level is " << Lvl << "\n";
+    } else {
+      outs () << "[JIT] Invalid debug level: " << DebugStr << "\n";
+    }
   }
   return static_cast<LogLevel>(Lvl);
 }

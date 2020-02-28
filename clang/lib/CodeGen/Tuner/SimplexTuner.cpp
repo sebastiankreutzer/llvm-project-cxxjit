@@ -181,6 +181,9 @@ SimplexTuner::VertexList SimplexTuner::createSimplex() const {
 }
 
 ConfigEval SimplexTuner::generateNextConfig() {
+  if (Space.empty()) {
+    return ConfigEval();
+  }
 
   if (!EvalQueue.empty())
     return EvalQueue.pop_back_val();
@@ -209,7 +212,8 @@ ConfigEval SimplexTuner::generateNextConfig() {
         return Cmp(LHS.Eval, RHS.Eval);
       });
 
-      SmallVector<Vector<double>, 4> SimplexVecs(Simplex.size());
+      SmallVector<Vector<double>, 4> SimplexVecs;
+      SimplexVecs.reserve(Simplex.size());
       for (auto& V : Simplex) {
         SimplexVecs.push_back(V.Vec);
       }

@@ -164,6 +164,8 @@ struct ParamVal final {
     llvm_unreachable("");
   }
 
+  friend llvm::raw_ostream& operator<<(llvm::raw_ostream& OS, const ParamVal& Val);
+
   const ParamType Type;
 private:
   union ValType {
@@ -251,6 +253,10 @@ public:
   unsigned getNumDimensions() const {
     return Params.size();
   }
+
+  bool empty() const {
+    return Params.empty();
+  }
 private:
   VecT Params;
 };
@@ -323,6 +329,12 @@ struct ParamConfig {
 
   size_t size() const {
     return Values.size();
+  }
+
+  void dump(llvm::raw_ostream &OS) const;
+
+  void dump() const {
+    dump(llvm::outs());
   }
 
   const SearchSpace* Space;

@@ -232,44 +232,71 @@ public:
   }
 };
 
+struct HashableConfig {
+  friend struct ParamConfigMapInfo;
+  HashableConfig() {
+  }
+
+  HashableConfig(ParamConfig Config) : Config(std::move(Config)) {
+  }
+
+  ParamConfig& get() {
+    return Config;
+  }
+
+  const ParamConfig& get() const {
+    return Config;
+  }
+
+
+  ParamConfig Config;
+private:
+  int EmptyOrTombstone{1};
+};
+
 struct ParamConfigMapInfo {
-  static inline ParamConfig getEmptyKey() {
-    ParamConfig Cfg;
-    Cfg.Values = Vector<ParamVal>(1);
-    Cfg[0] = DenseMapInfo<long>::getEmptyKey();
+  static inline HashableConfig getEmptyKey() {
+    HashableConfig Cfg;
+    Cfg.EmptyOrTombstone = DenseMapInfo<int>::getEmptyKey();
     return Cfg;
   }
 
-  static inline ParamConfig getTombstoneKey() {
-    ParamConfig Cfg;
-    Cfg.Values = Vector<ParamVal>(1);
-    Cfg[0] = DenseMapInfo<long>::getTombstoneKey();
+  static inline HashableConfig getTombstoneKey() {
+    HashableConfig Cfg;
+    Cfg.EmptyOrTombstone = DenseMapInfo<int>::getTombstoneKey();
     return Cfg;
   }
 
-  static unsigned getHashValue(const ParamConfig& Cfg) {
+  static unsigned getHashValue(const HashableConfig& Cfg) {
     using llvm::hash_code;
     using llvm::hash_combine;
     using llvm::hash_combine_range;
 
-    hash_code h(1);
-    for (unsigned I = 0; I < Cfg.size(); I++) {
-      if (Cfg[I].Type == ParamType::INT)
-        h = hash_combine(h, cantFail(Cfg[I].getIntVal()));
+    hash_code h(Cfg.EmptyOrTombstone);
+    for (unsigned I = 0; I < Cfg.get().size(); I++) {
+      if (Cfg.get()[I].Type == ParamType::INT)
+        h = hash_combine(h, cantFail(Cfg.get()[I].getIntVal()));
     }
 
     return (unsigned)h;
 
   }
 
-  static bool isEqual(const ParamConfig& LHS, const ParamConfig& RHS) {
-    if (LHS.Space != RHS.Space)
+  static bool isEqual(const HashableConfig& LHS, const HashableConfig& RHS) {
+    if (LHS.EmptyOrTombstone != RHS.EmptyOrTombstone)
       return false;
-    assert(LHS.size() == RHS.size() && "Same space but different number of values");
-    for (unsigned I = 0; I < LHS.size(); I++) {
-      if (LHS[I].Type == ParamType::INT) {
-        assert(RHS[I].Type == ParamType::INT && "Same space but different types");
-        if (cantFail(LHS[I].getIntVal()) != cantFail(RHS[I].getIntVal()))
+    if (LHS.get().Space != RHS.get().Space)
+      return false;
+    if (LHS.get().size() != RHS.get().size()) {
+      LHS.get().dump();
+      outs() << "\n";
+      RHS.get().dump();
+    }
+    assert(LHS.get().size() == RHS.get().size() && "Same space but different number of values");
+    for (unsigned I = 0; I < LHS.get().size(); I++) {
+      if (LHS.get()[I].Type == ParamType::INT) {
+        assert(RHS.get()[I].Type == ParamType::INT && "Same space but different types");
+        if (cantFail(LHS.get()[I].getIntVal()) != cantFail(RHS.get()[I].getIntVal()))
           return false;
       }
     }
@@ -292,7 +319,7 @@ struct TemplateTuningData {
   BilevelTuningPolicy Policy;
 
   // TODO: Change to another key type?
-  llvm::DenseMap<ParamConfig, JITTemplateInstantiation, ParamConfigMapInfo>
+  llvm::DenseMap<HashableConfig, JITTemplateInstantiation, ParamConfigMapInfo>
       Specializations;
 
   ParamConfig ActiveConfig;
@@ -307,6 +334,7 @@ struct TemplateTuningData {
   }
 
   JITTemplateInstantiation &selectSpecialization() {
+
     bool ShouldChange = !Initialized;
     if (Initialized) {
       auto &TemplateInst = Specializations[ActiveConfig];
@@ -315,8 +343,15 @@ struct TemplateTuningData {
                      Policy.shouldChangeBaseParams(TemplateInst);
     }
     if (ShouldChange) {
-      auto EvalRequest = TATuner->generateNextConfig();
-      ActiveConfig = EvalRequest.Config;
+
+      ConfigEval Eval;
+      if (TATuner) {
+        Eval = TATuner->generateNextConfig();
+      } else {
+        // No tunable args
+        Eval = ConfigEval();
+      }
+      ActiveConfig = Eval.Config;
 
 //      auto Set = TunableArgs.getKnobSet();
       JIT_DEBUG(dbgs() << "Selected specialization:\n");
@@ -327,7 +362,7 @@ struct TemplateTuningData {
       auto It = Specializations.find(ActiveConfig);
       if (It == Specializations.end()) {
         auto TAs = TunableArgs.getArgsForConfig(*CD.Ctx, ActiveConfig);
-        Specializations[ActiveConfig] = instantiate(TAs, EvalRequest);
+        Specializations[ActiveConfig] = instantiate(TAs, Eval);
       }
 
     }
@@ -354,7 +389,7 @@ struct TemplateTuningData {
       auto Stats = Inst.getCurrentBest()->updateStats();
       if (Stats.betterThan(BestStats)) {
         BestStats = Stats;
-        CurrentBest = {It.first, &Inst};
+        CurrentBest = {It.first.get(), &Inst};
       }
     }
     if (BestStats.Valid()) {

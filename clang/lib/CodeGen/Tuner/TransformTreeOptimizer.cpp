@@ -219,8 +219,8 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
         JIT_INFO(dbgs() << "Transformation fully evaluated - ");
 
         if (BestVal.Stats->betterThan(*BestNode.second.Stats)) {
-          outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats));
-          CurrentNode->printPath(outs()) << "\n";
+          JIT_INFO(outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats)));
+          JIT_INFO(CurrentNode->printPath(outs()) << "\n");
           BestNode = {CurrentNode, BestVal};
           JIT_INFO(dbgs() << "speedup is " << computeSpeedup(*BestVal.Stats) << " with the following configuration:\n");
           // TODO: Print config
@@ -259,10 +259,10 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
                             << (i + 1 < NumAvailable ? ", " : "\n"));
           }
           auto &NewNode = Promising.expand();
-          outs() << "Tuning " << getTransformationName(NewNode.Transformation.Kind) << "\n";
+          JIT_INFO(outs() << "Tuning " << getTransformationName(NewNode.Transformation.Kind) << "\n");
           JIT_INFO(dbgs() << "Expanded Tree:\n");
-          // TODO: print tree path
-          NewNode.printPath() << "\n";
+          JIT_INFO(NewNode.printPath() << "\n");
+
 
           CurrentNode = &NewNode;
         }
@@ -342,7 +342,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
   }
 
   if (UseDefault) {
-    JIT_INFO(util::dumpModule(*M, "Default optimized module"));
+    JIT_DEBUG(util::dumpModule(*M, "Default optimized module"));
   }
 
   return Request;

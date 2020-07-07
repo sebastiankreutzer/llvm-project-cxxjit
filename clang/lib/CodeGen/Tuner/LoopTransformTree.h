@@ -121,7 +121,7 @@ using IntListAttr = MDAttr<SmallVector<int, 4>>;
 using BoolAttr = MDAttr<bool>;
 using StringAttr = MDAttr<SmallString<8>>;
 using FollowupAttr = MDAttr<LoopNode*>;
-using TagAttr = MDAttr<nullptr_t>; // TODO: this is dumb
+using TagAttr = MDAttr<std::nullptr_t>; // TODO: this is dumb
 
 
 

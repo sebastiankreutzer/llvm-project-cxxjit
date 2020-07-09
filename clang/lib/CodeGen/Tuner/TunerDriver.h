@@ -71,10 +71,10 @@ struct TunedCodeVersion {
 
   TunedCodeVersion() = default;
 
-  TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr,
+  TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr, void* FImplPtr,
                    TimingGlobals Globals,
                    ConfigEval Request)
-      : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals),
+      : ID(ID), ModKey(ModKey), FPtr(FPtr), FImplPtr(FImplPtr), Globals(Globals),
         Request(std::move(Request)) {}
 
   TimingStats updateStats() {
@@ -92,6 +92,7 @@ struct TunedCodeVersion {
   VersionID ID{0};
   orc::VModuleKey ModKey{0};
   void *FPtr{nullptr};
+  void *FImplPtr{nullptr};
   TimingGlobals Globals;
   ConfigEval Request;
   // TimingStats Stats;
@@ -232,77 +233,7 @@ public:
   }
 };
 
-struct HashableConfig {
-  friend struct ParamConfigMapInfo;
-  HashableConfig() {
-  }
 
-  HashableConfig(ParamConfig Config) : Config(std::move(Config)) {
-  }
-
-  ParamConfig& get() {
-    return Config;
-  }
-
-  const ParamConfig& get() const {
-    return Config;
-  }
-
-
-  ParamConfig Config;
-private:
-  int EmptyOrTombstone{1};
-};
-
-struct ParamConfigMapInfo {
-  static inline HashableConfig getEmptyKey() {
-    HashableConfig Cfg;
-    Cfg.EmptyOrTombstone = DenseMapInfo<int>::getEmptyKey();
-    return Cfg;
-  }
-
-  static inline HashableConfig getTombstoneKey() {
-    HashableConfig Cfg;
-    Cfg.EmptyOrTombstone = DenseMapInfo<int>::getTombstoneKey();
-    return Cfg;
-  }
-
-  static unsigned getHashValue(const HashableConfig& Cfg) {
-    using llvm::hash_code;
-    using llvm::hash_combine;
-    using llvm::hash_combine_range;
-
-    hash_code h(Cfg.EmptyOrTombstone);
-    for (unsigned I = 0; I < Cfg.get().size(); I++) {
-      if (Cfg.get()[I].Type == ParamType::INT)
-        h = hash_combine(h, cantFail(Cfg.get()[I].getIntVal()));
-    }
-
-    return (unsigned)h;
-
-  }
-
-  static bool isEqual(const HashableConfig& LHS, const HashableConfig& RHS) {
-    if (LHS.EmptyOrTombstone != RHS.EmptyOrTombstone)
-      return false;
-    if (LHS.get().Space != RHS.get().Space)
-      return false;
-    if (LHS.get().size() != RHS.get().size()) {
-      LHS.get().dump();
-      outs() << "\n";
-      RHS.get().dump();
-    }
-    assert(LHS.get().size() == RHS.get().size() && "Same space but different number of values");
-    for (unsigned I = 0; I < LHS.get().size(); I++) {
-      if (LHS.get()[I].Type == ParamType::INT) {
-        assert(RHS.get()[I].Type == ParamType::INT && "Same space but different types");
-        if (cantFail(LHS.get()[I].getIntVal()) != cantFail(RHS.get()[I].getIntVal()))
-          return false;
-      }
-    }
-    return true;
-  }
-};
 
 
 struct TemplateTuningData {

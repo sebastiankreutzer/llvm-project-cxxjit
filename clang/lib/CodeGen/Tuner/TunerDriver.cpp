@@ -345,7 +345,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     outs() << "Tuning done: " << FName;
     outs() << formatv("Speedup: {0:f2}\n", BaseLine.updateStats().Mean / Best->updateStats().Mean);
     // Only enable fast lookup if template arguments are not tuned.
-    return {Best->FPtr, !TTD->hasTunableArgs()};
+    return {Best->FImplPtr, !TTD->hasTunableArgs()};
   }
 
   if (TemplateInst.Context.Emitted && !TemplateInst.Instantiations.empty()) {
@@ -390,19 +390,25 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   // Add to the JIT engine.
   auto Key = CD.CJ->addModule(std::move(Mod));
 
+  auto lookupFunction = [&](llvm::StringRef Name) -> void* {
+    auto SpecSymbol = CD.CJ->findSymbol(Name);
+    assert(SpecSymbol && "Can't find the specialization just generated?");
+
+    if (auto Err = SpecSymbol.takeError()) {
+      errs() << "JIT Error: " << Err << "\n";
+      fatal();
+    }
+
+    if (!SpecSymbol.getAddress())
+      fatal();
+
+    return (void *)llvm::cantFail(SpecSymbol.getAddress());
+  };
+
   // Lookup the address of the generated function.
-  auto SpecSymbol = CD.CJ->findSymbol(FName.str());
-  assert(SpecSymbol && "Can't find the specialization just generated?");
-
-  if (auto Err = SpecSymbol.takeError()) {
-    errs() << "JIT Error: " << Err << "\n";
-    fatal();
-  }
-
-  if (!SpecSymbol.getAddress())
-    fatal();
-
-  auto *FPtr = (void *)llvm::cantFail(SpecSymbol.getAddress());
+  auto *FPtr = lookupFunction(FName.str());
+  // Lookup the non-timed function
+  auto *FImplPtr = lookupFunction(TimingHelper::getImplName(FName.str()));
 
   // Look up addresses of timing globals.
   auto *CJPtr = CD.CJ.get();
@@ -423,7 +429,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   PtrToInstInfo.insert({FPtr, PtrData(this, InstInfo(Inst.InstKey, Inst.NTTPValues, Inst.NTTPValuesSize,
                                  Inst.TypeStrings, Inst.TypeStringsCnt))});
 
-  TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, Globals,
+  TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, FImplPtr, Globals,
                            std::move(EvalRequest));
   TemplateInst.add(std::move(Version));
   TemplateInst.Context.Emitted =
@@ -449,7 +455,9 @@ void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
     llvm::errs() << "No optimized instantiation found\n";
     return nullptr;
   }
-  InstData IData = {BestVersion->FPtr, true};
+
+  // Select the non-timed version of the function.
+  InstData IData = {BestVersion->FImplPtr, true};
   updateActiveInstantiation(Inst, IData);
   JIT_INFO(dbgs() << "Finished tuning: " << Inst.Key << "\n");
   return IData.FPtr;

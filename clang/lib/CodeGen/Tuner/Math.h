@@ -9,8 +9,7 @@ namespace clang {
 namespace jit {
 
 // TODO: Inefficient vector implementation, but will do for now
-template<typename T>
-class Vector {
+template <typename T> class Vector {
   using VecT = Vector<T>;
 
 public:
@@ -19,38 +18,27 @@ public:
   using iterator = typename Container::iterator;
   using const_iterator = typename Container::const_iterator;
 
-  explicit Vector(size_t N) : Size(N), Vals(N) {
-  }
+  explicit Vector(size_t N) : Size(N), Vals(N) {}
 
-  Vector() : Size(1), Vals(1) {};
+  Vector() : Size(1), Vals(1){};
 
   Vector(const Vector &Other) = default;
 
   Vector<T> &operator=(const Vector &Other) = default;
 
-  size_t size() const {
-    return Size;
-  }
+  size_t size() const { return Size; }
 
   T &operator[](size_t I) { return Vals[I]; }
 
   const T &operator[](size_t I) const { return Vals[I]; }
 
-  iterator begin() {
-    return Vals.begin();
-  }
+  iterator begin() { return Vals.begin(); }
 
-  const_iterator begin() const {
-    return Vals.begin();
-  }
+  const_iterator begin() const { return Vals.begin(); }
 
-  iterator end() {
-    return Vals.end();
-  }
+  iterator end() { return Vals.end(); }
 
-  const_iterator end() const {
-    return Vals.end();
-  }
+  const_iterator end() const { return Vals.end(); }
 
   void operator*=(T K) {
     for (size_t i = 0; i < Size; i++) {
@@ -126,7 +114,7 @@ private:
   Container Vals;
 };
 
-template<typename T, typename Iterator>
+template <typename T, typename Iterator>
 Vector<T> centroid(Iterator Begin, Iterator End) {
   Vector<T> C(*Begin);
   int Count = 1;

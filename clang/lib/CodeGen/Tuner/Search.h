@@ -6,6 +6,7 @@
 #define LLVM_SEARCH_H
 
 #include <llvm/Support/Error.h>
+#include <llvm/ADT/DenseMap.h>
 #include "Math.h"
 
 #include <type_traits>
@@ -70,6 +71,10 @@ struct ParamVal final {
   bool operator==(const ParamVal& Other) const {
     return Other.Type == Type &&
                Type == ParamType::INT ? Val.Int_Val == Other.Val.Int_Val : Val.FP_Val == Other.Val.FP_Val;
+  }
+
+  bool operator!=(const ParamVal& Other) const {
+    return !operator==(Other);
   }
 
   bool operator<(const ParamVal& Other) const {
@@ -183,7 +188,12 @@ struct SearchDim {
 
   SearchDim(ValT Min, ValT Max, ValT Default, llvm::StringRef Name = "") : Min(Min), Max(Max), Default(Default), Name(Name) {
     assert(Min.Type == Max.Type && Min.Type == Default.Type && "Inconsistent parameter types");
+    assert(Min <= Max && Default >= Min && Default <= Max && "Invalid bounds");
     Type = Min.Type;
+  }
+
+  bool isTunable() const {
+    return Min != Max;
   }
 
 //  template<typename T>
@@ -208,7 +218,7 @@ struct SearchDim {
 class SearchSpace {
   using VecT = llvm::SmallVector<SearchDim, 4>;
 public:
-  SearchSpace(llvm::SmallVector<SearchDim, 4> Params = {}) : Params(std::move(Params)) {}
+  SearchSpace(VecT Params = {}) : Params(std::move(Params)) {}
 
   void addDim(SearchDim Dim) {
     Params.push_back(std::move(Dim));
@@ -252,6 +262,12 @@ public:
 
   unsigned getNumDimensions() const {
     return Params.size();
+  }
+
+  unsigned getNumTunableDimensions() const {
+    return std::count_if(Params.begin(), Params.end(), [](auto& Dim) {
+      return Dim.isTunable();
+    });
   }
 
   bool empty() const {
@@ -341,6 +357,79 @@ struct ParamConfig {
   Vector<ValT> Values;
 };
 
+struct HashableConfig {
+  friend struct ParamConfigMapInfo;
+  HashableConfig() {
+  }
+
+  HashableConfig(ParamConfig Config) : Config(std::move(Config)) {
+  }
+
+  ParamConfig& get() {
+    return Config;
+  }
+
+  const ParamConfig& get() const {
+    return Config;
+  }
+
+
+  ParamConfig Config;
+private:
+  int EmptyOrTombstone{1};
+};
+
+struct ParamConfigMapInfo {
+  static inline HashableConfig getEmptyKey() {
+    HashableConfig Cfg;
+    Cfg.EmptyOrTombstone = llvm::DenseMapInfo<int>::getEmptyKey();
+    return Cfg;
+  }
+
+  static inline HashableConfig getTombstoneKey() {
+    HashableConfig Cfg;
+    Cfg.EmptyOrTombstone = llvm::DenseMapInfo<int>::getTombstoneKey();
+    return Cfg;
+  }
+
+  static unsigned getHashValue(const HashableConfig& Cfg) {
+    using llvm::hash_code;
+    using llvm::hash_combine;
+    using llvm::hash_combine_range;
+
+    hash_code h(Cfg.EmptyOrTombstone);
+    for (unsigned I = 0; I < Cfg.get().size(); I++) {
+      h = hash_combine(h, cantFail(Cfg.get()[I].getIntVal()));
+    }
+
+    return (unsigned)h;
+
+  }
+
+  static bool isEqual(const HashableConfig& LHS, const HashableConfig& RHS) {
+    if (LHS.EmptyOrTombstone != RHS.EmptyOrTombstone)
+      return false;
+    if (LHS.get().Space != RHS.get().Space)
+      return false;
+    if (LHS.get().size() != RHS.get().size()) {
+      LHS.get().dump();
+      llvm::outs() << "\n";
+      RHS.get().dump();
+    }
+    assert(LHS.get().size() == RHS.get().size() && "Same space but different number of values");
+    for (unsigned I = 0; I < LHS.get().size(); I++) {
+      if (LHS.get()[I].Type == ParamType::INT) {
+        assert(RHS.get()[I].Type == ParamType::INT && "Same space but different types");
+        if (cantFail(LHS.get()[I].getIntVal()) != cantFail(RHS.get()[I].getIntVal()))
+          return false;
+      } else {
+        assert(false && "Hash function only applicable to integer configurations");
+      }
+    }
+    return true;
+  }
+};
+
 inline ParamConfig createDefaultConfig(const SearchSpace& Space) {
   ParamConfig Cfg(Space);
   for (auto I = 0; I < Space.getNumDimensions(); I++) {
@@ -374,14 +463,14 @@ ParamConfig createRandomConfig(RNETy &RNE, const SearchSpace& Space) {
 }
 
 
-template<typename T>
-inline ParamConfig createConfig(SearchSpace& Space, const Vector<T> &Vec) {
+template<typename T, typename RoundingPolicy>
+inline ParamConfig createConfig(SearchSpace& Space, const Vector<T> &Vec, RoundingPolicy Round) {
   ParamConfig Cfg(Space);
   for (auto I = 0; I < Space.getNumDimensions(); I++) {
     auto& Param = Space[I];
     switch(Param.Type) {
       case ParamType::INT:
-        Cfg[I] = static_cast<ParamVal::IntType>(Vec[I]);
+        Cfg[I] = static_cast<ParamVal::IntType>(Round(Vec[I]));
         break;
       case ParamType::FP:
         Cfg[I] = static_cast<ParamVal::FPType>(Vec[I]);

@@ -7,28 +7,35 @@
 
 #include "Tuner.h"
 #include "SimplexTuner.h"
+#include "ModifiedSimplexTuner.h"
 
 
 namespace clang {
 namespace jit {
 
 enum class TunerSearchAlgo {
-  Random, Simplex
+  Random, Simplex, ModSimplex
 };
 
 inline TunerSearchAlgo loadSearchAlgoEnv() {
   auto DriverStr = std::getenv("CJ_SEARCH");
-  if (DriverStr && std::strcmp(DriverStr, "simplex") == 0) {
-    return TunerSearchAlgo::Simplex;
-  } else {
-    return TunerSearchAlgo::Random;
+  if (DriverStr) {
+    if (std::strcmp(DriverStr, "simplex") == 0)
+      return TunerSearchAlgo::Simplex;
+    if (std::strcmp(DriverStr, "modsimplex") == 0)
+      return TunerSearchAlgo::ModSimplex;
   }
+
+  return TunerSearchAlgo::Random;
+
 }
 
 inline std::unique_ptr<Tuner> createTuner(TunerSearchAlgo Search, SearchSpace& Space) {
   switch(Search) {
     case TunerSearchAlgo::Simplex:
       return std::make_unique<SimplexTuner>(Space);
+    case TunerSearchAlgo::ModSimplex:
+      return std::make_unique<ModifiedSimplexTuner>(Space);
     case TunerSearchAlgo::Random:
     default:
       return std::make_unique<RandomTuner>(Space);

@@ -56,6 +56,10 @@ public:
   explicit TimingHelper(llvm::Function *TimedFunction)
       : TimedFunction(TimedFunction) {}
 
+  static std::string getImplName(std::string OriginalName) {
+    return "__clangjit_impl_" + OriginalName;
+  }
+
   template<typename F>
   TimingGlobals lookupGlobals(F &&SymLookupFn) {
     TimingGlobals TG;

@@ -290,8 +290,8 @@ bool isLegal(const SearchSpace& Space, const Vector<T> &Vec) {
 template<typename T>
 void legalize(const SearchSpace& Space, Vector<T> &Vec) {
   for (auto I = 0; I < Space.getNumDimensions(); I++) {
-    Vec[I] = std::min(std::max(Vec[I], static_cast<T>(Space[I].Min.getAsDouble()),
-                               static_cast<T>(Space[I].Max.getAsDouble())));
+    Vec[I] = std::min(std::max(Vec[I], static_cast<T>(Space[I].Min.getAsDouble())),
+                               static_cast<T>(Space[I].Max.getAsDouble()));
   }
 }
 

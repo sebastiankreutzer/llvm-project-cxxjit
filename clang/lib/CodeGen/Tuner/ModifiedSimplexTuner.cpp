@@ -37,7 +37,8 @@ ModifiedSimplexTuner::VertexList ModifiedSimplexTuner::createSimplex() const {
     Simplex.emplace_back(Space, std::move(Cpy));
     I++;
   }
-
+  Simplex.emplace_back(Space, std::move(Default));
+  return Simplex;
 }
 
 const ConfigEval& ModifiedSimplexTuner::markEvaluated(const ConfigEval& Eval) {
@@ -106,7 +107,7 @@ ConfigEval ModifiedSimplexTuner::generateNextConfig() {
       SimplexVecs.push_back(V.Vec);
     }
 
-    auto Centroid = centroid<double>(SimplexVecs.begin(), SimplexVecs.end());
+    Centroid = centroid<double>(SimplexVecs.begin(), SimplexVecs.end());
 
     auto ReflectedVec = Centroid + (Centroid - SimplexVecs.back()) * P.Alpha;
 

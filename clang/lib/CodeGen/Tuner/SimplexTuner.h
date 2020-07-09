@@ -27,7 +27,8 @@ public:
     Vertex() {
 
     }
-    Vertex(SearchSpace& Space, VectorT Vec) : Vec(Vec) {
+    Vertex(SearchSpace& Space, VectorT Vec) : Vec(std::move(Vec)) {
+      legalize(Space, this->Vec);
       auto Cfg = createConfig(Space, Vec, ::round);
       assert(Cfg.isLegal());
       Eval = ConfigEval(std::move(Cfg));

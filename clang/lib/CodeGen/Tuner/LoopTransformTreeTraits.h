@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/Support/DOTGraphTraits.h"
+#include <sstream>
 
 #include "LoopTransformTree.h"
 
@@ -95,7 +96,17 @@ struct DOTGraphTraits<LoopTransformTree*> : public DefaultDOTGraphTraits {
   DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
 
   std::string getNodeLabel(const LoopNode * Node, const LoopTransformTree*) {
-    return Node->getLoopName();
+    std::stringstream ss;
+    ss << Node->getLoopName().str() << "\n";
+    ss << "Trip count: ";
+    if (Node->getTripCountInfo().IsExact)
+      ss << Node->getTripCountInfo().TripCount;
+    else
+      ss << "Unknown";
+    auto Succ = Node->getSuccessor();
+    if (Succ)
+      ss << "\nSucc: " << Succ->getLoopName().str();
+    return ss.str();
   }
 
 };

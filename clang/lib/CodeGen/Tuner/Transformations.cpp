@@ -19,9 +19,11 @@ void findUnrollTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformatio
   // TODO: Right now, each loop unroll is treated as a single transformation.
   //  It might be better to tune them together, will have to try that out.
 
+  // TODO: Unrolling only on last-level loop sensible?
+
   LoopNode* Node = Root->getLastSuccessor();
   // Avoid unrolling floor loops from preceding tiling transformation, as well as previously unrolled loops
-  if (! (Node->isSetInPredecessors(LoopNode::TILED_FLOOR) || Node->isSetInPredecessors(LoopNode::UNROLLED))) {
+  if (!Node->hasSubLoop() && !(Node->isSetInPredecessors(LoopNode::TILED_FLOOR) || Node->isSetInPredecessors(LoopNode::UNROLLED))) {
     LoopTransformation Trans;
     Trans.Root = Node->getLoopName();
     Trans.Kind = LoopTransformation::UNROLL;
@@ -31,6 +33,10 @@ void findUnrollTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformatio
     // Avoid extremely high unroll counts
     auto Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX) : transform_defaults::UNROLL_MAX;
     auto Dflt = std::max(Min, Max / 4);
+
+    // TODO: For small trip counts, only try full unrolling
+
+
     if (Max == transform_defaults::UNROLL_MIN) {
       assert(Min == Max);
       // Do nothing

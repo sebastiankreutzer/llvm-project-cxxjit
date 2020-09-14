@@ -387,6 +387,8 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   TimingHelper TH(SMF);
   TH.createTimingWrapper();
 
+ // util::dumpModule(*Mod, "With wrapper:");
+
   // Add to the JIT engine.
   auto Key = CD.CJ->addModule(std::move(Mod));
 

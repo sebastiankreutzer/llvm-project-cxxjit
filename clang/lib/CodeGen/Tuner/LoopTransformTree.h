@@ -302,6 +302,10 @@ public:
     return Successor;
   }
 
+  const LoopNode* getSuccessor() const {
+    return Successor;
+  }
+
   LoopNode* getLastSuccessor() {
     if (Successor)
       return Successor->getLastSuccessor();

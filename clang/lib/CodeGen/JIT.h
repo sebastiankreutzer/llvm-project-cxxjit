@@ -444,6 +444,13 @@ struct CompilerData {
 
   std::unique_ptr<llvm::Module> createModule(StringRef Name);
 
+  using ModulePair = std::pair<std::unique_ptr<Module>, std::unique_ptr<Module>>;
+
+  // Creates IR modules for host and device.
+  ModulePair createModules(StringRef Name);
+
+  void embedPTXFatBin(llvm::Module& HostMod, llvm::Module& DevMod);
+
   void linkInAvailableDefs(llvm::Module& Mod, bool InvokeDefaultOpt = false);
 
   void makeDefsAvailable(std::unique_ptr<llvm::Module> NewMod);

@@ -385,19 +385,12 @@ private:
 
     JIT_DEBUG(util::dumpModule(*Mod, "Module after linking"));
 
-    // TODO: Make this configurable
-#define TRANSFORM_TREE_OPT
-#ifdef TRANSFORM_TREE_OPT
+
     auto Opt = std::make_unique<TransformTreeOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
         *CD.TargetOpts, *CD.Invocation->getLangOpts(),
         CD.CJ->getTargetMachine());
-#else
-    auto Opt = std::make_unique<StaticOptimizer>(
-        *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
-        *CD.TargetOpts, *CD.Invocation->getLangOpts(),
-        CD.CJ->getTargetMachine());
-#endif
+
     Opt->init(Mod.get());
 
     JITContext JITCtx;

@@ -960,6 +960,86 @@ std::unique_ptr<llvm::Module> CompilerData::createModule(StringRef SMName) {
   return GenMod;
 }
 
+CompilerData::ModulePair CompilerData::createModules(StringRef SMName) {
+  auto *FDecl = Consumer->getCodeGenerator()->GetDeclForMangledName(SMName);
+
+  emitAllNeeded();
+
+  if (DevCD)
+    DevCD->emitAllNeeded(false);
+
+  // Before anything gets optimized, mark the top-level symbol we're
+  // generating so that it doesn't get eliminated by the optimizer.
+
+  auto *TopGV =
+          cast<GlobalObject>(Consumer->getModule()->getNamedValue(SMName));
+  assert(TopGV && "Didn't generate the desired top-level symbol?");
+
+  TopGV->setLinkage(llvm::GlobalValue::ExternalLinkage);
+  TopGV->setComdat(nullptr);
+
+  // Finalize the module, generate module-level metadata, etc.
+
+  if (DevCD) {
+    DevCD->Consumer->HandleTranslationUnit(*DevCD->Ctx);
+    DevCD->Consumer->EmitOptimized();
+
+    // TODO: Move this to after PTX emission
+    Consumer->getCodeGenerator()->CGM().getCodeGenOpts().GPUBinForJIT = FatBin;
+  }
+
+  // Finalize translation unit. No optimization yet.
+  Consumer->HandleTranslationUnit(*Ctx);
+
+  // First, mark everything we've newly generated with external linkage. When
+  // we generate additional modules, we'll mark these functions as available
+  // externally, and so we're likely to inline them, but if not, we'll need
+  // to link with the ones generated here.
+
+  for (auto &F : Consumer->getModule()->functions()) {
+    F.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    F.setComdat(nullptr);
+
+    //    if (!F.isDeclaration()) // TODO: Move into tuner driver
+    //      JITCtx.ReplaceOnRecompilation.push_back(F.getName());
+  }
+
+  auto IsLocalUnnamedConst = [](llvm::GlobalValue &GV) {
+    if (!GV.hasAtLeastLocalUnnamedAddr() || !GV.hasLocalLinkage())
+      return false;
+
+    auto *GVar = dyn_cast<llvm::GlobalVariable>(&GV);
+    if (!GVar || !GVar->isConstant())
+      return false;
+
+    return true;
+  };
+
+  for (auto &GV : Consumer->getModule()->global_values()) {
+    if (IsLocalUnnamedConst(GV) || GV.hasAppendingLinkage())
+      continue;
+
+    GV.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    if (auto *GO = dyn_cast<llvm::GlobalObject>(&GV))
+      GO->setComdat(nullptr);
+  }
+
+  auto HostMod = Consumer->takeModule();
+  std::unique_ptr<Module> DevMod;
+  if (DevCD) {
+    DevMod = DevCD->Consumer->takeModule();
+  }
+
+  // Reset for next instantiation TODO: Move to after PTX emission (what happens to CGM?)
+  Consumer->Initialize(*Ctx);
+
+  return {HostMod, DevMod};
+}
+
+void CompilerData::embedPTXFatBin(llvm::Module& HostMod, llvm::Module& DevMod) {
+
+}
+
 void CompilerData::prepareForLinking(llvm::Module *DstMod,
                                      const llvm::Module *SrcMod) {
 

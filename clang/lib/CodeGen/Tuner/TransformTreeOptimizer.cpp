@@ -27,6 +27,7 @@
 #include "Debug.h"
 #include "LoopTransformTreeTraits.h"
 #include "Util.h"
+#include "DecisionTreeYAML.h"
 
 using namespace llvm;
 
@@ -210,6 +211,8 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
         // Find new transformations based on current best
         CurrentNode->finalize();
+
+        writeTree(*DecisionTree);
 
         auto Best = CurrentNode->TTuner->getBest();
         assert(Best && "No result");

@@ -15,7 +15,7 @@ namespace jit {
 
 using namespace llvm;
 
-static const char *NameTag = "loop.loop.id";
+static const char *LOOP_NAME_TAG = "llvm.loop.id";
 
 inline MDNode *createSelfReferencingMD(LLVMContext& Ctx, ArrayRef<Metadata*> Ops) {
   auto Dummy = MDNode::get(Ctx, {});
@@ -86,7 +86,7 @@ inline MDNode *addTaggedMD(MDNode* LoopMD, StringRef Tag, MDNode* OtherMD) {
 
 inline MDNode *assignLoopName(Loop* Loop, StringRef Name) {
   LLVMContext &Ctx = Loop->getHeader()->getContext();
-  auto TagMD = MDString::get(Ctx, NameTag);
+  auto TagMD = MDString::get(Ctx, LOOP_NAME_TAG);
   auto NameStr = MDString::get(Ctx, Name);
   auto NameMD = MDNode::get(Ctx, {TagMD, NameStr});
   auto LoopID = addToLoopMD(getOrCreateLoopID(Loop), NameMD);
@@ -109,7 +109,7 @@ inline StringRef getLoopName(Loop* Loop) {
       continue;
     auto TagMD = dyn_cast<MDString>(MD->getOperand(0));
     auto NameMD = dyn_cast<MDString>(MD->getOperand(1));
-    if (!TagMD || !TagMD->getString().equals(NameTag))
+    if (!TagMD || !TagMD->getString().equals(LOOP_NAME_TAG))
       continue;
     if (!NameMD) {
       errs() << "Malformed loop name metadata\n";

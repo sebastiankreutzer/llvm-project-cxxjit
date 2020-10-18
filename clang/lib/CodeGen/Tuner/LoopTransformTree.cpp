@@ -10,7 +10,7 @@ namespace clang {
 namespace jit {
 
 namespace MDTags {
-const char *LOOP_ID_TAG = "llvm.loop.id";
+//const char *LOOP_ID_TAG = "llvm.loop.id";
 const char *DISABLE_NONFORCED = "llvm.loop.disable_nonforced";
 const char *TILE_ENABLE_TAG = "llvm.loop.tile.enable";
 const char *TILE_DEPTH_TAG = "llvm.loop.tile.depth";
@@ -92,7 +92,7 @@ std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
 LoopNode *LoopTransformTree::makeVirtualNode() {
   auto Name = std::to_string(NodeCount++);
   auto Node = new LoopNode(this, true, Name);
-  Node->addStringAttribute(MDTags::LOOP_ID_TAG, Name);
+  Node->addStringAttribute(LOOP_NAME_TAG, Name);
   Nodes[Name].reset(Node);
   return Node;
 }

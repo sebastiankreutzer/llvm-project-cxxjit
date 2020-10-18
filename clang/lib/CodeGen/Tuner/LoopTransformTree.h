@@ -77,7 +77,7 @@ DereferenceIterator<Iterator> dereference_iterator(Iterator t) {
 }  // namespace util
 
 namespace MDTags {
-extern const char *LOOP_ID_TAG;
+//extern const char *LOOP_ID_TAG;
 extern const char* DISABLE_NONFORCED;
 extern const char *TILE_ENABLE_TAG;
 extern const char *TILE_DEPTH_TAG;

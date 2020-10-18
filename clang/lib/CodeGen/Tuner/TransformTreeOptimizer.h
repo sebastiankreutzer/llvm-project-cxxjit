@@ -70,6 +70,10 @@ public:
     return Transformation.Space;
   }
 
+  SmallVector<ConfigEval, 16> getAllConfigs() const {
+    return Configs;
+  }
+
 private:
   void updateBest() {
     NeedsUpdate = false;

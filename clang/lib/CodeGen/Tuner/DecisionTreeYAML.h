@@ -17,27 +17,37 @@ using llvm::yaml::IO;
 
 using namespace clang::jit;
 
-template <unsigned U> struct ScalarTraits<SmallString<U>> {
+//namespace llvm {
+//namespace yaml {
 
-  static void output(const SmallString<U> &S, void *, llvm::raw_ostream &OS) {
+template<unsigned U>
+struct ScalarTraits<SmallString<U>>
+{
+
+  static void output(const SmallString<U> &S, void *, llvm::raw_ostream &OS)
+  {
     for (const auto &C : S)
       OS << C;
   }
 
-  static StringRef input(StringRef Scalar, void *, SmallString<U> &Value) {
+  static StringRef input(StringRef Scalar, void *, SmallString<U> &Value)
+  {
     Value.assign(Scalar.begin(), Scalar.end());
     return StringRef();
   }
 
-  static QuotingType mustQuote(StringRef) { return QuotingType::Single; }
+  static QuotingType mustQuote(StringRef)
+  { return QuotingType::Single; }
 };
 
 
 LLVM_YAML_IS_SEQUENCE_VECTOR(ParamVal);
 
 template<>
-struct ScalarEnumerationTraits<LoopTransformation::TransformKind> {
-  static void enumeration(IO& io, LoopTransformation::TransformKind& Kind) {
+struct llvm::yaml::ScalarEnumerationTraits<LoopTransformation::TransformKind>
+{
+  static void enumeration(IO &io, LoopTransformation::TransformKind &Kind)
+  {
     io.enumCase(Kind, "None", LoopTransformation::NONE);
     io.enumCase(Kind, "Tile", LoopTransformation::TILE);
     io.enumCase(Kind, "Interchange", LoopTransformation::INTERCHANGE);
@@ -49,8 +59,10 @@ struct ScalarEnumerationTraits<LoopTransformation::TransformKind> {
 };
 
 template<>
-struct MappingTraits<LoopTransformation> {
-  static void mapping(IO& io, LoopTransformation& Trans) {
+struct llvm::yaml::MappingTraits<LoopTransformation>
+{
+  static void mapping(IO &io, LoopTransformation &Trans)
+  {
     io.mapRequired("kind", Trans.Kind);
     io.mapRequired("fixed-params", Trans.FixedParams);
     io.mapRequired("int-params", Trans.IntParams);
@@ -60,27 +72,35 @@ struct MappingTraits<LoopTransformation> {
 };
 
 template<>
-struct SequenceTraits<SearchSpace> {
-  static size_t size(IO& io, SearchSpace& Space) {
+struct llvm::yaml::SequenceTraits<SearchSpace>
+{
+  static size_t size(IO &io, SearchSpace &Space)
+  {
     return Space.getNumDimensions();
   }
-  static SearchDim& element(IO& io, SearchSpace& Space, size_t Index) {
+
+  static SearchDim &element(IO &io, SearchSpace &Space, size_t Index)
+  {
     return Space[Index];
   }
 };
 
 template<>
-struct ScalarEnumerationTraits<ParamType> {
-  static void enumeration(IO& io, ParamType& Type) {
+struct llvm::yaml::ScalarEnumerationTraits<ParamType>
+{
+  static void enumeration(IO &io, ParamType &Type)
+  {
     io.enumCase(Type, "FP", ParamType::FP);
     io.enumCase(Type, "INT", ParamType::INT);
   }
 };
 
 template<>
-struct ScalarTraits<ParamVal> {
-  static void output(const ParamVal& Val, void*, llvm::raw_ostream& OS) {
-    if (Val.Type==ParamType::FP) {
+struct llvm::yaml::ScalarTraits<ParamVal>
+{
+  static void output(const ParamVal &Val, void *, llvm::raw_ostream &OS)
+  {
+    if (Val.Type == ParamType::FP) {
       auto FPVal = Val.getFPVal();
       if (FPVal)
         OS << FPVal.get();
@@ -95,19 +115,23 @@ struct ScalarTraits<ParamVal> {
     }
   }
 
-  static StringRef input(StringRef Scalar, void*, ParamVal& Val) {
+  static StringRef input(StringRef Scalar, void *, ParamVal &Val)
+  {
     // TODO: Implement ParamVal read
     return StringRef();
   }
 
-  static QuotingType mustQuote(StringRef) {
+  static QuotingType mustQuote(StringRef)
+  {
     return QuotingType::None;
   }
 };
 
 template<>
-struct MappingTraits<SearchDim> {
-  static void mapping(IO& io, SearchDim& Dim) {
+struct llvm::yaml::MappingTraits<SearchDim>
+{
+  static void mapping(IO &io, SearchDim &Dim)
+  {
     io.mapRequired("name", Dim.Name);
     io.mapRequired("type", Dim.Type);
     io.mapRequired("min", Dim.Min);
@@ -117,16 +141,59 @@ struct MappingTraits<SearchDim> {
 };
 
 template<>
-struct MappingTraits<DecisionNode> {
-  static void mapping(IO& io, DecisionNode& Node) {
-    io.mapRequired("transformation",  Node.Transformation);
-    io.mapRequired("children", Node.Children);
+struct llvm::yaml::MappingTraits<ConfigEval>
+{
+  static void mapping(IO& io, ConfigEval& Eval) {
+    io.mapRequired("stats", Eval.Stats);
+    io.mapRequired("config", Eval.Config.Values);
+  }
+};
+
+LLVM_YAML_IS_SEQUENCE_VECTOR(ConfigEval);
+
+template<>
+struct llvm::yaml::MappingTraits<SharedEvalStats>
+{
+  static void mapping(IO& io, SharedEvalStats& Stats) {
+    if (Stats) {
+      io.mapRequired("num", Stats->N);
+      io.mapRequired("mean", Stats->Mean);
+      io.mapRequired("variance", Stats->Variance);
+    }
   }
 };
 
 template<>
-struct MappingTraits<std::unique_ptr<DecisionNode>> {
-  static void mapping(IO& io, std::unique_ptr<DecisionNode>& Ptr) {
+struct llvm::yaml::SequenceTraits<ParamConfig::VecT>
+{
+  static size_t size(IO &io, ParamConfig::VecT& V)
+  {
+    return V.size();
+  }
+
+  static ParamVal &element(IO &io, ParamConfig::VecT& V, size_t Index)
+  {
+    return V[Index];
+  }
+};
+
+template<>
+struct llvm::yaml::MappingTraits<DecisionNode>
+{
+  static void mapping(IO &io, DecisionNode &Node)
+  {
+    io.mapRequired("transformation", Node.Transformation);
+    io.mapRequired("children", Node.Children);
+    auto Configs = Node.TTuner->getAllConfigs();
+    io.mapRequired("configs", Configs);
+  }
+};
+
+template<>
+struct llvm::yaml::MappingTraits<std::unique_ptr<DecisionNode>>
+{
+  static void mapping(IO &io, std::unique_ptr<DecisionNode> &Ptr)
+  {
     if (Ptr)
       MappingTraits<DecisionNode>::mapping(io, *Ptr);
   }
@@ -145,15 +212,25 @@ LLVM_YAML_IS_SEQUENCE_VECTOR(std::unique_ptr<DecisionNode>);
 //  }
 //};
 
-inline void writeTree(TransformDecisionTree& Tree, raw_ostream& OS=llvm::outs()) {
+
+//}
+//}
+
+namespace clang {
+namespace jit {
+inline void writeTree(TransformDecisionTree &Tree, raw_ostream &OS = llvm::outs())
+{
   llvm::yaml::Output Out(OS);
   Out << Tree.getRoot();
 }
 
-inline void writeTree(TransformDecisionTree& Tree, StringRef File) {
+inline void writeTree(TransformDecisionTree &Tree, StringRef File)
+{
   std::error_code Err;
   raw_fd_ostream OS(File, Err);
   writeTree(Tree, OS);
+}
+}
 }
 
 

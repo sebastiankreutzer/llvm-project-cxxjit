@@ -192,12 +192,19 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
     return false;
   };
 
+  auto isIdentity = [](ArrayRef<int> Perm) -> bool {
+    for (int I = 0; I < Perm.size(); I++) {
+      if (Perm[I] != I)
+        return false;
+    }
+    return true;
+  };
+
   auto Perms = listPermutations(Indices);
   assert(Perms.size() == factorial(Depth) && "Wrong number of permutations");
   auto NumValid = 0;
   for (auto& Perm : Perms) {
-    if (violatesConstraints(Perm)) {
-
+    if (violatesConstraints(Perm) || isIdentity(Perm)) {
       continue;
     }
 //    outs() << "Found permutation: " << "\n";

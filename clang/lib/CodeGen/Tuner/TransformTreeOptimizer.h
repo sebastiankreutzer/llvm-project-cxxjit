@@ -112,6 +112,7 @@ struct DecisionNode {
 
     TTuner = std::make_unique<TransformationTuner>(Transformation, getMaxEvalLimit());
     UnexploredIdx = 0;
+    ExpansionID = -1;
   }
 
   unsigned getMaxEvalLimit() {
@@ -255,6 +256,7 @@ struct DecisionNode {
   std::unique_ptr<TransformationTuner> TTuner;
   LoopTransformation Transformation;
   DecisionNode* Parent;
+  int ExpansionID;
 //  KnobConfig FullConfig;
   SmallVector<LoopTransformation, 4> FeasibleTransformations;
   SmallVector<NodePtr, 4> Children;
@@ -296,7 +298,8 @@ public:
                          const clang::TargetOptions &TOpts, const clang::LangOptions &LOpts,
                          llvm::TargetMachine &TM)
       : Diags(Diags), HSOpts(HeaderOpts), CodeGenOpts(CGOpts),
-        TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr), Done(false) {
+        TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr), Done(false), ExpansionCounter(0) {
+
   }
 
   void init(llvm::Module* M) override;
@@ -321,6 +324,8 @@ private:
                                             ParamConfig &Cfg);
 
   float computeSpeedup(TimingStats& Stats);
+
+  void exportTree();
 
 private:
   using LoopTreeList = SmallVector<LoopTransformTreePtr, 2>;
@@ -355,6 +360,9 @@ private:
 
   // All loop nests have been tuned.
   bool Done;
+
+  // Counts expansion operations.
+  int ExpansionCounter;
 
 };
 

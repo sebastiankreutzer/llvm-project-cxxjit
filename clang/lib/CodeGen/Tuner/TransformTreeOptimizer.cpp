@@ -157,6 +157,15 @@ void TransformTreeOptimizer::init(Module *M) {
 //  ViewGraph(&Tree, "After tiling");
 }
 
+void TransformTreeOptimizer::exportTree() {
+  auto ExportTreeStr = std::getenv("CJ_EXPORT_TREE");
+  if (!ExportTreeStr)
+    return;
+
+  auto Filename = (DecisionTree->getRoot().LoopTree->getName() + ".yaml").str();
+  writeTree(*DecisionTree, Filename);
+}
+
 ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
   assert(ModToOptimize && "Optimizer is not initialized!");
 
@@ -212,7 +221,8 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
         // Find new transformations based on current best
         CurrentNode->finalize();
 
-        writeTree(*DecisionTree);
+
+        exportTree();
 
         auto Best = CurrentNode->TTuner->getBest();
         assert(Best && "No result");
@@ -235,6 +245,9 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
         if (DecisionTree->isFullyExplored()) {
           JIT_INFO(dbgs() << "Loop nest fully explored!\n");
+
+          exportTree();
+
           // Tuning is done, save best configuration
           auto FinalTree = BestNode.first->applyBestConfig();
 //          FinalizedConfig.addAll(BestNode.second.Cfg);
@@ -262,6 +275,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
                             << (i + 1 < NumAvailable ? ", " : "\n"));
           }
           auto &NewNode = Promising.expand();
+          NewNode.ExpansionID = ExpansionCounter++;
           JIT_INFO(outs() << "Tuning " << getTransformationName(NewNode.Transformation.Kind) << "\n");
           JIT_INFO(dbgs() << "Expanded Tree:\n");
           JIT_INFO(NewNode.printPath() << "\n");

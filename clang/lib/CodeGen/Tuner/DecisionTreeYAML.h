@@ -41,7 +41,7 @@ struct ScalarTraits<SmallString<U>>
 };
 
 
-LLVM_YAML_IS_SEQUENCE_VECTOR(ParamVal);
+LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(ParamVal);
 
 template<>
 struct llvm::yaml::ScalarEnumerationTraits<LoopTransformation::TransformKind>
@@ -163,6 +163,7 @@ struct llvm::yaml::MappingTraits<SharedEvalStats>
   }
 };
 
+
 template<>
 struct llvm::yaml::SequenceTraits<ParamConfig::VecT>
 {
@@ -175,6 +176,8 @@ struct llvm::yaml::SequenceTraits<ParamConfig::VecT>
   {
     return V[Index];
   }
+
+  static const bool flow = true;
 };
 
 template<>
@@ -182,10 +185,11 @@ struct llvm::yaml::MappingTraits<DecisionNode>
 {
   static void mapping(IO &io, DecisionNode &Node)
   {
+    io.mapRequired("expansion_id", Node.ExpansionID);
     io.mapRequired("transformation", Node.Transformation);
-    io.mapRequired("children", Node.Children);
     auto Configs = Node.TTuner->getAllConfigs();
     io.mapRequired("configs", Configs);
+    io.mapRequired("children", Node.Children);
   }
 };
 

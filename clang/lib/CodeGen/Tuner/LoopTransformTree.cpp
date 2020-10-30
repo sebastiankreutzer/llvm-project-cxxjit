@@ -41,7 +41,7 @@ LoopTransformTree::LoopTransformTree(LoopTransformTree &&Rhs) noexcept
 
 
 std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
-  auto TreeClone = std::make_unique<LoopTransformTree>();
+  auto TreeClone = std::make_unique<LoopTransformTree>(Name);
 
   // First create a copy of all nodes
   for (auto& It : Nodes) {

@@ -132,7 +132,7 @@ public:
   using node_iterator = util::MapValueIterator<StringMap<LoopNodePtr>::iterator>;
   using const_node_iterator = util::MapValueIterator<StringMap<LoopNodePtr>::const_iterator>;
 
-  LoopTransformTree() {
+  LoopTransformTree(StringRef Name): Name(Name) {
   }
 
   LoopTransformTree(const LoopTransformTree&) = delete;
@@ -144,6 +144,10 @@ public:
       *this = std::move(Rhs);
     }
     return *this;
+  }
+
+  StringRef getName() const {
+    return Name;
   }
 
   LoopNode* makeVirtualNode();
@@ -195,6 +199,7 @@ private:
   LoopNode* cloneNode(LoopNode* Node);
 
 private:
+  SmallString<16> Name;
   LoopNode* Root{nullptr};
   StringMap<LoopNodePtr> Nodes;
   unsigned NodeCount{0};

@@ -57,7 +57,7 @@ void printReport(JITTemplateInstantiation &TemplateInst) {
       continue;
     }
     auto Stats = Inst.updateStats();
-    if (!Stats.Valid()) {
+    if (!Stats.valid()) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
@@ -153,7 +153,7 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
         continue;
       }
       auto Stats = Inst.updateStats();
-      if (!Stats.Valid()) {
+      if (!Stats.valid()) {
         OS << "No data collected\n";
         return;
       }
@@ -226,7 +226,7 @@ void printReport(TemplateTuningData &Data) {
       continue;
     }
     auto Stats = Version.updateStats();
-    if (!Stats.Valid()) {
+    if (!Stats.valid()) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
@@ -358,7 +358,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     const double MaxRelStdErr = 0.05;
 
     bool Recompile = false;
-    if (Stats.Valid()) {
+    if (Stats.valid()) {
       // Recompile if the function has been called enough times and the relative
       // standard error of mean is below a certain threshold.
       Recompile =
@@ -370,8 +370,8 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     JIT_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName
                      << "\n");
-    JIT_REPORT({outs() << "Tuner report:\n"; printFullReport(*TTD, outs());});
-    JIT_INFO({if (clang::jit::LogLvl < LOG_REPORT) {outs() << "Tuner report:\n"; printShortReport(*TTD, outs());};});
+    //JIT_REPORT({outs() << "Tuner report:\n"; printFullReport(*TTD, outs());});
+    //JIT_INFO({if (clang::jit::LogLvl < LOG_REPORT) {outs() << "Tuner report:\n"; printShortReport(*TTD, outs());};});
   }
 
   auto Mod = llvm::CloneModule(*TemplateInst.Context.Mod);
@@ -387,7 +387,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   TimingHelper TH(SMF);
   TH.createTimingWrapper();
 
- // util::dumpModule(*Mod, "With wrapper:");
+  JIT_DEBUG(util::dumpModule(*Mod, "With wrapper:"));
 
   // Add to the JIT engine.
   auto Key = CD.CJ->addModule(std::move(Mod));

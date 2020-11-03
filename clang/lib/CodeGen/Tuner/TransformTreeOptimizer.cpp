@@ -231,6 +231,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
         JIT_INFO(dbgs() << "----------------------------------------\n");
         JIT_INFO(dbgs() << "Transformation fully evaluated - ");
 
+
         if (BestVal.Stats->betterThan(*BestNode.second.Stats)) {
           JIT_INFO(outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats)));
           JIT_INFO(CurrentNode->printPath(outs()) << "\n");
@@ -265,7 +266,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
         } else {
           // Expand the tree
           auto &Promising = DecisionTree->getMostPromisingNode();
-          JIT_INFO(dbgs() << "Selected node to expand: kind=" << getTransformationName(Promising.Transformation.Kind)
+          JIT_INFO(dbgs() << "Selected node to expand: kind=" << (Promising.getDepth() == 1 ? "ROOT" : getTransformationName(Promising.Transformation.Kind))
                           << ", depth=" << Promising.getDepth() << ", nesting_depth="
                           << Promising.LoopTree->getRoot()->getMaxDepth() << "\n");
           JIT_INFO(dbgs() << "Available transformations: ");
@@ -276,7 +277,6 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           }
           auto &NewNode = Promising.expand();
           NewNode.ExpansionID = ExpansionCounter++;
-          JIT_INFO(outs() << "Tuning " << getTransformationName(NewNode.Transformation.Kind) << "\n");
           JIT_INFO(dbgs() << "Expanded Tree:\n");
           JIT_INFO(NewNode.printPath() << "\n");
 
@@ -295,7 +295,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
     if (!Done) {
 
       Request = CurrentNode->TTuner->getNext();
-      JIT_INFO(dbgs() << "Applying transformation on loop " << CurrentNode->Transformation.Root << ":\n");
+      //JIT_INFO(dbgs() << "Applying transformation on loop " << CurrentNode->Transformation.Root << ":\n");
       // TODO: print config
 //      JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), Request.Cfg).dump());
       //    ViewGraph(ClonedTree.get(), "ClonedTree");
@@ -370,9 +370,9 @@ float TransformTreeOptimizer::computeSpeedup(TimingStats& Stats) {
   if (!BaseLine)
     return 0;
   auto& BaseLineStats = *BaseLine.getValue().Stats;
-  if (!BaseLineStats.Valid())
+  if (!BaseLineStats.valid())
     return 0;
-  if (!Stats.Valid())
+  if (!Stats.valid())
     return 0;
   return BaseLineStats.Mean / Stats.Mean;
 }
@@ -408,20 +408,20 @@ void TransformTreeOptimizer::createPasses(const llvm::Module &M, legacy::PassMan
 
   bool VectorizeSLP = CodeGenOpts.VectorizeSLP;
   if (!VectorizeSLP) {
-    JIT_INFO(errs() << "VectorizeSLP is disabled - enabling for tuning.\n");
+    //JIT_INFO(errs() << "VectorizeSLP is disabled - enabling for tuning.\n");
     VectorizeSLP = true;
   }
 
   bool VectorizeLoop = CodeGenOpts.VectorizeLoop;
   if (!VectorizeLoop) {
-    JIT_INFO(errs() << "VectorizeLoop is disabled - enabling for tuning.\n");
+    //JIT_INFO(errs() << "VectorizeLoop is disabled - enabling for tuning.\n");
     VectorizeLoop = true;
   }
 
   bool Unroll = CodeGenOpts.UnrollLoops;
   bool Reroll = CodeGenOpts.RerollLoops;
   if (Unroll || Reroll) {
-    JIT_INFO(errs() << "Unrolling/rerolling is enabled - disabling for tuning\n");
+    //JIT_INFO(errs() << "Unrolling/rerolling is enabled - disabling for tuning\n");
     Unroll = false;
     Reroll = false;
   }

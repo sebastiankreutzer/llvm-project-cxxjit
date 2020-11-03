@@ -18,18 +18,24 @@ public:
 
   using EvalList = llvm::SmallVector<ConfigEval, 4>;
 
-  using VectorT  = Vector<double>;
+  using Scalar = double;
+  using VectorT  = Vector<Scalar>;
   using VectorList = llvm::SmallVector<VectorT, 4>;
 
   struct Vertex {
     Vertex() {
 
     }
-    Vertex(SearchSpace& Space, VectorT Vec) : Vec(std::move(Vec)) {
+
+//    Vertex(const SearchSpace& Space, VectorT Vec, ConfigEval Eval) : Vec(std::move(Vec)), Eval(std::move(Eval)) {
+//      legalize()
+//    }
+
+    Vertex(const SearchSpace& Space, VectorT Vec, std::string Op = "") : Vec(std::move(Vec)) {
       legalize(Space, this->Vec);
-      auto Cfg = createConfig(Space, Vec, ::round);
+      auto Cfg = createConfig(Space, this->Vec, ::round);
       assert(Cfg.isLegal());
-      Eval = ConfigEval(std::move(Cfg));
+      Eval = ConfigEval(std::move(Cfg), Op);
     }
 
     VectorT Vec;
@@ -48,21 +54,25 @@ public:
 
       assert(Config.Space && "Search space must be defined to find legal neighbors.");
 
-      auto addNeighborInDim = [&](const ParamConfig& C, int Dim, int Offset) {
+      auto addNeighborInDim = [&](const ParamConfig& C, int Dim, int Offset, llvm::SmallVectorImpl<ParamConfig>& ConfigList) {
         ParamConfig Neighbor(C);
         Neighbor[Dim] += Offset;
         if (Neighbor.isLegal()) {
-          Neighbors.push_back(std::move(Neighbor));
+          ConfigList.push_back(std::move(Neighbor));
         }
       };
 
+      llvm::SmallVector<ParamConfig, 8> ToAppend;
       for (unsigned I = 0; I < Config.Space->getNumDimensions(); I++) {
-        addNeighborInDim(Config, I, -1);
-        addNeighborInDim(Config, I, 1);
         for (auto& C : Neighbors) {
-          addNeighborInDim(C, I, -1);
-          addNeighborInDim(C, I, 1);
+          addNeighborInDim(C, I, -1, ToAppend);
+          addNeighborInDim(C, I, 1, ToAppend);
         }
+        addNeighborInDim(Config, I, -1, ToAppend);
+        addNeighborInDim(Config, I, 1, ToAppend);
+        // New neighbors are stored in at temp list to avoid problems with the iterator.
+        Neighbors.append(ToAppend.begin(), ToAppend.end());
+        ToAppend.clear();
       }
       Initialized = true;
     }
@@ -116,6 +126,9 @@ private:
   const ConfigEval& markEvaluated(const ConfigEval& Eval);
 //  Vertex createVertex(VectorT Vec);
   ConfigEval  getNeighborIfAlreadyEvaluated(const ConfigEval &Eval);
+
+  bool isAlreadyEvaluated(const ConfigEval &Eval);
+  ConfigEval getFreshNeighbor(const ConfigEval& Eval, std::string Op);
 
 
 private:

@@ -29,12 +29,12 @@ ModifiedSimplexTuner::VertexList ModifiedSimplexTuner::createSimplex() const {
 
   VertexList Simplex;
   Simplex.reserve(getNumSimplexPoints());
-  auto Default = convertTo<double>(createDefaultConfig(Space));
+  auto Default = convertTo<Scalar>(createDefaultConfig(Space));
   auto I = 0;
   for (auto& Dim : Space) {
     auto Cpy = Default;
     Cpy[I]= perturb(Cpy[I], Dim.Min.getAsDouble(), Dim.Max.getAsDouble());
-    Simplex.emplace_back(Space, std::move(Cpy));
+    Simplex.emplace_back(Space, std::move(Cpy), "INIT");
     I++;
   }
   Simplex.emplace_back(Space, std::move(Default));
@@ -46,10 +46,35 @@ const ConfigEval& ModifiedSimplexTuner::markEvaluated(const ConfigEval& Eval) {
   return Eval;
 }
 
+bool ModifiedSimplexTuner::isAlreadyEvaluated(const ConfigEval& Eval) {
+  return Evaluated.find(Eval.Config) != Evaluated.end();
+}
+
+ConfigEval ModifiedSimplexTuner::getFreshNeighbor(const ConfigEval& Eval, std::string Op) {
+  auto It = Evaluated.find(Eval.Config);
+  assert(It != Evaluated.end());
+  auto& Entry = It->second;
+  auto& Queue = Entry.second;
+  if (!Queue.isInitialized())
+    Queue.init(Eval.Config);
+
+  // Find the first neighbor that is not already evaluated.
+  ParamConfig Neighbor;
+  do {
+    if (Queue.empty()) {
+      // All neighbors evaluated, return original config.
+      return Eval;
+    }
+    Neighbor = Queue.next();
+  } while (Evaluated.find(Neighbor) != Evaluated.end());
+  return ConfigEval(Neighbor, Op);
+}
+
+
 ConfigEval ModifiedSimplexTuner::getNeighborIfAlreadyEvaluated(const ConfigEval& Eval) {
   auto It = Evaluated.find(Eval.Config);
   if (It == Evaluated.end()) {
-    return markEvaluated(Eval);
+    return Eval;
   }
   auto& Entry = It->second;
   auto& Queue = Entry.second;
@@ -65,7 +90,7 @@ ConfigEval ModifiedSimplexTuner::getNeighborIfAlreadyEvaluated(const ConfigEval&
     }
     Neighbor = Queue.next();
   } while (Evaluated.find(Neighbor) != Evaluated.end());
-  return ConfigEval(Neighbor);
+  return ConfigEval(Neighbor, Eval.Op);
 }
 
 ConfigEval ModifiedSimplexTuner::generateNextConfig() {
@@ -101,30 +126,30 @@ ConfigEval ModifiedSimplexTuner::generateNextConfig() {
       return Cmp(LHS.Eval, RHS.Eval);
     });
 
-    SmallVector<Vector<double>, 4> SimplexVecs;
+    SmallVector<Vector<Scalar>, 4> SimplexVecs;
     SimplexVecs.reserve(Simplex.size());
     for (auto& V : Simplex) {
       SimplexVecs.push_back(V.Vec);
     }
 
-    Centroid = centroid<double>(SimplexVecs.begin(), SimplexVecs.end());
+    Centroid = centroid<Scalar>(SimplexVecs.begin(), SimplexVecs.end()-1);
 
     auto ReflectedVec = Centroid + (Centroid - SimplexVecs.back()) * P.Alpha;
 
-    Reflected = Vertex(Space, ReflectedVec);
+    Reflected = Vertex(Space, ReflectedVec, "REFLECT");
 
     State = EVAL_REFLECTED;
     return markEvaluated(Reflected.Eval);
   }
 
   case EVAL_REFLECTED: {
-    assert(Reflected.Eval.Stats && Reflected.Eval.Stats->Valid() &&
+    assert(Reflected.Eval.Stats && Reflected.Eval.Stats->valid() &&
            "Evaluation not finished");
 
     // Reflection is better than all current vertices -> try expansion.
     if (Reflected.Eval.Stats->betterThan(*Simplex.front().Eval.Stats)) {
       auto ExpandedVec = Centroid + (Reflected.Vec - Centroid) * P.Gamma;
-      Expanded = Vertex(Space, ExpandedVec);
+      Expanded = Vertex(Space, ExpandedVec, "EXPAND");
       State = EVAL_EXPANDED;
       return markEvaluated(Expanded.Eval);
     }
@@ -141,17 +166,23 @@ ConfigEval ModifiedSimplexTuner::generateNextConfig() {
     auto& ContractionBase = Reflected.Eval.Stats->betterThan(*Simplex.back().Eval.Stats) ? Reflected : Simplex.back();
 
     auto ContractedVec = Centroid + (ContractionBase.Vec - Centroid) * P.Rho;
-    Contracted = Vertex(Space, ContractedVec);
+    Contracted = Vertex(Space, ContractedVec, "CONTRACT");
 
     // If the result of the contraction is equal to the base, find a local neighbor.
-    // TODO
+    if (isAlreadyEvaluated(Contracted.Eval)) {
+      auto NewEval = getFreshNeighbor(Simplex.front().Eval, "CONTRACT");
+      Contracted.Eval = NewEval;
+      Contracted.Vec = convertTo<Scalar>(NewEval.Config);
+    }
+
+    // TODO: Restart if no neighbor remaining?
 
     State = EVAL_CONTRACTED;
     return markEvaluated(Contracted.Eval);
   }
 
   case EVAL_EXPANDED: {
-    assert(Expanded.Eval.Stats && Expanded.Eval.Stats->Valid() &&
+    assert(Expanded.Eval.Stats && Expanded.Eval.Stats->valid() &&
            "Evaluation not finished");
     if (Expanded.Eval.Stats->betterThan(*Reflected.Eval.Stats)) {
       Simplex[N - 1] = Expanded;
@@ -163,7 +194,7 @@ ConfigEval ModifiedSimplexTuner::generateNextConfig() {
   }
 
   case EVAL_CONTRACTED: {
-    assert(Contracted.Eval.Stats && Contracted.Eval.Stats->Valid() &&
+    assert(Contracted.Eval.Stats && Contracted.Eval.Stats->valid() &&
            "Evaluation not finished");
     if (Contracted.Eval.Stats->betterThan(*Simplex.back().Eval.Stats)) {
       Simplex[N - 1] = Contracted;
@@ -175,10 +206,16 @@ ConfigEval ModifiedSimplexTuner::generateNextConfig() {
     for (unsigned i = 1; i < N; i++) {
       auto ShrunkVec =
           BestVec + (Simplex[i].Vec - BestVec) * P.Sigma;
-      Simplex[i] = Vertex(Space, ShrunkVec);
+      Simplex[i] = Vertex(Space, ShrunkVec, "SHRINK");
+
+      if (isAlreadyEvaluated(Simplex[i].Eval)) {
+        auto NewEval = getFreshNeighbor(Simplex.front().Eval, "SHRINK");
+        Simplex[i].Eval = NewEval;
+        Simplex[i].Vec = convertTo<Scalar>(NewEval.Config);
+      }
+
       EvalQueue.push_back(Simplex[i].Eval);
       markEvaluated(Simplex[i].Eval);
-      // TODO: Check if equal and return neighbor
     }
     State = START;
     return generateNextConfig();

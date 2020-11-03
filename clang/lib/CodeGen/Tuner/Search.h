@@ -273,6 +273,24 @@ public:
   bool empty() const {
     return Params.empty();
   }
+
+  size_t getNumPossibleConfigs()
+  {
+    size_t Num = 1;
+    for (auto& P : Params) {
+      if (P.Type == ParamType::FP)
+        return INT64_MAX;
+      auto Min = P.Min.getIntVal();
+      auto Max = P.Max.getIntVal();
+      if (Min && Max) {
+        Num *= *Max - *Min;
+      } else {
+        return INT64_MAX;
+      }
+    }
+    return Num;
+  }
+
 private:
   VecT Params;
 };
@@ -304,6 +322,14 @@ struct ParamConfig {
 
   explicit ParamConfig(const SearchSpace& Space) : Space(&Space), Values(Space.getNumDimensions())  {
   }
+
+  ParamConfig(const ParamConfig& Other) = default;
+
+  ParamConfig& operator=(const ParamConfig& Other) = default;
+
+  ParamConfig(ParamConfig&& Other) = default;
+
+  ParamConfig& operator=(ParamConfig&& Other) = default;
 
 //  ParamConfig(VecT Vals, const SearchSpace* Space) : Space(Space), Values(std::move(Vals)) {
 //  }
@@ -464,7 +490,7 @@ ParamConfig createRandomConfig(RNETy &RNE, const SearchSpace& Space) {
 
 
 template<typename T, typename RoundingPolicy>
-inline ParamConfig createConfig(SearchSpace& Space, const Vector<T> &Vec, RoundingPolicy Round) {
+inline ParamConfig createConfig(const SearchSpace& Space, const Vector<T> &Vec, RoundingPolicy Round) {
   ParamConfig Cfg(Space);
   for (auto I = 0; I < Space.getNumDimensions(); I++) {
     auto& Param = Space[I];

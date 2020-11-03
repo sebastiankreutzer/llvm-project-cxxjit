@@ -323,7 +323,7 @@ struct TemplateTuningData {
         CurrentBest = {It.first.get(), &Inst};
       }
     }
-    if (BestStats.Valid()) {
+    if (BestStats.valid()) {
       return CurrentBest;
     }
     return {};

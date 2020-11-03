@@ -146,6 +146,7 @@ struct llvm::yaml::MappingTraits<ConfigEval>
   static void mapping(IO& io, ConfigEval& Eval) {
     io.mapRequired("stats", Eval.Stats);
     io.mapRequired("config", Eval.Config.Values);
+    io.mapRequired("op", Eval.Op);
   }
 };
 

@@ -231,7 +231,7 @@ ConfigEval SimplexTuner::generateNextConfig() {
     }
 
     case EVAL_REFLECTED: {
-      assert(Reflected.Eval.Stats && Reflected.Eval.Stats->Valid() &&
+      assert(Reflected.Eval.Stats && Reflected.Eval.Stats->valid() &&
              "Evaluation not finished");
       if (Reflected.Eval.Stats->betterThan(*Simplex.front().Eval.Stats)) {
         auto ExpandedVec = Centroid + (Reflected.Vec - Centroid) * P.Gamma;
@@ -253,7 +253,7 @@ ConfigEval SimplexTuner::generateNextConfig() {
     }
 
     case EVAL_EXPANDED: {
-      assert(Expanded.Eval.Stats && Expanded.Eval.Stats->Valid() &&
+      assert(Expanded.Eval.Stats && Expanded.Eval.Stats->valid() &&
              "Evaluation not finished");
       if (Expanded.Eval.Stats->betterThan(*Reflected.Eval.Stats)) {
         Simplex[N - 1] = Expanded;
@@ -265,7 +265,7 @@ ConfigEval SimplexTuner::generateNextConfig() {
     }
 
     case EVAL_CONTRACTED: {
-      assert(Contracted.Eval.Stats && Contracted.Eval.Stats->Valid() &&
+      assert(Contracted.Eval.Stats && Contracted.Eval.Stats->valid() &&
              "Evaluation not finished");
       if (Contracted.Eval.Stats->betterThan(*Simplex.back().Eval.Stats)) {
         Simplex[N - 1] = Contracted;

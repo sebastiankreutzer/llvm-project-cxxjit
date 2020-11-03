@@ -337,6 +337,7 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamCon
     for (unsigned I = 0; I < Depth; I++) {
       if (FixedIt != Transformation.IntParams.end() && *FixedIt == I) {
         Params.push_back(cantFail((FixedValIt++)->getIntVal()));
+        outs() << "Fixed param: " << Params.back() << "\n";
         FixedIt++;
       } else {
         Params.push_back(cantFail(Cfg[I].getIntVal()));
@@ -451,6 +452,12 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
   assert(Root && "Root is null");
   assert(Root->isTightlyNested() && "Root not tightly nested"); // TODO: Actually needs perfect nesting, check for that
 
+  outs() << "Unroll factors: ";
+  for (auto K : Counts) {
+    outs() << K << ", ";
+  }
+  outs() << "\n";
+
   auto& Tree = *Root->getTransformTree();
 
   auto Node = Root;
@@ -549,6 +556,7 @@ void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, Strin
     Node = Node->getLastSuccessor();
 
     unsigned TileSize = Sizes[I];
+    assert(TileSize > 0 && "The tile size cannot be 0");
     Node->addIntAttribute(MDTags::TILE_SIZE_TAG, TileSize);
 
     auto& OriginalTripCount = Node->getTripCountInfo();

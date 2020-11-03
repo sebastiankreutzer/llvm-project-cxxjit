@@ -95,15 +95,26 @@ Value *TimingHelper::insertRDTSCP(IRBuilder<> &IRB) {
   return IRB.CreateExtractValue(Call, {0}); // 64 bit value
 }
 
+Value *TimingHelper::insertReadCycleCounter(IRBuilder<> &IRB) {
+  llvm::Module *M = IRB.GetInsertBlock()->getModule();
+  auto *CycleCount = Intrinsic::getDeclaration(M, Intrinsic::readcyclecounter);
+  auto *Call = IRB.CreateCall(CycleCount);
+  return Call;
+  //return IRB.CreateExtractValue(Call, {0}); // 64 bit value
+}
+
+
 Value *TimingHelper::instrumentPreCall(IRBuilder<> &IRB) {
-  return insertRDTSCP(IRB);
+  //return insertRDTSCP(IRB);
+  return insertReadCycleCounter(IRB);
 }
 
 void TimingHelper::instrumentPostCall(
     IRBuilder<> &IRB, GlobalVariable *CallCount, GlobalVariable *CycleCount,
     GlobalVariable *MeanCycles, GlobalVariable *VarN, Value *StartCycles) {
 
-  auto *StopCycles = insertRDTSCP(IRB);
+  //auto *StopCycles = insertRDTSCP(IRB);
+  auto* StopCycles = insertReadCycleCounter(IRB);
 
   // Update cycles
   // RDTSCP should be 64bit, so we can probably ignore overflows

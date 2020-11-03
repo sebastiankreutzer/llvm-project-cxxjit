@@ -57,7 +57,7 @@ public:
   };
 
   explicit CachedModifiedSimplexTuner(SearchSpace& Space)
-  : Space(Space) {
+  : Space(Space), RNE(TunerRNE(util::genSeed())) {
       // Dimension = Knobs.
       State = INIT;
   }
@@ -68,14 +68,18 @@ public:
 
 private:
   ConfigList createSimplex() const;
+  ConfigList createSimplex2(ParamConfig BaseConfig) const;
 
-  llvm::Optional<TaggedConfig> getFreshNeighbor(const TaggedConfig&);
+
+  llvm::Optional<TaggedConfig> getFreshNeighbor(const ParamConfig&, std::string Op);
 
   TaggedConfig generateNextConfigInternal() override;
 
   TaggedConfig getNextVertex();
 
   TaggedConfig getLegalizedConfig(ParamVector Vec, std::string Op) const;
+
+  bool attemptRestart() override;
 
 
 private:
@@ -90,6 +94,8 @@ private:
 
   ParamVector Centroid;
   TaggedConfig Reflected, Expanded, Contracted;
+
+  TunerRNE RNE;
 
   //unsigned IterCount;
 

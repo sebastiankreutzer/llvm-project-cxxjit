@@ -313,7 +313,7 @@ void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation>& Tr
   findTilingTransformations(Root, Transformations);
   findInterchangeTransformationsSeparate(Root, Transformations);
   findUnrollAndJamTransformations(Root, Transformations);
-  //findUnrollTransformations(Root, Transformations);
+  findUnrollTransformations(Root, Transformations);
 }
 
 SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree *Tree) {
@@ -332,15 +332,16 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamCon
   auto FetchFixedAndTunableIntParams = [&Transformation, &Cfg](SmallVectorImpl<unsigned>& Params) {
     unsigned Depth = Cfg.size() + Transformation.FixedParams.size();
     assert(Transformation.IntParams.size() == Transformation.FixedParams.size() && "IntParams must store loop indices");
-    auto FixedIt = Transformation.IntParams.begin();
+    auto IndexIt = Transformation.IntParams.begin();
     auto FixedValIt = Transformation.FixedParams.begin();
+    unsigned TunedDimIndex = 0;
     for (unsigned I = 0; I < Depth; I++) {
-      if (FixedIt != Transformation.IntParams.end() && *FixedIt == I) {
+      if (IndexIt != Transformation.IntParams.end() && *IndexIt == I) {
         Params.push_back(cantFail((FixedValIt++)->getIntVal()));
-        outs() << "Fixed param: " << Params.back() << "\n";
-        FixedIt++;
+//        outs() << "Fixed param: " << Params.back() << "\n";
+        IndexIt++;
       } else {
-        Params.push_back(cantFail(Cfg[I].getIntVal()));
+        Params.push_back(cantFail(Cfg[TunedDimIndex++].getIntVal()));
       }
     }
   };
@@ -423,17 +424,25 @@ void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts) {
 
   auto& Tree = *Root->getTransformTree();
 
+  outs() << "Unroll factors: ";
+  for (auto K : Counts) {
+    outs() << K << ", ";
+  }
+  outs() << "\n";
+
   auto* Node = Root->getLastSuccessor();
   unsigned Count = Counts.front();
   bool DoUnroll = Count > 1;
   if (DoUnroll) {
     bool Full = Node->getTripCountInfo().IsExact && Node->getTripCountInfo().TripCount == Count;
     Node->addBoolAttribute(MDTags::UNROLL_ENABLE_TAG, true);
-    if (Full) {
-      Node->addBoolAttribute(MDTags::UNROLL_FULL_TAG, true);
-    } else {
+    // FIXME: Theres seems to be a bug in the polly extensions, that makes full unrolling extremely slow.
+    //        I don't know what's causing it, but it seems like if we simply set the factor equal to the trip count, we get the expected result.
+//    if (Full) {
+//      Node->addBoolAttribute(MDTags::UNROLL_FULL_TAG, true);
+//    } else {
       Node->addIntAttribute(MDTags::UNROLL_COUNT_TAG, Count);
-    }
+//    }
     auto Unrolled = Tree.makeVirtualNode();
     Unrolled->setFlag(LoopNode::UNROLLED);
     Unrolled->getTripCountInfo() = Node->getTripCountInfo();
@@ -452,11 +461,11 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
   assert(Root && "Root is null");
   assert(Root->isTightlyNested() && "Root not tightly nested"); // TODO: Actually needs perfect nesting, check for that
 
-  outs() << "Unroll factors: ";
-  for (auto K : Counts) {
-    outs() << K << ", ";
-  }
-  outs() << "\n";
+//  outs() << "Unroll factors: ";
+//  for (auto K : Counts) {
+//    outs() << K << ", ";
+//  }
+//  outs() << "\n";
 
   auto& Tree = *Root->getTransformTree();
 

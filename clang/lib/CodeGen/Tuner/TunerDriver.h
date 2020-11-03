@@ -384,6 +384,7 @@ public:
   InstData resolve(const ThisInstInfo &Inst, unsigned Idx) override;
 
   void* finishTuning(const InstInfo& Inst);
+  bool isFinished(const InstInfo &Inst);
 
 private:
   llvm::DenseMap<InstInfo, std::unique_ptr<TemplateTuningData>, InstMapInfo>

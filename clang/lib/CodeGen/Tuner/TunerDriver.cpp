@@ -465,6 +465,20 @@ void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
   return IData.FPtr;
 }
 
+bool TunerDriver::isFinished(const clang::jit::InstInfo &Inst) {
+  auto It = TuningDataMap.find(Inst);
+  if (It == TuningDataMap.end()) {
+    llvm::errs() << "Could not find tuning data for instantiation\n";
+    return false;
+  }
+  auto& TuningData = It->second;
+  if (TuningData->hasTunableArgs())
+    return false; // TODO: Needs to be properly checked for parameter tuning
+  if (TuningData->Specializations.empty())
+    return false;
+   return TuningData->Specializations[TuningData->ActiveConfig].Context.Opt->isDone();
+}
+
 
 void* finish_tuning(void* FPtr) {
   auto It = PtrToInstInfo.find(FPtr);
@@ -474,6 +488,15 @@ void* finish_tuning(void* FPtr) {
     return Driver->finishTuning(PtrData.Inst);
   }
   return nullptr;
+}
+
+bool is_finished(void* FPtr) {
+  auto It = PtrToInstInfo.find(FPtr);
+  if (It != PtrToInstInfo.end()) {
+    auto& PtrData = It->second;
+    return PtrData.Driver->isFinished(PtrData.Inst);
+  }
+  return false;
 }
 
 } // namespace jit

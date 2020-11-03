@@ -173,25 +173,6 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
   ConfigEval Request;
 
-//  if (UseDefault) {
-//    JIT_DEBUG(dbgs() << "Using default optimization config\n");
-//    auto Cfg = createDefaultConfig(Knobs);
-//    setEnableLoopTransform(Cfg, false);
-//    Request = ConfigEvalRequest(Cfg);
-//  } else {
-//    Request = OptTuner->generateNextConfig();
-//  }
-//
-//
-//  KnobState KS(Knobs, Cfg);
-//  JIT_DEBUG(dbgs() << "Optimizer Configuration: "
-//                   << "\n");
-//  JIT_DEBUG(dbgs() << "-------------------- "
-//                   << "\n");
-//  JIT_DEBUG(KS.dump());
-//  JIT_DEBUG(dbgs() << "-------------------- "
-//                   << "\n");
-
   auto buildDecisionTree = [&](LoopTransformTree& Base) {
     assert(BaseLine && "Baseline must be evaluated before the tree can be created");
     DecisionTree = std::make_unique<TransformDecisionTree>(Base.clone(), *BaseLine->Stats);
@@ -200,113 +181,109 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
   };
 
 
-  if (UseDefault) {
-    if (!BaseLine) {
-      BaseLine = Request;
-    } else {
-      JIT_INFO(errs() << "Warning: evaluating default configs again\n");
-    }
-  } else {
-    if (!Done) {
-
-      auto &Tree = **CurrentLoopTree;
-
-      if (!DecisionTree) {
-        buildDecisionTree(Tree);
+    if (UseDefault) {
+      if (!BaseLine) {
+        BaseLine = Request;
+      } else {
+        JIT_INFO(errs() << "Warning: evaluating default configs again\n");
       }
+    } else {
+      if (!Done) {
 
-      assert(CurrentNode && "No node selected");
-      if (CurrentNode->isEvaluated()) {
+        auto &Tree = **CurrentLoopTree;
 
-        // Find new transformations based on current best
-        CurrentNode->finalize();
-
-
-        exportTree();
-
-        auto Best = CurrentNode->TTuner->getBest();
-        assert(Best && "No result");
-        auto &BestVal = Best.getValue();
-
-        JIT_INFO(dbgs() << "----------------------------------------\n");
-        JIT_INFO(dbgs() << "Transformation fully evaluated - ");
-
-
-        if (BestVal.Stats->betterThan(*BestNode.second.Stats)) {
-          JIT_INFO(outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats)));
-          JIT_INFO(CurrentNode->printPath(outs()) << "\n");
-          BestNode = {CurrentNode, BestVal};
-          JIT_INFO(dbgs() << "speedup is " << computeSpeedup(*BestVal.Stats) << " with the following configuration:\n");
-          // TODO: Print config
-//          JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), BestVal.Cfg).dump());
-        } else {
-          JIT_INFO(dbgs() << "no speedup\n");
+        if (!DecisionTree) {
+          buildDecisionTree(Tree);
         }
-        JIT_INFO(dbgs() << "----------------------------------------\n");
 
-        if (DecisionTree->isFullyExplored()) {
-          JIT_INFO(dbgs() << "Loop nest fully explored!\n");
+        assert(CurrentNode && "No node selected");
+        if (CurrentNode->isEvaluated()) {
+
+          // Find new transformations based on current best
+          CurrentNode->finalize();
+
 
           exportTree();
 
-          // Tuning is done, save best configuration
-          auto FinalTree = BestNode.first->applyBestConfig();
-//          FinalizedConfig.addAll(BestNode.second.Cfg);
-          FinalizedTrees.push_back(std::move(FinalTree));
-          CurrentLoopTree++;
+          auto Best = CurrentNode->TTuner->getBest();
+          assert(Best && "No result");
+          auto &BestVal = Best.getValue();
 
-          if (CurrentLoopTree == LoopTrees.end()) {
-            Done = true;
-            outs() << "Autotuning complete!\n";
+          JIT_INFO(dbgs() << "----------------------------------------\n");
+          JIT_INFO(dbgs() << "Transformation fully evaluated - ");
+
+
+          if (BestVal.Stats->betterThan(*BestNode.second.Stats)) {
+            JIT_INFO(outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats)));
+            JIT_INFO(CurrentNode->printPath(outs()) << "\n");
+            BestNode = {CurrentNode, BestVal};
+            JIT_INFO(dbgs() << "speedup is " << computeSpeedup(*BestVal.Stats) << " with the following configuration:\n");
+            // TODO: Print config
+//          JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), BestVal.Cfg).dump());
           } else {
-            // Build decision for next loop nest
-            buildDecisionTree(**CurrentLoopTree);
+            JIT_INFO(dbgs() << "no speedup\n");
+          }
+          JIT_INFO(dbgs() << "----------------------------------------\n");
+
+          if (DecisionTree->isFullyExplored()) {
+            JIT_INFO(dbgs() << "Loop nest fully explored!\n");
+
+            exportTree();
+
+            // Tuning is done, save best configuration
+            auto FinalTree = BestNode.first->applyBestConfig();
+//          FinalizedConfig.addAll(BestNode.second.Cfg);
+            FinalizedTrees.push_back(std::move(FinalTree));
+            CurrentLoopTree++;
+
+            if (CurrentLoopTree == LoopTrees.end()) {
+              Done = true;
+              outs() << "Autotuning complete!\n";
+            } else {
+              // Build decision for next loop nest
+              buildDecisionTree(**CurrentLoopTree);
+            }
+
+          } else {
+            // Expand the tree
+            auto &Promising = DecisionTree->getMostPromisingNode();
+            JIT_INFO(dbgs() << "Selected node to expand: kind="
+                            << (Promising.getDepth() == 1 ? "ROOT" : getTransformationName(Promising.Transformation.Kind))
+                            << ", depth=" << Promising.getDepth() << ", nesting_depth="
+                            << Promising.LoopTree->getRoot()->getMaxDepth() << "\n");
+            JIT_INFO(dbgs() << "Available transformations: ");
+            unsigned NumAvailable = Promising.FeasibleTransformations.size();
+            for (int i = Promising.UnexploredIdx; i < NumAvailable; i++) {
+              JIT_INFO(dbgs() << getTransformationName(Promising.FeasibleTransformations[i].Kind)
+                              << (i + 1 < NumAvailable ? ", " : "\n"));
+            }
+            auto &NewNode = Promising.expand();
+            NewNode.ExpansionID = ExpansionCounter++;
+            JIT_INFO(dbgs() << "Expanded Tree:\n");
+            JIT_INFO(NewNode.printPath() << "\n");
+
+
+            CurrentNode = &NewNode;
           }
 
-        } else {
-          // Expand the tree
-          auto &Promising = DecisionTree->getMostPromisingNode();
-          JIT_INFO(dbgs() << "Selected node to expand: kind=" << (Promising.getDepth() == 1 ? "ROOT" : getTransformationName(Promising.Transformation.Kind))
-                          << ", depth=" << Promising.getDepth() << ", nesting_depth="
-                          << Promising.LoopTree->getRoot()->getMaxDepth() << "\n");
-          JIT_INFO(dbgs() << "Available transformations: ");
-          unsigned NumAvailable = Promising.FeasibleTransformations.size();
-          for (int i = Promising.UnexploredIdx; i < NumAvailable; i++) {
-            JIT_INFO(dbgs() << getTransformationName(Promising.FeasibleTransformations[i].Kind)
-                            << (i + 1 < NumAvailable ? ", " : "\n"));
-          }
-          auto &NewNode = Promising.expand();
-          NewNode.ExpansionID = ExpansionCounter++;
-          JIT_INFO(dbgs() << "Expanded Tree:\n");
-          JIT_INFO(NewNode.printPath() << "\n");
-
-
-          CurrentNode = &NewNode;
         }
-
       }
-    }
 
-    SmallVector<LoopTransformTree*, 2> ToApply;
-    LoopTransformTreePtr TransformedTree;
+      SmallVector<LoopTransformTree *, 2> ToApply;
+      LoopTransformTreePtr TransformedTree;
 
-    // Add pass to transform currently investigated loop nest
-    // Note: Done is checked here again because it can change during the update.
-    if (!Done) {
+      // Add pass to transform currently investigated loop nest
+      // Note: Done is checked here again because it can change during the update.
+      if (!Done) {
 
-      Request = CurrentNode->TTuner->getNext();
-      //JIT_INFO(dbgs() << "Applying transformation on loop " << CurrentNode->Transformation.Root << ":\n");
-      // TODO: print config
-//      JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), Request.Cfg).dump());
-      //    ViewGraph(ClonedTree.get(), "ClonedTree");
+        Request = CurrentNode->TTuner->getNext();
 
-      TransformedTree = CurrentNode->getTransformedTree(Request.Config);
-      // Add config values of previous transformations to uniquely identify this code version
-      // FIXME: Config may be empty for non-tunable transformations (interchange)
-      //        This is now remove anyway.
-//      Request.Cfg.addAll(CurrentNode->FullConfig);
-      ToApply.push_back(TransformedTree.get());
-    }
+        //    ViewGraph(ClonedTree.get(), "ClonedTree");
+
+        TransformedTree = CurrentNode->getTransformedTree(Request.Config);
+
+        ToApply.push_back(TransformedTree.get());
+      }
 
     // Add passes to apply the found configuration for finalized loop nests
     for (auto& Tree : FinalizedTrees) {

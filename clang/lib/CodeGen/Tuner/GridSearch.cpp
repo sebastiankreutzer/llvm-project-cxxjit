@@ -15,15 +15,16 @@ ConfigEval GridSearch::generateNextConfig() {
       break;
     } else {
       NextConfig[Dim] = Space[Dim].Min;
+      Done = Dim == Space.getNumDimensions()-1;
     }
   }
-  llvm::outs() << "Grid: ";
-  for (auto Val : NextConfig.Values) {
-    if (auto V = Val.getIntVal()) {
-      llvm::outs() << *V << ", ";
-    }
-  }
-  llvm::outs() << "\n";
+//  llvm::outs() << "Grid: ";
+//  for (auto Val : Eval.Config.Values) {
+//    if (auto V = Val.getIntVal()) {
+//      llvm::outs() << *V << ", ";
+//    }
+//  }
+//  llvm::outs() << "\n";
   return Eval;
 }
 

@@ -1148,6 +1148,15 @@ void CompilerData::makeDefsAvailable(std::unique_ptr<llvm::Module> NewMod) {
     fatal();
 }
 
+bool isFastLookupSet(const InstInfo& Inst) {
+  llvm::sys::ScopedLock Guard(IMutex);
+  auto Entry = Instantiations.find(Inst);
+  if (Entry != Instantiations.end()) {
+    return Entry->second.UseFastLookup;
+  }
+  return false;
+}
+
 void updateActiveInstantiation(const InstInfo& Inst, InstData Data) {
   llvm::sys::ScopedLock Guard(IMutex);
   Instantiations[Inst] = std::move(Data);

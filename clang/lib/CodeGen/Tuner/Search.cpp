@@ -24,6 +24,19 @@ raw_ostream& operator<<(raw_ostream& OS, const ParamVal& Val) {
   llvm_unreachable("missed case");
 }
 
+raw_ostream& operator<<(raw_ostream& OS, const SearchDim& Dim){
+  return OS << "[ " << Dim.Min << "; " << Dim.Max << " ]";
+}
+
+raw_ostream& operator<<(raw_ostream& OS, const SearchSpace& Space){
+  for (unsigned I = 0; I < Space.getNumDimensions(); I++) {
+    OS << Space[I];
+    if (I < Space.getNumDimensions()-1)
+      OS << ", ";
+  }
+  return OS;
+}
+
 
 void ParamConfig::dump(llvm::raw_ostream &OS) const {
   if (isEmpty()) {

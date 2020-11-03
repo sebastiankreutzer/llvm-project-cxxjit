@@ -588,6 +588,8 @@ struct InstMapInfo {
   }
 };
 
+bool isFastLookupSet(const InstInfo&);
+
 void updateActiveInstantiation(const InstInfo&, InstData);
 
 }

@@ -28,14 +28,14 @@ public:
   TransformationTuner(LoopTransformation& Transformation, unsigned MaxWithoutImprovement) : Transformation(Transformation), MaxWithoutImprovement(MaxWithoutImprovement) {
     HasTunableParams = Transformation.Space.getNumTunableDimensions() > 0;
     if (HasTunableParams) {
-      if (Transformation.Space.getNumPossibleConfigs() <= 64) {
+      if (Transformation.Space.getNumPossibleConfigs() <= 32) {
         TTuner = createTuner(TunerSearchAlgo::Grid, Transformation.Space);
       } else {
         TTuner = createTuner(loadSearchAlgoEnv(), Transformation.Space);
       }
     }
     JIT_INFO(dbgs() << "Tuning transformation of kind " << getTransformationName(Transformation.Kind) << "\n");
-    JIT_INFO(dbgs() << "Tunable dimensions: " << Transformation.Space.getNumTunableDimensions() << "\n");
+    JIT_INFO(dbgs() << "Search space: " << Transformation.Space << "\n");
     NeedsUpdate = true;
     BestIdx = -1;
     RequestsSinceImprovement = 0;
@@ -62,13 +62,19 @@ public:
   }
 
   bool isDone() {
-    if (!HasTunableParams && RequestsSinceImprovement > 0)
+    if (!HasTunableParams) {
+      // Configs without parameters should be evaluated only once.
+      return RequestsSinceImprovement > 0;
+    }
+
+    // If the search is finished, stop.
+    if (TTuner->isDone())
       return true;
+
     if (NeedsUpdate)
       updateBest();
 
-    //outs() << "************************\n";
-    //outs() << "No improvement for: " << RequestsSinceImprovement << "\n";
+    // Otherwise, check if there have been improvements.
     return RequestsSinceImprovement >= MaxWithoutImprovement;
   }
 

@@ -42,9 +42,28 @@ CachedModifiedSimplexTuner::ConfigList CachedModifiedSimplexTuner::createSimplex
   return Simplex;
 }
 
+CachedModifiedSimplexTuner::ConfigList CachedModifiedSimplexTuner::createSimplex2(ParamConfig BaseConfig) const {
+  auto perturb = [](auto X0Val, auto Min, auto Max) -> auto {
+    assert(X0Val <= Max && Min <= X0Val && "Value out of bounds");
+    return Max;
+  };
 
-Optional<TaggedConfig> CachedModifiedSimplexTuner::getFreshNeighbor(const TaggedConfig& Config) {
-  // TODO: Implement
+  ConfigList Simplex;
+  Simplex.reserve(getNumSimplexPoints());
+  auto Default = convertTo<Scalar>(BaseConfig);
+  auto I = 0;
+  for (auto& Dim : Space) {
+    auto Cpy = Default;
+    Cpy[I]= perturb(Cpy[I], Dim.Min.getAsDouble(), Dim.Max.getAsDouble());
+    Simplex.push_back(getLegalizedConfig(Cpy, "INIT"));
+    I++;
+  }
+  Simplex.emplace_back(BaseConfig, "INIT");
+  return Simplex;
+}
+
+
+Optional<TaggedConfig> CachedModifiedSimplexTuner::getFreshNeighbor(const ParamConfig& Config, std::string Op) {
 
   auto addNeighborInDim = [&](const ParamConfig& C, int Dim, int Offset, llvm::SmallVectorImpl<ParamConfig>& ConfigList) {
     ParamConfig Neighbor(C);
@@ -64,17 +83,17 @@ Optional<TaggedConfig> CachedModifiedSimplexTuner::getFreshNeighbor(const Tagged
       addNeighborInDim(C, I, -1, Neighbors);
       addNeighborInDim(C, I, 1, Neighbors);
     }
-    addNeighborInDim(Config.first, I, -1, Neighbors);
-    addNeighborInDim(Config.first, I, 1, Neighbors);
+    addNeighborInDim(Config, I, -1, Neighbors);
+    addNeighborInDim(Config, I, 1, Neighbors);
 
     // Check if one of the neighbors is not evaluated yet.
     for (auto& Neighbor : Neighbors) {
       if (!isEvaluated(Neighbor)) {
-        outs()  << "Replacing config: ";
-        Config.first.dump();
-        outs() << " with ";
-        Neighbor.dump();
-        return {{Neighbor, Config.second}};
+//        outs()  << "Replacing config: ";
+//        Config.dump();
+//        outs() << " with ";
+//        Neighbor.dump();
+        return {{Neighbor, Op}};
       }
     }
   }
@@ -111,10 +130,17 @@ TaggedConfig CachedModifiedSimplexTuner::getNextVertex() {
 
   switch (State) {
     case INIT: {
+      bool Restarted = !Simplex.empty();
       EvalQueue.clear();
       Simplex.clear();
 
-      Simplex = createSimplex();
+      auto Base = createDefaultConfig(Space);
+      if (Restarted) {
+        Base = createRandomConfig(RNE, Space);
+        outs() << "Restarted with random base config\n";
+      }
+      Simplex = createSimplex2(Base);
+
       for (auto& V : Simplex) {
         EvalQueue.push_back(V);
       }
@@ -180,7 +206,7 @@ TaggedConfig CachedModifiedSimplexTuner::getNextVertex() {
 
       // If the result of the contraction is equal to the base, find a local neighbor.
       if (isEvaluated(Contracted.first)) {
-        auto Neighbor = getFreshNeighbor(Simplex.front());
+        auto Neighbor = getFreshNeighbor(Simplex.front().first, "CONTRACT (ADJUSTED)");
         if (Neighbor)
           Contracted = *Neighbor;
       }
@@ -236,7 +262,7 @@ TaggedConfig CachedModifiedSimplexTuner::getNextVertex() {
         Simplex[i] = getLegalizedConfig(ShrunkVec, "SHRINK");
 
         if (isEvaluated(Simplex[i].first)) {
-          auto Neighbor = getFreshNeighbor(Simplex.front());
+          auto Neighbor = getFreshNeighbor(Simplex.front().first, "SHRINK (ADJUSTED)");
           if (Neighbor)
             Simplex[i] = *Neighbor;
         }
@@ -256,6 +282,12 @@ TaggedConfig CachedModifiedSimplexTuner::getLegalizedConfig(CachedModifiedSimple
   auto Cfg = createConfig(Space, Vec, ::round);
   assert(Cfg.isLegal());
   return {Cfg, Op};
+}
+
+bool CachedModifiedSimplexTuner::attemptRestart()
+{
+  State = INIT;
+  return true;
 }
 
 }

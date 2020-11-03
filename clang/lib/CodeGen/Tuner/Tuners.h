@@ -44,7 +44,7 @@ inline std::unique_ptr<Tuner> createTuner(TunerSearchAlgo Search, SearchSpace& S
       return std::make_unique<GridSearch>(Space);
     case TunerSearchAlgo::Random:
     default:
-      return std::make_unique<RandomTuner>(Space);
+      return std::make_unique<CachedRandomTuner>(Space);
   }
 }
 

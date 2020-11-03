@@ -35,6 +35,7 @@ void __clang_jit_enable_tuning(clang::jit::TunerConfig);
 void __clang_jit_disable_tuning();
 
 void* finish_tuning(void*);
+bool is_finished(void*);
 
 class TuningScope {
 public:

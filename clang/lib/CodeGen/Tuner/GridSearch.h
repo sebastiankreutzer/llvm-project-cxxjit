@@ -23,10 +23,15 @@ public:
 
   ConfigEval generateNextConfig() override;
 
+  bool isDone() override {
+    return Done;
+  }
+
 private:
   SearchSpace& Space;
   ParamConfig NextConfig;
 
+  bool Done{false};
 };
 
 }

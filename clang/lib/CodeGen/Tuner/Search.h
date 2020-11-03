@@ -11,6 +11,7 @@
 
 #include <type_traits>
 #include <random>
+#include <sstream>
 
 namespace clang {
 namespace jit {
@@ -196,6 +197,8 @@ struct SearchDim {
     return Min != Max;
   }
 
+  friend llvm::raw_ostream& operator<<(llvm::raw_ostream& OS, const SearchDim& Dim);
+
 //  template<typename T>
 //  SearchDim(ParamType Type, T Min, T Max, T Default, llvm::StringRef Name = "") : Type(Type), Min(Type), Max(Type), Default(Type), Name(Name) {
 //    this->Min = Min;
@@ -273,6 +276,8 @@ public:
   bool empty() const {
     return Params.empty();
   }
+
+  friend llvm::raw_ostream& operator<<(llvm::raw_ostream& OS, const SearchSpace& Space);
 
   size_t getNumPossibleConfigs()
   {
@@ -460,6 +465,14 @@ inline ParamConfig createDefaultConfig(const SearchSpace& Space) {
   ParamConfig Cfg(Space);
   for (auto I = 0; I < Space.getNumDimensions(); I++) {
     Cfg[I] = Space.getDim(I).Default;
+  }
+  return Cfg;
+}
+
+inline ParamConfig createMinConfig(const SearchSpace& Space) {
+  ParamConfig Cfg(Space);
+  for (auto I = 0; I < Space.getNumDimensions(); I++) {
+    Cfg[I] = Space.getDim(I).Min;
   }
   return Cfg;
 }

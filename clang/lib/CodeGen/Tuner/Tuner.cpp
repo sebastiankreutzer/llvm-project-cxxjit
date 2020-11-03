@@ -22,8 +22,18 @@ ConfigEval CachingTuner::generateNextConfig()
   if (Eval) {
     // This can happen if no new config can be found
     // TODO: Return Optional instead?
-    errs() << "Warning: Re-evaluating existing parameter configuration\n";
-    return *Eval;
+    do {
+      if (attemptRestart()) {
+        errs() << "Search is stuck - restarting...\n";
+        Cfg = generateNextConfigInternal();
+      } else {
+        errs() << "No restart possible - stopping search.\n";
+        Done = true;
+        return *Eval;
+      }
+
+    } while (getEval(Cfg.first));
+
   }
   auto NewEval = ConfigEval(Cfg.first, Cfg.second);
   Evals.push_back(NewEval);

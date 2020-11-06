@@ -7,6 +7,10 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+// Enables always selecting a neighboring point, if the current config is already evaluated.
+// By default, only shrink and contract use this.
+//#define ALWAYS_SEARCH_NEIGHBORS
+
 using namespace llvm;
 
 namespace clang {
@@ -171,6 +175,14 @@ TaggedConfig CachedModifiedSimplexTuner::getNextVertex() {
 
       Reflected = getLegalizedConfig(ReflectedVec, "REFLECT");
 
+#ifdef ALWAYS_SEARCH_NEIGHBORS
+      if (isEvaluated(Reflected.first)) {
+        auto Neighbor = getFreshNeighbor(Reflected.first, "REFLECT (ADJUSTED)");
+        if (Neighbor)
+          Reflected = *Neighbor;
+      }
+#endif
+
       State = EVAL_REFLECTED;
       return Reflected;
     }
@@ -186,6 +198,16 @@ TaggedConfig CachedModifiedSimplexTuner::getNextVertex() {
       if (ReflectedStats->betterThan(*getSimplexStats(0))) {
         auto ExpandedVec = Centroid + (convertTo<Scalar>(Reflected.first) - Centroid) * P.Gamma;
         Expanded = getLegalizedConfig(ExpandedVec, "EXPAND");
+
+
+#ifdef ALWAYS_SEARCH_NEIGHBORS
+        if (isEvaluated(Expanded.first)) {
+          auto Neighbor = getFreshNeighbor(Expanded.first, "EXPAND (ADJUSTED)");
+          if (Neighbor)
+            Expanded = *Neighbor;
+        }
+#endif
+
         State = EVAL_EXPANDED;
         return Expanded;
       }
@@ -292,3 +314,5 @@ bool CachedModifiedSimplexTuner::attemptRestart()
 
 }
 }
+
+#undef ALWAYS_SEARCH_NEIGHBORS

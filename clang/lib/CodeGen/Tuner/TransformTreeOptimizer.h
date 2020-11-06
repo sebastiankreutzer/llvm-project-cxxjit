@@ -166,6 +166,7 @@ struct DecisionNode {
       // All children expanded, nothing to do
       return 0;
     }
+    // Available transformatios are sorted, so this should be the one with the highest multiplier.
     return getMultiplier(FeasibleTransformations[UnexploredIdx]);
   }
 
@@ -173,13 +174,16 @@ struct DecisionNode {
     return UnexploredIdx >= FeasibleTransformations.size();
   }
 
-  std::pair<float, DecisionNode*> getMostPromisingNode() {
-    float ThisScore = computeScore();
+  std::pair<float, DecisionNode*> getMostPromisingNode(bool AllowRegression) {
+    float ThisSpeedup = computeSpeedup();
+    float ThisScore = computeScore(ThisSpeedup);
     std::pair<float, DecisionNode*> MostPromising{ThisScore, this};
     for (auto& Child : Children) {
       if (!Child)
         continue;
-      auto RecursiveBest = Child->getMostPromisingNode();
+      if (!AllowRegression && Child->computeSpeedup() < ThisSpeedup)
+        continue;
+      auto RecursiveBest = Child->getMostPromisingNode(AllowRegression);
       if (RecursiveBest.first > MostPromising.first)
         MostPromising = RecursiveBest;
     }
@@ -188,19 +192,26 @@ struct DecisionNode {
 
   static constexpr float BadScore = -1;
 
-  float computeScore() {
-    float Multiplier = getUnexploredMultiplier();
-    if (Multiplier == 0)
-      return Multiplier;
+  float computeSpeedup() {
     auto Best = TTuner->getBest();
     if (Best) {
       auto Stats = Best.getValue().Stats;
       if (!Stats->valid())
         return BadScore;
       float Speedup = Baseline.Mean / Stats->Mean;
-      return Speedup * Multiplier;
+      return Speedup;
     }
     return BadScore;
+  }
+
+  float computeScore(float Speedup) {
+    float Multiplier = getUnexploredMultiplier();
+    if (Multiplier == 0)
+      return 0;
+    // Speedup is set to a negative value if no stats available
+    if (Speedup < 0)
+      return 0;
+    return Speedup * Multiplier;
   }
 
   DecisionNode& expand() {
@@ -290,8 +301,8 @@ public:
     : Root(BaselineStats, LoopTransformation(), std::move(OriginalTree)) {
   }
 
-  DecisionNode& getMostPromisingNode() {
-    return *Root.getMostPromisingNode().second;
+  DecisionNode& getMostPromisingNode(bool AllowRegression) {
+    return *Root.getMostPromisingNode(AllowRegression).second;
   }
 
   bool isFullyExplored() {
@@ -317,9 +328,9 @@ public:
                          const clang::HeaderSearchOptions &HeaderOpts,
                          const clang::CodeGenOptions &CGOpts,
                          const clang::TargetOptions &TOpts, const clang::LangOptions &LOpts,
-                         llvm::TargetMachine &TM)
+                         llvm::TargetMachine &TM, bool AllowRegression)
       : Diags(Diags), HSOpts(HeaderOpts), CodeGenOpts(CGOpts),
-        TargetOpts(TOpts), LangOpts(LOpts), TM(TM), ModToOptimize(nullptr), Done(false), ExpansionCounter(0) {
+        TargetOpts(TOpts), LangOpts(LOpts), TM(TM), AllowRegression(AllowRegression), ModToOptimize(nullptr), Done(false), ExpansionCounter(0) {
 
   }
 
@@ -358,6 +369,9 @@ private:
   const clang::TargetOptions &TargetOpts;
   const clang::LangOptions &LangOpts;
   llvm::TargetMachine &TM;
+
+  bool AllowRegression{false};
+
   Module *ModToOptimize;
   llvm::Optional<ConfigEval> BaseLine;
 

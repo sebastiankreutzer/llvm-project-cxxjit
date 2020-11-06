@@ -10,6 +10,7 @@
 #include "Tuner.h"
 #include "Optimizer.h"
 #include "TransformTreeOptimizer.h"
+#include "Util.h"
 
 namespace clang {
 namespace jit {
@@ -354,10 +355,12 @@ private:
     // TODO: Make this configurable
 #define TRANSFORM_TREE_OPT
 #ifdef TRANSFORM_TREE_OPT
+    bool AllowRegression = util::checkEnv("CJ_ALLOW_REGRESSION", "1");
+    outs() << "Autotuner option: regression allowed - " << AllowRegression << "\n";
     auto Opt = std::make_unique<TransformTreeOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
         *CD.TargetOpts, *CD.Invocation->getLangOpts(),
-        CD.CJ->getTargetMachine());
+        CD.CJ->getTargetMachine(), AllowRegression);
 #else
     auto Opt = std::make_unique<StaticOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),

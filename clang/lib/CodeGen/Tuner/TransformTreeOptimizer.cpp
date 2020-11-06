@@ -246,7 +246,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
           } else {
             // Expand the tree
-            auto &Promising = DecisionTree->getMostPromisingNode();
+            auto &Promising = DecisionTree->getMostPromisingNode(AllowRegression);
             JIT_INFO(dbgs() << "Selected node to expand: kind="
                             << (Promising.getDepth() == 1 ? "ROOT" : getTransformationName(Promising.Transformation.Kind))
                             << ", depth=" << Promising.getDepth() << ", nesting_depth="

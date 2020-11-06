@@ -81,6 +81,10 @@ private:
 
   bool attemptRestart() override;
 
+  unsigned getNumRestarts() const override {
+    return NumRestarts;
+  }
+
 
 private:
   Params P;
@@ -96,6 +100,8 @@ private:
   TaggedConfig Reflected, Expanded, Contracted;
 
   TunerRNE RNE;
+
+  unsigned NumRestarts{0};
 
   //unsigned IterCount;
 

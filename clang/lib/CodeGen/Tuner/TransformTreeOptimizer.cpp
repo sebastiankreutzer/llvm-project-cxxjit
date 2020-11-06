@@ -178,6 +178,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
     DecisionTree = std::make_unique<TransformDecisionTree>(Base.clone(), *BaseLine->Stats);
     CurrentNode = &DecisionTree->getRoot();
     BestNode = {};
+    RestartCounts.clear();
   };
 
 
@@ -202,37 +203,53 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           // Find new transformations based on current best
           CurrentNode->finalize();
 
-
           exportTree();
+
+          unsigned RestartIndex = CurrentNode->TTuner->getLastImprovementRestartIndex();
+          if (RestartIndex >= RestartCounts.size()) {
+            RestartCounts.resize(RestartIndex+1, 0);
+            RestartCounts[RestartIndex]++;
+          }
 
           auto Best = CurrentNode->TTuner->getBest();
           assert(Best && "No result");
           auto &BestVal = Best.getValue();
 
           JIT_INFO(dbgs() << "----------------------------------------\n");
-          JIT_INFO(dbgs() << "Transformation fully evaluated - ");
+          JIT_INFO(dbgs() << "Transformation fully evaluated with " << CurrentNode->TTuner->getNumConfigs() << " configs - ");
 
+          float NodeSpeedup = computeSpeedup(*BestVal.Stats);
 
           if (BestVal.Stats->betterThan(*BestNode.second.Stats)) {
-            JIT_INFO(outs() << "New best version found: speedup=" << formatv("{0:f3}\n", computeSpeedup(*BestVal.Stats)));
+            JIT_INFO(outs() << "New best version found: speedup is " << formatv("{0:f3}\n", NodeSpeedup));
             JIT_INFO(CurrentNode->printPath(outs()) << "\n");
             BestNode = {CurrentNode, BestVal};
-            JIT_INFO(dbgs() << "speedup is " << computeSpeedup(*BestVal.Stats) << " with the following configuration:\n");
-            // TODO: Print config
-//          JIT_INFO(KnobState(CurrentNode->TTuner->getKnobs(), BestVal.Cfg).dump());
           } else {
-            JIT_INFO(dbgs() << "no speedup\n");
+            JIT_INFO(dbgs() << "speedup is " << formatv("{0:f3}\n", NodeSpeedup));
           }
           JIT_INFO(dbgs() << "----------------------------------------\n");
 
           if (DecisionTree->isFullyExplored()) {
-            JIT_INFO(dbgs() << "Loop nest fully explored!\n");
 
             exportTree();
 
             // Tuning is done, save best configuration
             auto FinalTree = BestNode.first->applyBestConfig();
-//          FinalizedConfig.addAll(BestNode.second.Cfg);
+
+            JIT_INFO(dbgs() << "Loop nest fully explored!\n");
+            JIT_INFO(dbgs() << "Best transformation sequence: ");
+            JIT_INFO(BestNode.first->printPath(outs()) << "\n");
+            JIT_INFO(dbgs() << "Speedup is " << formatv("{0:f3}\n", NodeSpeedup));
+
+            JIT_INFO(dbgs() << "Restart Stats:\n");
+            unsigned NumSearches = 0;
+            for (auto C : RestartCounts) {
+              NumSearches += C;
+            }
+            for (unsigned I = 0; I < RestartCounts.size(); I++) {
+              JIT_INFO(dbgs() << I << " restarts needed: " << RestartCounts[I] << formatv("({0:p})\n", static_cast<float>(RestartCounts[I]) / NumSearches));
+            }
+
             FinalizedTrees.push_back(std::move(FinalTree));
             CurrentLoopTree++;
 

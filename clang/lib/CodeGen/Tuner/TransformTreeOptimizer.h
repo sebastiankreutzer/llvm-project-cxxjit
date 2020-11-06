@@ -86,6 +86,18 @@ public:
     return Configs;
   }
 
+  size_t getNumConfigs() const {
+    return Configs.size();
+  }
+
+  /**
+   * Returns the number of restarts that were needed to find the best configuration.
+   * This may be smaller than the total number of restarts performed.
+   * @return
+   */
+  unsigned getLastImprovementRestartIndex() const {
+    return LastImprovementRestartIndex;
+  }
 
 
 private:
@@ -101,8 +113,11 @@ private:
         NewBestIdx = I;
       }
     }
-    if (NewBestIdx != BestIdx)
+    if (NewBestIdx != BestIdx) {
       RequestsSinceImprovement = 0;
+      if (TTuner)
+        LastImprovementRestartIndex = TTuner->getNumRestarts();
+    }
     BestIdx = NewBestIdx;
   }
 private:
@@ -115,6 +130,8 @@ private:
   unsigned RequestsSinceImprovement;
   unsigned MaxWithoutImprovement;
   bool NeedsUpdate;
+
+  unsigned LastImprovementRestartIndex{0};
 
 };
 
@@ -131,6 +148,7 @@ struct DecisionNode {
   }
 
   unsigned getMaxEvalLimit() {
+    return 25;
     switch(getDepth()) {
       case 1:
       case 2:
@@ -271,9 +289,23 @@ struct DecisionNode {
       return OS;
     }
     Parent->printPath(OS);
-    OS << " --> " << getTransformationName(Transformation.Kind);
     auto Best = TTuner->getBest();
+    OS << " --> " << getTransformationName(Transformation.Kind);
+
+    if (!Transformation.IntParams.empty()) {
+      OS << "( ";
+      for (unsigned I = 0; I < Transformation.IntParams.size(); I++) {
+        OS << Transformation.IntParams[I] << " ";
+        if (Transformation.FixedParams.size() > I)
+          OS << "-> " << Transformation.FixedParams[I] << " ";
+        if (I < Transformation.IntParams.size()-1)
+          OS << ", ";
+      }
+      OS << ")";
+    }
+
     if (Best && Best->Stats->valid()) {
+      OS << Best->Config;
       OS << llvm::formatv(" [{0:f2}]", Baseline.Mean / Best->Stats->Mean);
     } else {
       OS << " [?]";
@@ -391,13 +423,13 @@ private:
   // Loop nests are tuned one after the other. This list contains the ones that have been finished.
   LoopTreeList FinalizedTrees;
 
- // KnobConfig FinalizedConfig;
-
   // All loop nests have been tuned.
   bool Done;
 
   // Counts expansion operations.
   int ExpansionCounter;
+
+  SmallVector<int, 8> RestartCounts;
 
 };
 

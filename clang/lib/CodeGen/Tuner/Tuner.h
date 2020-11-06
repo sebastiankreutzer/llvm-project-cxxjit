@@ -127,6 +127,10 @@ public:
   virtual bool isDone() {
     return false;
   }
+
+  virtual unsigned getNumRestarts() const {
+    return 0;
+  }
 };
 
 class CachingTuner: public Tuner{

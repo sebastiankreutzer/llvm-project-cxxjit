@@ -37,6 +37,19 @@ raw_ostream& operator<<(raw_ostream& OS, const SearchSpace& Space){
   return OS;
 }
 
+raw_ostream& operator<<(raw_ostream& OS, const ParamConfig& Cfg) {
+  if (Cfg.isEmpty())
+    return OS ;
+  OS << "( ";
+  for (unsigned I = 0; I < Cfg.size(); I++) {
+    auto Val = Cfg[I];
+    OS  << Val;
+    if (I < Cfg.size()-1)
+      OS << ", ";
+  }
+  return OS << " )";
+}
+
 
 void ParamConfig::dump(llvm::raw_ostream &OS) const {
   if (isEmpty()) {

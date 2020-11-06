@@ -91,7 +91,7 @@ extern const char *INTERCHANGE_PERMUTATION_TAG;
 extern const char *INTERCHANGE_FOLLOWUP_TAG;
 extern const char *UNROLL_AND_JAM_ENABLE_TAG;
 extern const char *UNROLL_AND_JAM_COUNT_TAG;
-extern const char *UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG;
+extern const char *UNROLL_AND_JAM_FOLLOWUP_UNROLLED_TAG;
 extern const char *UNROLL_ENABLE_TAG;
 extern const char *UNROLL_COUNT_TAG;
 extern const char *UNROLL_FULL_TAG;

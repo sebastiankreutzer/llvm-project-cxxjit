@@ -378,6 +378,8 @@ struct ParamConfig {
     return Values.size();
   }
 
+  friend llvm::raw_ostream& operator<<(llvm::raw_ostream& OS, const ParamConfig& Cfg);
+
   void dump(llvm::raw_ostream &OS) const;
 
   void dump() const {

@@ -308,6 +308,10 @@ TaggedConfig CachedModifiedSimplexTuner::getLegalizedConfig(CachedModifiedSimple
 
 bool CachedModifiedSimplexTuner::attemptRestart()
 {
+  if (NumRestarts >= 5) {
+    return false;
+  }
+  NumRestarts++;
   State = INIT;
   return true;
 }

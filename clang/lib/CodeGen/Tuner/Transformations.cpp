@@ -29,20 +29,26 @@ void findUnrollTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformatio
     Trans.Kind = LoopTransformation::UNROLL;
     auto Name = ("Loop " + Node->getLoopName() + " - Unroll factor").str();
     auto& TTI = Node->getTripCountInfo();
-    auto Min = transform_defaults::UNROLL_MIN;
-    // Avoid extremely high unroll counts
-    auto Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX) : transform_defaults::UNROLL_MAX;
-    auto Dflt = std::max(Min, Max / 4);
 
-    // TODO: For small trip counts, only try full unrolling
+    // Only proceed if the trip count is above 1
+    if (!TTI.hasInfo() || TTI.TripCount > 1) {
+      unsigned Min = 2;//transform_defaults::UNROLL_MIN;
+      // Avoid extremely high unroll counts
+      unsigned Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX)
+                               : transform_defaults::UNROLL_MAX;
+      auto Dflt = std::max(Min, Max / 4);
+
+      // TODO: For small trip counts, only try full unrolling
 
 
-    if (Max == transform_defaults::UNROLL_MIN) {
-      assert(Min == Max);
-      // Do nothing
-    } else {
-      Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
-      Transformations.push_back(Trans);
+      if (Max == Min) {
+        assert(Min == Max);
+        Trans.IntParams.push_back(0);
+        Trans.FixedParams.push_back(Min);
+      } else {
+        Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+        Transformations.push_back(Trans);
+      }
     }
   }
   for (auto& SL : Node->subLoops()) {
@@ -77,6 +83,7 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
     return;
 
   unsigned Depth = Node->getRelativeMaxDepth();
+
   LoopTransformation Trans;
   Trans.Root = Node->getLoopName();
   Trans.Kind = LoopTransformation::UNROLL_AND_JAM;
@@ -96,6 +103,13 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
     auto& TTI = Node->getTripCountInfo();
     auto Min = transform_defaults::UNROLL_AND_JAM_MIN;
 
+    // If only one unrolled loop, set minimal factor to 2.
+    if (Depth == 2) {
+      if (TTI.hasInfo() && TTI.TripCount == 1) {
+        return;
+      }
+      Min = 2;
+    }
 
     int Level = Depth - 1 - i;
     auto LevelMax = transform_defaults::UNROLL_AND_JAM_MAX;
@@ -109,7 +123,7 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
 
     auto Dflt = std::max(Min, Max / 4);
 
-    if (Max == transform_defaults::UNROLL_AND_JAM_MIN) {
+    if (Min == Max) {
       assert(Min == Max);
       Trans.IntParams.push_back(i);
       Trans.FixedParams.push_back(Min);
@@ -424,11 +438,11 @@ void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts) {
 
   auto& Tree = *Root->getTransformTree();
 
-  outs() << "Unroll factors: ";
-  for (auto K : Counts) {
-    outs() << K << ", ";
-  }
-  outs() << "\n";
+//  outs() << "Unroll factors: ";
+//  for (auto K : Counts) {
+//    outs() << K << ", ";
+//  }
+//  outs() << "\n";
 
   auto* Node = Root->getLastSuccessor();
   unsigned Count = Counts.front();
@@ -483,7 +497,7 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
       Unrolled->getTripCountInfo() = Node->getTripCountInfo();
       Unrolled->getTripCountInfo().TripCount /= Count;
       Node->addSuccesor(Unrolled);
-      Node->addRedirectAttribute(MDTags::UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG, Unrolled);
+      Node->addRedirectAttribute(MDTags::UNROLL_AND_JAM_FOLLOWUP_UNROLLED_TAG, Unrolled);
     } else {
       // Loops are marked as unrolled, even if no unrolling actually occurs.
       Node->setFlag(LoopNode::UNROLLED);

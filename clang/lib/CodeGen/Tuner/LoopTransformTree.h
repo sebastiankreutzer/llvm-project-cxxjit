@@ -343,6 +343,17 @@ public:
     return SubLoops.empty() ? nullptr : SubLoops.front();
   }
 
+  /**
+   * Returns the first innermost loop (last successor).
+   * @return
+   */
+  LoopNode* getInnermostLoop() {
+    auto* Succ = getLastSuccessor();
+    if (!Succ->hasSubLoop())
+      return Succ;
+    return Succ->getFirstSubLoop()->getInnermostLoop();
+  }
+
   llvm::iterator_range<LoopList::iterator> subLoops() {
     return make_range(SubLoops.begin(), SubLoops.end());
   }

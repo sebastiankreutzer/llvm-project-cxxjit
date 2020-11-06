@@ -82,6 +82,11 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
   if (!Node->hasSubLoop())
     return;
 
+  // Don't apply unroll-and-jam after unroll
+  if (Node->getInnermostLoop()->isSetInPredecessors(LoopNode::UNROLLED)) {
+    return;
+  }
+
   unsigned Depth = Node->getRelativeMaxDepth();
 
   LoopTransformation Trans;

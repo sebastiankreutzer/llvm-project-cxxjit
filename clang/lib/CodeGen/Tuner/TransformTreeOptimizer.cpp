@@ -206,10 +206,11 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           exportTree();
 
           unsigned RestartIndex = CurrentNode->TTuner->getLastImprovementRestartIndex();
+          JIT_INFO(dbgs() << "Search needed " << RestartIndex << " restarts to find the best version.\n");
           if (RestartIndex >= RestartCounts.size()) {
             RestartCounts.resize(RestartIndex+1, 0);
-            RestartCounts[RestartIndex]++;
           }
+          RestartCounts[RestartIndex]++;
 
           auto Best = CurrentNode->TTuner->getBest();
           assert(Best && "No result");

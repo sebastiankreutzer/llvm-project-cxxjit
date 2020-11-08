@@ -34,8 +34,8 @@ public:
         TTuner = createTuner(loadSearchAlgoEnv(), Transformation.Space);
       }
     }
-    JIT_INFO(dbgs() << "Tuning transformation of kind " << getTransformationName(Transformation.Kind) << "\n");
-    JIT_INFO(dbgs() << "Search space: " << Transformation.Space << "\n");
+    JIT_INFO(outs() << "Tuning transformation of kind " << getTransformationName(Transformation.Kind) << "\n");
+    JIT_INFO(outs() << "Search space: " << Transformation.Space << "\n");
     NeedsUpdate = true;
     BestIdx = -1;
     RequestsSinceImprovement = 0;

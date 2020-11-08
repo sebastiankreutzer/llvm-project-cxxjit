@@ -304,13 +304,13 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
           return {};
         });
 
-    JIT_INFO(dbgs() << "Looking for tunable template arguments..." << "\n");
+    JIT_INFO(outs() << "Looking for tunable template arguments..." << "\n");
     TunableArgList TAL(BaseArgs);
     for (auto& NTTA : TunableNTTAs) {
       TAL.add(NTTA);
     }
 //    for (auto &Knob : TAKnobs) {
-//      JIT_INFO(dbgs() << "Template argument marked tunable: "
+//      JIT_INFO(outs() << "Template argument marked tunable: "
 //                       << Knob->getArgIndex() << "\n");
 //      TAL.add(std::move(Knob));
 //    }
@@ -339,7 +339,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   auto FName = TemplateInst.Context.DeclName;
   
   if (TemplateInst.Context.Opt->isDone()) {
-    JIT_INFO(dbgs() << "Tuner has finished!\n");
+    JIT_INFO(outs() << "Tuner has finished!\n");
     auto Best = TemplateInst.getCurrentBest();
     auto BaseLine = TemplateInst.Instantiations[1];
     outs() << "Tuning done: " << FName;
@@ -461,7 +461,7 @@ void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
   // Select the non-timed version of the function.
   InstData IData = {BestVersion->FImplPtr, true};
   updateActiveInstantiation(Inst, IData);
-  JIT_INFO(dbgs() << "Finished tuning: " << Inst.Key << "\n");
+  JIT_INFO(outs() << "Finished tuning: " << Inst.Key << "\n");
   return IData.FPtr;
 }
 

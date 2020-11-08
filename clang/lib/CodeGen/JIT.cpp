@@ -1226,7 +1226,7 @@ extern "C"
       static const auto ActiveDriverType = loadDriverTypeEnv();
       switch(ActiveDriverType) {
         case DriverType::TUNER:
-          JIT_INFO(llvm::dbgs() << "JIT Tuning enabled\n");
+          JIT_INFO(llvm::outs() << "JIT Tuning enabled\n");
           TUD.CompilerDriver = std::make_unique<TunerDriver>(*CD);
           break;
         case DriverType::FAST:

@@ -116,10 +116,10 @@ void TransformTreeOptimizer::init(Module *M) {
 
   if (LoopTrees.empty()) {
     Done = true;
-    JIT_INFO(dbgs() << "No loops detected\n");
+    JIT_INFO(outs() << "No loops detected\n");
     return;
   }
-  JIT_INFO(dbgs() << "Number of detected loop trees: " << LoopTrees.size() << "\n");
+  JIT_INFO(outs() << "Number of detected loop trees: " << LoopTrees.size() << "\n");
 
   CurrentLoopTree = LoopTrees.begin();
   Done = false;
@@ -206,7 +206,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           exportTree();
 
           unsigned RestartIndex = CurrentNode->TTuner->getLastImprovementRestartIndex();
-          JIT_INFO(dbgs() << "Search needed " << RestartIndex << " restarts to find the best version.\n");
+          JIT_INFO(outs() << "Search needed " << RestartIndex << " restarts to find the best version.\n");
           if (RestartIndex >= RestartCounts.size()) {
             RestartCounts.resize(RestartIndex+1, 0);
           }
@@ -216,8 +216,8 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           assert(Best && "No result");
           auto &BestVal = Best.getValue();
 
-          JIT_INFO(dbgs() << "----------------------------------------\n");
-          JIT_INFO(dbgs() << "Transformation fully evaluated with " << CurrentNode->TTuner->getNumConfigs() << " configs - ");
+          JIT_INFO(outs() << "----------------------------------------\n");
+          JIT_INFO(outs() << "Transformation fully evaluated with " << CurrentNode->TTuner->getNumConfigs() << " configs - ");
 
           float NodeSpeedup = computeSpeedup(*BestVal.Stats);
 
@@ -226,9 +226,9 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
             JIT_INFO(CurrentNode->printPath(outs()) << "\n");
             BestNode = {CurrentNode, BestVal};
           } else {
-            JIT_INFO(dbgs() << "speedup is " << formatv("{0:f3}\n", NodeSpeedup));
+            JIT_INFO(outs() << "speedup is " << formatv("{0:f3}\n", NodeSpeedup));
           }
-          JIT_INFO(dbgs() << "----------------------------------------\n");
+          JIT_INFO(outs() << "----------------------------------------\n");
 
           if (DecisionTree->isFullyExplored()) {
 
@@ -237,17 +237,17 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
             // Tuning is done, save best configuration
             auto FinalTree = BestNode.first->applyBestConfig();
 
-            JIT_INFO(dbgs() << "Loop nest fully explored!\n");
-            JIT_INFO(dbgs() << "Best transformation sequence: ");
+            JIT_INFO(outs() << "Loop nest fully explored!\n");
+            JIT_INFO(outs() << "Best transformation sequence: ");
             JIT_INFO(BestNode.first->printPath(outs()) << "\n");
 
-            JIT_INFO(dbgs() << "Restart Stats:\n");
+            JIT_INFO(outs() << "Restart Stats:\n");
             unsigned NumSearches = 0;
             for (auto C : RestartCounts) {
               NumSearches += C;
             }
             for (unsigned I = 0; I < RestartCounts.size(); I++) {
-              JIT_INFO(dbgs() << I << " restarts needed: " << RestartCounts[I] << formatv("({0:p})\n", static_cast<float>(RestartCounts[I]) / NumSearches));
+              JIT_INFO(outs() << I << " restarts needed: " << RestartCounts[I] << formatv("({0:p})\n", static_cast<float>(RestartCounts[I]) / NumSearches));
             }
 
             FinalizedTrees.push_back(std::move(FinalTree));
@@ -264,19 +264,19 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           } else {
             // Expand the tree
             auto &Promising = DecisionTree->getMostPromisingNode(AllowRegression);
-            JIT_INFO(dbgs() << "Selected node to expand: kind="
+            JIT_INFO(outs() << "Selected node to expand: kind="
                             << (Promising.getDepth() == 1 ? "ROOT" : getTransformationName(Promising.Transformation.Kind))
                             << ", depth=" << Promising.getDepth() << ", nesting_depth="
                             << Promising.LoopTree->getRoot()->getMaxDepth() << "\n");
-            JIT_INFO(dbgs() << "Available transformations: ");
+            JIT_INFO(outs() << "Available transformations: ");
             unsigned NumAvailable = Promising.FeasibleTransformations.size();
             for (int i = Promising.UnexploredIdx; i < NumAvailable; i++) {
-              JIT_INFO(dbgs() << getTransformationName(Promising.FeasibleTransformations[i].Kind)
+              JIT_INFO(outs() << getTransformationName(Promising.FeasibleTransformations[i].Kind)
                               << (i + 1 < NumAvailable ? ", " : "\n"));
             }
             auto &NewNode = Promising.expand();
             NewNode.ExpansionID = ExpansionCounter++;
-            JIT_INFO(dbgs() << "Expanded Tree:\n");
+            JIT_INFO(outs() << "Expanded Tree:\n");
             JIT_INFO(NewNode.printPath() << "\n");
 
 

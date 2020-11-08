@@ -148,7 +148,7 @@ struct DecisionNode {
   }
 
   unsigned getMaxEvalLimit() {
-    return 25;
+    return 30;
     switch(getDepth()) {
       case 1:
       case 2:

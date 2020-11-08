@@ -476,7 +476,8 @@ bool TunerDriver::isFinished(const clang::jit::InstInfo &Inst) {
     return false; // TODO: Needs to be properly checked for parameter tuning
   if (TuningData->Specializations.empty())
     return false;
-   return TuningData->Specializations[TuningData->ActiveConfig].Context.Opt->isDone();
+   auto& Opt = TuningData->Specializations[TuningData->ActiveConfig].Context.Opt;
+   return Opt->isDone();
 }
 
 
@@ -487,6 +488,7 @@ void* finish_tuning(void* FPtr) {
     auto& Driver = PtrData.Driver;
     return Driver->finishTuning(PtrData.Inst);
   }
+  llvm::errs() << "finish tuning: Could not find instantiation data\n";
   return nullptr;
 }
 
@@ -496,7 +498,8 @@ bool is_finished(void* FPtr) {
     auto& PtrData = It->second;
     return PtrData.Driver->isFinished(PtrData.Inst);
   }
-  return false;
+//  llvm::errs() << "Could not find instantiation data\n";
+  return true;
 }
 
 } // namespace jit

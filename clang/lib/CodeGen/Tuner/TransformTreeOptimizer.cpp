@@ -240,7 +240,6 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
             JIT_INFO(dbgs() << "Loop nest fully explored!\n");
             JIT_INFO(dbgs() << "Best transformation sequence: ");
             JIT_INFO(BestNode.first->printPath(outs()) << "\n");
-            JIT_INFO(dbgs() << "Speedup is " << formatv("{0:f3}\n", NodeSpeedup));
 
             JIT_INFO(dbgs() << "Restart Stats:\n");
             unsigned NumSearches = 0;

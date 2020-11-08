@@ -2,6 +2,8 @@
 // Created by sebastian on 20.12.19.
 //
 
+#include <algorithm>
+
 #include "LoopTransformTreeTraits.h"
 #include "llvm/Support/GraphWriter.h"
 #include "Transformations.h"
@@ -346,7 +348,7 @@ SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree *Tree) 
 }
 
 
-void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg) {
+TransformationResult apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg) {
 
   auto FetchFixedAndTunableIntParams = [&Transformation, &Cfg](SmallVectorImpl<unsigned>& Params) {
     unsigned Depth = Cfg.size() + Transformation.FixedParams.size();
@@ -365,8 +367,18 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamCon
     }
   };
 
+  auto AllEqualTo = [](ArrayRef<unsigned> Vals, unsigned Val) -> bool {
+    if (Vals.empty())
+      return false;
+    for (auto X : Vals) {
+      if (X != Val)
+        return false;
+    }
+    return true;
+  };
+
   if (Transformation.Kind == LoopTransformation::NONE) {
-    return;
+    return TransformationResult::SUCCESS_IDENTITY;
   }
   auto Root = Tree.getNode(Transformation.Root);
   assert(Root && "Root node of transformation does not exist in tree");
@@ -401,6 +413,11 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamCon
 //        }
 //      }
 
+      if (AllEqualTo(Sizes, 1)) {
+        return TransformationResult::SUCCESS_IDENTITY;
+      }
+
+
       assert(Depth > 0);
       applyTiling(Root, Depth, Sizes);
       break;
@@ -419,6 +436,10 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamCon
       // Collect unroll counts from tunable and fixed parameters.
       FetchFixedAndTunableIntParams(Counts);
 
+      if (AllEqualTo(Counts, 1)) {
+        return TransformationResult::SUCCESS_IDENTITY;
+      }
+
       applyUnrollAndJam(Root, Counts);
       break;
     }
@@ -429,12 +450,17 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamCon
       // (should only be tunable in this case, since each loop is unrolled separately).
       FetchFixedAndTunableIntParams(Counts);
 
+      if (AllEqualTo(Counts, 1)) {
+        return TransformationResult::SUCCESS_IDENTITY;
+      }
+
       applyUnroll(Root, Counts);
       break;
     }
     default:
       llvm_unreachable("Invalid transformation kind.");
   }
+  return TransformationResult ::SUCCESS;
 }
 
 void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts) {

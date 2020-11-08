@@ -73,6 +73,12 @@ struct LoopTransformation {
 
 };
 
+enum class TransformationResult {
+  SUCCESS,
+  SUCCESS_IDENTITY,
+  FAILED
+};
+
 inline const char* getTransformationName(LoopTransformation::TransformKind Kind) {
   switch(Kind) {
     case LoopTransformation::TILE:
@@ -95,7 +101,7 @@ void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation>& Tr
 
 SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree* Tree);
 
-void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg);
+TransformationResult apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg);
 
 void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts);
 

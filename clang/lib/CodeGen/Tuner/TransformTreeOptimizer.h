@@ -245,17 +245,19 @@ struct DecisionNode {
     return *Child;
   }
 
-  LoopTransformTreePtr getTransformedTree(ParamConfig& Cfg) {
+  LoopTransformTreePtr getTransformedTree(ParamConfig& Cfg, TransformationResult* Result = nullptr) {
     auto Tree = LoopTree->clone();
-    apply(Transformation, *Tree, Cfg);
+    auto Status = apply(Transformation, *Tree, Cfg);
+    if (Result)
+      *Result = Status;
     return Tree;
   }
 
-  LoopTransformTreePtr applyBestConfig() {
+  LoopTransformTreePtr applyBestConfig(TransformationResult* Result = nullptr) {
     auto Best = TTuner->getBest();
     if (!Best)
       return nullptr;
-    return getTransformedTree(Best->Config);
+    return getTransformedTree(Best->Config, Result);
   }
 
   bool isEvaluated() {
@@ -264,9 +266,19 @@ struct DecisionNode {
 
   void finalize() {
     assert(isEvaluated() && "Node must be evaluated before new transformations can be found");
-    assert(FeasibleTransformations.empty() && !TransformedTree && "Can only be called once"); // TODO: Allow to reevaluate with updated config
-    TransformedTree = applyBestConfig();
-    assert(TransformedTree);
+    assert(FeasibleTransformations.empty() && !TransformedTree && "Can only be called once");
+    TransformationResult Res = TransformationResult::FAILED;
+    TransformedTree = applyBestConfig(&Res);
+    assert(TransformedTree && Res != TransformationResult::FAILED);
+
+    // Configurations such as UNROLL_AND_JAM(1, 1) are possible, which don't modidify the code at all.
+    // If this is the case, stop exploring this branch because there is no difference to the parent node.
+    // The root is node is excluded from this rule.
+    if (Parent && Res == TransformationResult::SUCCESS_IDENTITY) {
+      JIT_INFO(outs() << "Best found config " << TTuner->getBest()->Config << " is identity transformation - pruning this branch...\n");
+      return;
+    }
+
     FeasibleTransformations = findTransformations(TransformedTree.get());
     std::sort(FeasibleTransformations.begin(), FeasibleTransformations.end(), [](const LoopTransformation& T1, const LoopTransformation& T2) {
       return getMultiplier(T1) > getMultiplier(T2);

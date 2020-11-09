@@ -182,9 +182,9 @@ struct llvm::yaml::SequenceTraits<ParamConfig::VecT>
 };
 
 template<>
-struct llvm::yaml::MappingTraits<DecisionNode>
+struct llvm::yaml::MappingTraits<TransformNode>
 {
-  static void mapping(IO &io, DecisionNode &Node)
+  static void mapping(IO &io, TransformNode &Node)
   {
     io.mapRequired("expansion_id", Node.ExpansionID);
     io.mapRequired("transformation", Node.Transformation);
@@ -195,16 +195,16 @@ struct llvm::yaml::MappingTraits<DecisionNode>
 };
 
 template<>
-struct llvm::yaml::MappingTraits<std::unique_ptr<DecisionNode>>
+struct llvm::yaml::MappingTraits<std::unique_ptr<TransformNode>>
 {
-  static void mapping(IO &io, std::unique_ptr<DecisionNode> &Ptr)
+  static void mapping(IO &io, std::unique_ptr<TransformNode> &Ptr)
   {
     if (Ptr)
-      MappingTraits<DecisionNode>::mapping(io, *Ptr);
+      MappingTraits<TransformNode>::mapping(io, *Ptr);
   }
 };
 
-LLVM_YAML_IS_SEQUENCE_VECTOR(std::unique_ptr<DecisionNode>);
+LLVM_YAML_IS_SEQUENCE_VECTOR(std::unique_ptr<TransformNode>);
 
 //
 //template<unsigned N>
@@ -223,13 +223,13 @@ LLVM_YAML_IS_SEQUENCE_VECTOR(std::unique_ptr<DecisionNode>);
 
 namespace clang {
 namespace jit {
-inline void writeTree(TransformDecisionTree &Tree, raw_ostream &OS = llvm::outs())
+inline void writeTree(TransformSearchTree &Tree, raw_ostream &OS = llvm::outs())
 {
   llvm::yaml::Output Out(OS);
   Out << Tree.getRoot();
 }
 
-inline void writeTree(TransformDecisionTree &Tree, StringRef File)
+inline void writeTree(TransformSearchTree &Tree, StringRef File)
 {
   std::error_code Err;
   raw_fd_ostream OS(File, Err);

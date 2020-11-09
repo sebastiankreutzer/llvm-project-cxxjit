@@ -31,7 +31,7 @@ struct TimingStats {
   bool valid() const { return N > 0 && Mean > 0 && Variance >= 0; }
 
   bool betterThan(const TimingStats &Other) {
-    // TODO: Do t-test instead
+    // TODO: Do t-test instead?
     if (!valid())
       return false;
     if (!Other.valid())

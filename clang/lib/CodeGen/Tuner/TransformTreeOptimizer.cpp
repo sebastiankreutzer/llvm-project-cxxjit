@@ -175,7 +175,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
   auto buildDecisionTree = [&](LoopTransformTree& Base) {
     assert(BaseLine && "Baseline must be evaluated before the tree can be created");
-    DecisionTree = std::make_unique<TransformDecisionTree>(Base.clone(), *BaseLine->Stats);
+    DecisionTree = std::make_unique<TransformSearchTree>(Base.clone(), *BaseLine->Stats);
     CurrentNode = &DecisionTree->getRoot();
     BestNode = {};
     RestartCounts.clear();

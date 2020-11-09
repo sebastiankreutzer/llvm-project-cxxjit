@@ -135,11 +135,11 @@ private:
 
 };
 
-struct DecisionNode {
+struct TransformNode {
 
-  using NodePtr = std::unique_ptr<DecisionNode>;
+  using NodePtr = std::unique_ptr<TransformNode>;
 
-  DecisionNode(TimingStats Baseline, LoopTransformation Trans, LoopTransformTreePtr Tree, DecisionNode* Parent = nullptr) : Baseline(Baseline), Transformation(Trans), LoopTree(std::move(Tree)), Parent(Parent) {
+  TransformNode(TimingStats Baseline, LoopTransformation Trans, LoopTransformTreePtr Tree, TransformNode* Parent = nullptr) : Baseline(Baseline), Transformation(Trans), LoopTree(std::move(Tree)), Parent(Parent) {
     assert(Baseline.valid());
 
     TTuner = std::make_unique<TransformationTuner>(Transformation, getMaxEvalLimit());
@@ -192,10 +192,10 @@ struct DecisionNode {
     return UnexploredIdx >= FeasibleTransformations.size();
   }
 
-  std::pair<float, DecisionNode*> getMostPromisingNode(bool AllowRegression) {
+  std::pair<float, TransformNode*> getMostPromisingNode(bool AllowRegression) {
     float ThisSpeedup = computeSpeedup();
     float ThisScore = computeScore(ThisSpeedup);
-    std::pair<float, DecisionNode*> MostPromising{ThisScore, this};
+    std::pair<float, TransformNode*> MostPromising{ThisScore, this};
     for (auto& Child : Children) {
       if (!Child)
         continue;
@@ -232,13 +232,13 @@ struct DecisionNode {
     return Speedup * Multiplier;
   }
 
-  DecisionNode& expand() {
+  TransformNode& expand() {
     assert(UnexploredIdx < FeasibleTransformations.size() && "Node does not have any unexplored transformations");
     auto& Trans = FeasibleTransformations[UnexploredIdx];
     auto& Child = Children[UnexploredIdx];
 
     auto Best = TTuner->getBest();
-    Child = std::make_unique<DecisionNode>(Baseline, Trans, TransformedTree->clone(), this);
+    Child = std::make_unique<TransformNode>(Baseline, Trans, TransformedTree->clone(), this);
 //    Child->FullConfig = Best->Cfg;
 //    Child->FullConfig.addAll(FullConfig);
     UnexploredIdx++;
@@ -331,7 +331,7 @@ struct DecisionNode {
   LoopTransformTreePtr TransformedTree;
   std::unique_ptr<TransformationTuner> TTuner;
   LoopTransformation Transformation;
-  DecisionNode* Parent;
+  TransformNode* Parent;
   int ExpansionID;
 //  KnobConfig FullConfig;
   SmallVector<LoopTransformation, 4> FeasibleTransformations;
@@ -339,13 +339,13 @@ struct DecisionNode {
   unsigned UnexploredIdx;
 };
 
-class TransformDecisionTree {
+class TransformSearchTree {
 public:
-  TransformDecisionTree(LoopTransformTreePtr OriginalTree, TimingStats BaselineStats)
+  TransformSearchTree(LoopTransformTreePtr OriginalTree, TimingStats BaselineStats)
     : Root(BaselineStats, LoopTransformation(), std::move(OriginalTree)) {
   }
 
-  DecisionNode& getMostPromisingNode(bool AllowRegression) {
+  TransformNode& getMostPromisingNode(bool AllowRegression) {
     return *Root.getMostPromisingNode(AllowRegression).second;
   }
 
@@ -353,13 +353,13 @@ public:
     return Root.isFullyExplored();
   }
 
-  DecisionNode& getRoot() {
+  TransformNode& getRoot() {
     return Root;
   }
 
 
 private:
-  DecisionNode Root;
+  TransformNode Root;
 };
 
 
@@ -425,11 +425,11 @@ private:
   // Iterator of the currently tuned loop nest
   LoopTreeIterator CurrentLoopTree;
   // Transformation decision tree for the current loop nest
-  std::unique_ptr<TransformDecisionTree> DecisionTree;
+  std::unique_ptr<TransformSearchTree> DecisionTree;
   // Node that is currently investigated
-  DecisionNode* CurrentNode;
+  TransformNode* CurrentNode;
   // Best node in the current tree, corresponds to a sequence of transformations
-  std::pair<DecisionNode*, ConfigEval> BestNode;
+  std::pair<TransformNode*, ConfigEval> BestNode;
 
 
   // Loop nests are tuned one after the other. This list contains the ones that have been finished.

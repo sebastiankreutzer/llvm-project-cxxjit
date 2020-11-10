@@ -402,6 +402,7 @@ private:
   float computeSpeedup(TimingStats& Stats);
 
   void exportTree();
+  void exportDotGraph(LoopTransformTree* Tree, std::string Name);
 
 private:
   using LoopTreeList = SmallVector<LoopTransformTreePtr, 2>;
@@ -425,7 +426,7 @@ private:
   // Iterator of the currently tuned loop nest
   LoopTreeIterator CurrentLoopTree;
   // Transformation decision tree for the current loop nest
-  std::unique_ptr<TransformSearchTree> DecisionTree;
+  std::unique_ptr<TransformSearchTree> SearchTree;
   // Node that is currently investigated
   TransformNode* CurrentNode;
   // Best node in the current tree, corresponds to a sequence of transformations

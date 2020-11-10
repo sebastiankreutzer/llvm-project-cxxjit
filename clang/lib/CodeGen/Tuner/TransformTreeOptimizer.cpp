@@ -157,13 +157,29 @@ void TransformTreeOptimizer::init(Module *M) {
 //  ViewGraph(&Tree, "After tiling");
 }
 
+void TransformTreeOptimizer::exportDotGraph(LoopTransformTree* Tree, std::string Name)
+{
+  auto ExportGraphStr = std::getenv("CJ_EXPORT_DOT_GRAPH");
+  if (!ExportGraphStr)
+    return;
+  auto Filename = Name + "_" + ExportGraphStr + ".dot";
+  WriteGraph(Tree, Name, false, Name, Filename);
+}
+
 void TransformTreeOptimizer::exportTree() {
   auto ExportTreeStr = std::getenv("CJ_EXPORT_TREE");
   if (!ExportTreeStr)
     return;
 
-  auto Filename = (DecisionTree->getRoot().LoopTree->getName() + ".yaml").str();
-  writeTree(*DecisionTree, Filename);
+  auto FileEnv = std::getenv("CJ_TREE_FILE_SUFFIX");
+  std::string Filename;
+  if (FileEnv) {
+    Filename = (SearchTree->getRoot().LoopTree->getName() + "_" + FileEnv + ".yaml").str();
+  } else {
+    Filename = (SearchTree->getRoot().LoopTree->getName() + ".yaml").str();
+  }
+
+  writeTree(*SearchTree, Filename);
 }
 
 ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
@@ -175,8 +191,8 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
   auto buildDecisionTree = [&](LoopTransformTree& Base) {
     assert(BaseLine && "Baseline must be evaluated before the tree can be created");
-    DecisionTree = std::make_unique<TransformSearchTree>(Base.clone(), *BaseLine->Stats);
-    CurrentNode = &DecisionTree->getRoot();
+    SearchTree = std::make_unique<TransformSearchTree>(Base.clone(), *BaseLine->Stats);
+    CurrentNode = &SearchTree->getRoot();
     BestNode = {};
     RestartCounts.clear();
   };
@@ -193,7 +209,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
         auto &Tree = **CurrentLoopTree;
 
-        if (!DecisionTree) {
+        if (!SearchTree) {
           buildDecisionTree(Tree);
         }
 
@@ -245,14 +261,15 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           }
           JIT_INFO(outs() << "----------------------------------------\n");
 
-          if (DecisionTree->isFullyExplored()) {
-
-            exportTree();
+          if (SearchTree->isFullyExplored()) {
 
             // Tuning is done, save best configuration
             auto FinalTree = BestNode.first->applyBestConfig();
 
             //ViewGraph<LoopTransformTree*>(FinalTree.get(), "Final transformation tree", false, "Final transformation tree");
+
+            exportTree();
+            exportDotGraph(FinalTree.get(), SearchTree->getRoot().LoopTree->getName());
 
 
               JIT_INFO(outs() << "Loop nest fully explored!\n");
@@ -281,7 +298,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
           } else {
             // Expand the tree
-            auto &Promising = DecisionTree->getMostPromisingNode(AllowRegression);
+            auto &Promising = SearchTree->getMostPromisingNode(AllowRegression);
             JIT_INFO(outs() << "Selected node to expand: kind="
                             << (Promising.getDepth() == 1 ? "ROOT" : getTransformationName(Promising.Transformation.Kind))
                             << ", depth=" << Promising.getDepth() << ", nesting_depth="

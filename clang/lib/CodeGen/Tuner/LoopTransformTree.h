@@ -159,6 +159,8 @@ public:
     return It == Nodes.end() ? nullptr : It->second.get();
   }
 
+  LoopNode* getEffectiveSuccessorRoot() const;
+
   LoopNode* getRoot() const {
     return Root;
   }
@@ -277,7 +279,7 @@ public:
     Flags = 0;
   }
 
-  bool isSet(unsigned Flag) {
+  bool isSet(unsigned Flag) const {
     return (bool) (Flags & Flag);
   }
 
@@ -426,7 +428,7 @@ public:
     return Attrs;
   }
 
-  bool hasInterchangeBarrier() {
+  bool hasInterchangeBarrier() const {
     return InterchangeBarrier;
   }
 

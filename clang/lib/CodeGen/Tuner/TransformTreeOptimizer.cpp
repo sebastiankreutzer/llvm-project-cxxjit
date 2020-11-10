@@ -203,6 +203,21 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
           // Find new transformations based on current best
           CurrentNode->finalize();
 
+//          if (CurrentNode->Transformation.Kind == LoopTransformation::INTERCHANGE) {
+//            if (auto Parent = CurrentNode->Parent; Parent && Parent->Transformation.Kind == LoopTransformation::UNROLL_AND_JAM) {
+//              if (auto Grandparent = Parent->Parent; Grandparent && Grandparent->Transformation.Kind == LoopTransformation::TILE) {
+//                ViewGraph<LoopTransformTree*>(Parent->TransformedTree.get(), "transformation tree", false, "transformation tree after unroll-and-jam");
+//                ViewGraph<LoopTransformTree*>(CurrentNode->TransformedTree.get(), "transformation tree", false, "transformation tree after interchange");
+//                JIT_INFO(outs() << "Root is: " << CurrentNode->TransformedTree->getRoot()->getLoopName()
+//                                << ", last successor of root is "
+//                                << CurrentNode->TransformedTree->getRoot()->getLastSuccessor()->getLoopName()
+//                                << ", effective root is "
+//                                << CurrentNode->TransformedTree->getEffectiveSuccessorRoot()->getLoopName() << "\n");
+//                exit(0);
+//              }
+//            }
+//          }
+
           exportTree();
 
           unsigned RestartIndex = CurrentNode->TTuner->getLastImprovementRestartIndex();
@@ -237,7 +252,10 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
             // Tuning is done, save best configuration
             auto FinalTree = BestNode.first->applyBestConfig();
 
-            JIT_INFO(outs() << "Loop nest fully explored!\n");
+            //ViewGraph<LoopTransformTree*>(FinalTree.get(), "Final transformation tree", false, "Final transformation tree");
+
+
+              JIT_INFO(outs() << "Loop nest fully explored!\n");
             JIT_INFO(outs() << "Best transformation sequence: ");
             JIT_INFO(BestNode.first->printPath(outs()) << "\n");
 

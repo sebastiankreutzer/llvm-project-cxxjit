@@ -196,7 +196,8 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
   for (unsigned i = 0; i < Depth; i++) {
     assert(Node && "Node is null");
     Node = Node->getLastSuccessor();
-    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED))
+    // Do not allow interchaning multiple times or interchanging already unrolled loops.
+    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED) || Node->isSetInPredecessors(LoopNode::UNROLLED))
       return;
     Indices.push_back(i);
     if (Node->hasInterchangeBarrier())
@@ -340,7 +341,7 @@ void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation>& Tr
 SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree *Tree) {
   assert(Tree && "Tree is null");
   SmallVector<LoopTransformation, 4> Transformations;
-  auto Root = Tree->getRoot();
+  auto Root = Tree->getEffectiveSuccessorRoot();
   if (Root) {
     findTransformations(Root, Transformations);
   }
@@ -514,6 +515,11 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
 
   auto& Tree = *Root->getTransformTree();
 
+  //SmallVector<LoopNode*, 4> UnrolledLoops(Counts.size(), nullptr);
+
+  LoopNode* LastUnrolled = nullptr;
+  bool AddSubloop = false;
+
   auto Node = Root;
   for (auto Count : Counts) {
     assert(Node && "Unroll-and-jam not compatible with loop structure");
@@ -524,14 +530,27 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
       Node->addIntAttribute(MDTags::UNROLL_AND_JAM_COUNT_TAG, Count);
       // NOTE: We ignore remainder loops, as they are usually unrolled fully.
       auto Unrolled = Tree.makeVirtualNode();
+      if (Node->hasInterchangeBarrier())
+        Unrolled->setInterchangeBarrier();
       Unrolled->setFlag(LoopNode::UNROLLED);
       Unrolled->getTripCountInfo() = Node->getTripCountInfo();
       Unrolled->getTripCountInfo().TripCount /= Count;
       Node->addSuccesor(Unrolled);
       Node->addRedirectAttribute(MDTags::UNROLL_AND_JAM_FOLLOWUP_UNROLLED_TAG, Unrolled);
+
+      if (LastUnrolled && AddSubloop) {
+        LastUnrolled->addSubLoop(Unrolled);
+      }
+      LastUnrolled = Unrolled;
+      AddSubloop = true;
     } else {
       // Loops are marked as unrolled, even if no unrolling actually occurs.
       Node->setFlag(LoopNode::UNROLLED);
+      if (LastUnrolled && AddSubloop) {
+        LastUnrolled->addSubLoop(Node);
+      }
+      LastUnrolled = Node;
+      AddSubloop = false;
     }
     Node = Node->getFirstSubLoop();
 
@@ -554,7 +573,7 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
 //    outs() << "Interchange with depth > 2\n";
   }
 
-  SmallVector<SmallVector<int, 2>, 4> Constraints;
+//  SmallVector<SmallVector<int, 2>, 4> Constraints;
 
   SmallVector<LoopNode*, 4> InterchangedLoops(Depth, nullptr);
 
@@ -587,6 +606,7 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
     }
     LastNode = Node;
   }
+
 }
 
 void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, StringRef PeelType) {
@@ -617,7 +637,7 @@ void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, Strin
 
     auto *FloorNode = Tree.makeVirtualNode();
     if (LastFloor)
-      LastFloor->addSubLoop(FloorNode); // TODO: Should they even be added here as subloops? Relationship is apparent from original structure
+      LastFloor->addSubLoop(FloorNode);
     Node->addSuccesor(FloorNode);
     Node->addRedirectAttribute(MDTags::TILE_FOLLOWUP_FLOOR_TAG, FloorNode);
     FloorNode->getTripCountInfo() = OriginalTripCount;

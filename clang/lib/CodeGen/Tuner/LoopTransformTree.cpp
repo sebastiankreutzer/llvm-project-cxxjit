@@ -107,6 +107,17 @@ LoopNode *LoopTransformTree::makeNode(std::string Name) {
   return Nodes[Name].get();
 }
 
+LoopNode* LoopTransformTree::getEffectiveSuccessorRoot() const {
+  if (!Root)
+    return nullptr;
+  auto EffectiveRoot = Root->getLastSuccessor();
+  // After interchange, the root may not be the outermost loop
+  while (EffectiveRoot->Parent) {
+    EffectiveRoot = EffectiveRoot->Parent->getLastSuccessor();
+  }
+  return EffectiveRoot;
+}
+
 void LoopTransformTree::setRoot(LoopNode *Node) {
   assert(getNode(Node->getLoopName()) == Node && "Root node is not part of the tree?");
   this->Root = Node;

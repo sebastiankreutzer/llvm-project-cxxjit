@@ -5,9 +5,11 @@
 #ifndef LLVM_LOOPTRANSFORMTREETRAITS_H
 #define LLVM_LOOPTRANSFORMTREETRAITS_H
 
+#include <sstream>
+
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/Support/DOTGraphTraits.h"
-#include <sstream>
+#include "llvm/Support/GraphWriter.h"
 
 #include "LoopTransformTree.h"
 
@@ -103,12 +105,45 @@ struct DOTGraphTraits<LoopTransformTree*> : public DefaultDOTGraphTraits {
       ss << Node->getTripCountInfo().TripCount;
     else
       ss << "Unknown";
-    auto Succ = Node->getSuccessor();
-    if (Succ)
-      ss << "\nSucc: " << Succ->getLoopName().str();
+    ss << "\n";
+    bool isAnyFlagSet = false;
+    if (Node->isSet(LoopNode::TILED_FLOOR)) {
+      ss << "T_F";
+      isAnyFlagSet = true;
+    }
+    if (Node->isSet(LoopNode::TILED_TILE)) {
+      if (isAnyFlagSet)
+        ss << ", ";
+      ss << "T_T";
+      isAnyFlagSet = true;
+    }
+    if (Node->isSet(LoopNode::UNROLLED)) {
+      if (isAnyFlagSet)
+        ss << ", ";
+      ss << "U";
+      isAnyFlagSet = true;
+    }
+    if (Node->isSet(LoopNode::INTERCHANGED)) {
+      if (isAnyFlagSet)
+        ss << ", ";
+      ss << "IC";
+      isAnyFlagSet = true;
+    }
+    if (isAnyFlagSet)
+      ss << "\n";
+    if (Node->hasInterchangeBarrier())
+      ss << "Barrier\n";
     return ss.str();
   }
 
+  static void addCustomGraphFeatures(LoopTransformTree* Tree, GraphWriter<LoopTransformTree*> & Writer) {
+    for (auto& Node : Tree->nodes()) {
+      auto Succ = Node->getSuccessor();
+      if (Succ) {
+        Writer.emitEdge(static_cast<const void*>(Node.get()), -1, static_cast<const void*>(Succ), -1, "style=dashed");
+      }
+    }
+  }
 };
 
 

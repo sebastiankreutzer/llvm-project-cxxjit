@@ -38,9 +38,14 @@ void findUnrollTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformatio
       // Avoid extremely high unroll counts
       unsigned Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX)
                                : transform_defaults::UNROLL_MAX;
+
+      // If the loop has already been jammed, we don't want to unroll with a high factor.
+      auto PrevUnrollFactor = Node->getEffectiveUnrollFactor();
+      Max = std::max(Min, Max / PrevUnrollFactor);
+
+
       auto Dflt = std::max(Min, Max / 4);
 
-      // TODO: For small trip counts, only try full unrolling
 
 
       if (Max == Min) {
@@ -501,6 +506,7 @@ void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts) {
     Unrolled->setFlag(LoopNode::UNROLLED);
     Unrolled->getTripCountInfo() = Node->getTripCountInfo();
     Unrolled->getTripCountInfo().TripCount /= Count;
+    Unrolled->setUnrolledByFactor(Count);
     Node->addSuccesor(Unrolled);
     // TODO: For full unroll, modify graph correctly
     // TODO: Followup for simple unroll not implemented yet
@@ -528,10 +534,13 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
   LoopNode* LastUnrolled = nullptr;
   bool AddSubloop = false;
 
+  unsigned JamFactor = 1;
+
   auto Node = Root;
   for (auto Count : Counts) {
     assert(Node && "Unroll-and-jam not compatible with loop structure");
     Node = Node->getLastSuccessor();
+    JamFactor *= Count;
     bool DoUnroll = Count > 1;
     if (DoUnroll) {
       Node->addBoolAttribute(MDTags::UNROLL_AND_JAM_ENABLE_TAG, true);
@@ -561,8 +570,10 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
       AddSubloop = false;
     }
     Node = Node->getFirstSubLoop();
-
   }
+  // Update jam factor of innermost loop
+  assert(Node && "There must be a jammed loop");
+  Node->setUnrolledByFactor(JamFactor);
 }
 
 void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation) {
@@ -585,8 +596,10 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
 
   SmallVector<LoopNode*, 4> InterchangedLoops(Depth, nullptr);
 
+
   // Create virtual interchanged successor loops
   LoopNode *Node = Root;
+  auto* PrevInnermostLoop = Node->getInnermostLoop();
   for (unsigned I = 0; I < Depth; I++) {
     assert(Node && "Interchange not compatible with loop structure");
     Node = Node->getLastSuccessor();
@@ -603,6 +616,9 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
     InterchangedLoops[LoopIdx] = Interchanged;
     Node = Node->getFirstSubLoop();
   }
+
+  // Move unroll factor to new innermost loop
+  InterchangedLoops.back()->setUnrolledByFactor(PrevInnermostLoop->getEffectiveUnrollFactor());
 
   // Fix loop nesting
   auto* LastNode = Root->getParent();

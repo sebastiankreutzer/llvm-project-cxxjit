@@ -267,6 +267,14 @@ public:
     return Tree;
   }
 
+  unsigned getEffectiveUnrollFactor() const {
+    return EffectiveUnrollFactor;
+  }
+
+  void setUnrolledByFactor(unsigned k) {
+    this->EffectiveUnrollFactor *= k;
+  }
+
   unsigned getFlags() const {
     return Flags;
   }
@@ -448,6 +456,7 @@ private:
   AttributeBag Attrs;
   TripCountInfo TCI;
   bool InterchangeBarrier{false};
+  unsigned EffectiveUnrollFactor{1};
 };
 
 

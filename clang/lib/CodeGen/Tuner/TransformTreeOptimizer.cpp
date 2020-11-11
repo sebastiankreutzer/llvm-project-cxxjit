@@ -364,13 +364,10 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
   PerFunctionPasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
 
-  createPasses(*M, PerModulePasses, PerFunctionPasses, Request.Config);
+  createPasses(*M, PerModulePasses, PerFunctionPasses, Request.Config, UseDefault);
 
   // Before executing passes, print the final values of the LLVM options.
   cl::PrintOptionValues();
-
-  // Run passes. For now we do all passes at once, but eventually we
-  // would like to have the option of streaming code generation.
 
   {
     PrettyStackTraceString CrashInfo("Per-function optimization");
@@ -412,9 +409,10 @@ TargetIRAnalysis TransformTreeOptimizer::getTargetIRAnalysis() {
 
 void TransformTreeOptimizer::createPasses(const llvm::Module &M, legacy::PassManager &PM,
                                    legacy::FunctionPassManager &FPM,
-                                   ParamConfig &Cfg) {
+                                   ParamConfig &Cfg, bool DefaultOpt) {
+
   auto OptLevel = 3;     // OptLvl.getVal(Cfg);
-  auto OptSizeLevel = 1; // OptSizeLvl.getVal(Cfg); // FIXME TODO
+  auto OptSizeLevel = 0; // OptSizeLvl.getVal(Cfg); // FIXME TODO
 
   PassManagerBuilder PMB;
 
@@ -436,25 +434,27 @@ void TransformTreeOptimizer::createPasses(const llvm::Module &M, legacy::PassMan
                                   CodeGenOpts.PrepareForThinLTO));
 
   bool VectorizeSLP = CodeGenOpts.VectorizeSLP;
-  if (!VectorizeSLP) {
-    //JIT_INFO(errs() << "VectorizeSLP is disabled - enabling for tuning.\n");
-    VectorizeSLP = true;
-  }
-
   bool VectorizeLoop = CodeGenOpts.VectorizeLoop;
-  if (!VectorizeLoop) {
-    //JIT_INFO(errs() << "VectorizeLoop is disabled - enabling for tuning.\n");
-    VectorizeLoop = true;
-  }
-
   bool Unroll = CodeGenOpts.UnrollLoops;
   bool Reroll = CodeGenOpts.RerollLoops;
-  if (Unroll || Reroll) {
-    //JIT_INFO(errs() << "Unrolling/rerolling is enabled - disabling for tuning\n");
-    Unroll = false;
-    Reroll = false;
-  }
 
+  if (!DefaultOpt) {
+    if (!VectorizeSLP) {
+      //JIT_INFO(errs() << "VectorizeSLP is disabled - enabling for tuning.\n");
+      VectorizeSLP = true;
+    }
+
+    if (!VectorizeLoop) {
+      //JIT_INFO(errs() << "VectorizeLoop is disabled - enabling for tuning.\n");
+      VectorizeLoop = true;
+    }
+
+    if (Unroll || Reroll) {
+      //JIT_INFO(errs() << "Unrolling/rerolling is enabled - disabling for tuning\n");
+      Unroll = false;
+      Reroll = false;
+    }
+  }
 
   PMB.OptLevel = OptLevel;
   PMB.SizeLevel = OptSizeLevel;

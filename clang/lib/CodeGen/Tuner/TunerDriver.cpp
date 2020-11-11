@@ -339,13 +339,19 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   auto FName = TemplateInst.Context.DeclName;
   
   if (TemplateInst.Context.Opt->isDone()) {
-    JIT_INFO(outs() << "Tuner has finished!\n");
     auto Best = TemplateInst.getCurrentBest();
     auto BaseLine = TemplateInst.Instantiations[1];
-    outs() << "Tuning done: " << FName;
-    outs() << formatv("Speedup: {0:f2}\n", BaseLine.updateStats().Mean / Best->updateStats().Mean);
+    auto BaselineStats = BaseLine.updateStats();
+    auto BestStats = Best->updateStats();
+    JIT_INFO(outs() << "Tuning done: " << FName << "\n");
+    JIT_INFO(outs() << formatv("Speedup: {0:f2}\n", BaselineStats.Mean / BestStats.Mean));
+    auto* ReturnPtr = Best->FImplPtr;
+    if (BaselineStats.betterThan(BestStats)) {
+      ReturnPtr = BaseLine.FImplPtr;
+      JIT_INFO(outs() << "Autotuner was unable to produce speedups.\n");
+    }
     // Only enable fast lookup if template arguments are not tuned.
-    return {Best->FImplPtr, !TTD->hasTunableArgs()};
+    return {ReturnPtr, !TTD->hasTunableArgs()};
   }
 
   if (TemplateInst.Context.Emitted && !TemplateInst.Instantiations.empty()) {

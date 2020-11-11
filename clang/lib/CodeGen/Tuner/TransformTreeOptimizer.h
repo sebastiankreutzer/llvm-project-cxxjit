@@ -397,7 +397,7 @@ private:
   TargetIRAnalysis getTargetIRAnalysis();
   void createPasses(const llvm::Module &M, legacy::PassManager &PM,
                                             legacy::FunctionPassManager &FPM,
-                                            ParamConfig &Cfg);
+                                            ParamConfig &Cfg, bool DefaultOpt);
 
   float computeSpeedup(TimingStats& Stats);
 

@@ -7,6 +7,8 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+#include "Debug.h"
+
 // Enables always selecting a neighboring point, if the current config is already evaluated.
 // By default, only shrink and contract use this.
 //#define ALWAYS_SEARCH_NEIGHBORS
@@ -134,14 +136,16 @@ TaggedConfig CachedModifiedSimplexTuner::getNextVertex() {
 
   switch (State) {
     case INIT: {
-      bool Restarted = !Simplex.empty();
       EvalQueue.clear();
       Simplex.clear();
 
-      auto Base = createDefaultConfig(Space);
-      if (Restarted) {
+      auto Base = createMinConfig(Space);
+      if (NumRestarts == 1) {
+        Base = createDefaultConfig(Space);
+        JIT_INFO(outs() << "Search restarted with minimum base config\n");
+      } else if (NumRestarts > 1) {
         Base = createRandomConfig(RNE, Space);
-        outs() << "Restarted with random base config\n";
+        JIT_INFO(outs() << "Search restarted with random base config\n");
       }
       Simplex = createSimplex2(Base);
 

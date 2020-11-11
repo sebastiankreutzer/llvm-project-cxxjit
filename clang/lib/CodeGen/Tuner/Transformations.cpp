@@ -197,8 +197,13 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
     assert(Node && "Node is null");
     Node = Node->getLastSuccessor();
     // Do not allow interchaning multiple times or interchanging already unrolled loops.
-    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED) || Node->isSetInPredecessors(LoopNode::UNROLLED))
+    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED) || Node->isSetInPredecessors(LoopNode::UNROLLED)) {
+      // Try to use the next subloop as base.
+      // This is necessary if we want to allow interchaging of tile loops, even if the original loops have been interchanged before.
+      if (Node->hasSubLoop())
+        findInterchangeTransformationsSeparate(Node->getFirstSubLoop(), Transformations);
       return;
+    }
     Indices.push_back(i);
     if (Node->hasInterchangeBarrier())
       Barrier = i;
@@ -305,13 +310,16 @@ void findTilingTransformations(LoopNode *Root, SmallVectorImpl<LoopTransformatio
     unsigned Max = Min;
     unsigned Dflt = Min;
 
-    if (TTI.hasInfo()) {
-      if (TTI.IsExact && TTI.TripCount >= transform_defaults::MIN_TILING_TRIP_COUNT) {
-        Max = TTI.TripCount / 2;
-        Dflt = std::max(Min, Max / 4);
-      }
+    if (TTI.hasInfo() && TTI.TripCount >= transform_defaults::TILE_MIN &&
+        TTI.TripCount <= transform_defaults::TILE_MAX) {
+      Max = TTI.TripCount;
+      Dflt = std::max(Min, Max / 4);
+//      if (TTI.IsExact && TTI.TripCount >= transform_defaults::MIN_TILING_TRIP_COUNT) {
+//        Max = TTI.TripCount / 2;
+//        Dflt = std::max(Min, Max / 4);
+//      }
     } else {
-      // Exact trip count is unknown.
+      // Trip count is unknown.
       Max = transform_defaults::TILE_MAX;
       Dflt = transform_defaults::TILE_DFLT;
     }

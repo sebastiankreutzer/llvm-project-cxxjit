@@ -312,7 +312,7 @@ TaggedConfig CachedModifiedSimplexTuner::getLegalizedConfig(CachedModifiedSimple
 
 bool CachedModifiedSimplexTuner::attemptRestart()
 {
-  if (NumRestarts >= 5) {
+  if (NumRestarts >= 3) {
     return false;
   }
   NumRestarts++;

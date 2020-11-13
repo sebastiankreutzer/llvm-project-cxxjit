@@ -15,6 +15,10 @@ namespace jit {
 
 using TunerRNE = std::mt19937_64;
 
+using TuningClock = std::chrono::steady_clock;
+using TunerTimeStamp = TuningClock::time_point;
+
+
 struct TimingStats {
   unsigned N{0};
   double Mean{0};
@@ -87,15 +91,15 @@ public:
 
 struct ConfigEval {
   ConfigEval() : Stats(std::make_shared<TimingStats>()) {
-
+    TimeStamp = TuningClock::now();
   }
 
   explicit ConfigEval(SearchSpace* Space) : Config(*Space), Stats(std::make_shared<TimingStats>()) {
-
+    TimeStamp = TuningClock::now();
   }
 
   explicit ConfigEval(ParamConfig Config, std::string Op = "") : Config(std::move(Config)), Stats(std::make_shared<TimingStats>()), Op(std::move(Op)) {
-
+    TimeStamp = TuningClock::now();
   }
 
   bool isConfigEmpty() const {
@@ -105,6 +109,7 @@ struct ConfigEval {
   ParamConfig Config;
   SharedEvalStats Stats;
   std::string Op;
+  TunerTimeStamp TimeStamp;
 
 };
 

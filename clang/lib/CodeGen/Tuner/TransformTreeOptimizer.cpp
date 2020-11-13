@@ -189,7 +189,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
 
   ConfigEval Request;
 
-  auto buildDecisionTree = [&](LoopTransformTree& Base) {
+  auto buildSearchTree = [&](LoopTransformTree& Base) {
     assert(BaseLine && "Baseline must be evaluated before the tree can be created");
     SearchTree = std::make_unique<TransformSearchTree>(Base.clone(), *BaseLine->Stats);
     CurrentNode = &SearchTree->getRoot();
@@ -210,7 +210,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
         auto &Tree = **CurrentLoopTree;
 
         if (!SearchTree) {
-          buildDecisionTree(Tree);
+          buildSearchTree(Tree);
         }
 
         assert(CurrentNode && "No node selected");
@@ -293,7 +293,7 @@ ConfigEval TransformTreeOptimizer::optimize(llvm::Module *M, bool UseDefault) {
               outs() << "Autotuning complete!\n";
             } else {
               // Build decision for next loop nest
-              buildDecisionTree(**CurrentLoopTree);
+              buildSearchTree(**CurrentLoopTree);
             }
 
           } else {

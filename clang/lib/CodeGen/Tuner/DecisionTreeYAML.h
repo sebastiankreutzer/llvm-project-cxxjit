@@ -7,6 +7,8 @@
 
 #include "llvm/Support/YAMLTraits.h"
 
+#include <chrono>
+
 #include "TransformTreeOptimizer.h"
 
 using llvm::yaml::MappingTraits;
@@ -147,6 +149,8 @@ struct llvm::yaml::MappingTraits<ConfigEval>
     io.mapRequired("stats", Eval.Stats);
     io.mapRequired("config", Eval.Config.Values);
     io.mapRequired("op", Eval.Op);
+    auto TimeStamp = std::chrono::duration_cast<std::chrono::seconds>(Eval.TimeStamp.time_since_epoch()).count();
+    io.mapRequired("time_stamp", TimeStamp);
   }
 };
 
@@ -188,6 +192,7 @@ struct llvm::yaml::MappingTraits<TransformNode>
   {
     io.mapRequired("expansion_id", Node.ExpansionID);
     io.mapRequired("transformation", Node.Transformation);
+    io.mapRequired("baseline", Node.Baseline.Mean);
     auto Configs = Node.TTuner->getAllConfigs();
     io.mapRequired("configs", Configs);
     io.mapRequired("children", Node.Children);

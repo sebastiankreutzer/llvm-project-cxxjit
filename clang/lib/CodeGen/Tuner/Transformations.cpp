@@ -317,7 +317,7 @@ void findTilingTransformations(LoopNode *Root, SmallVectorImpl<LoopTransformatio
 
     if (TTI.hasInfo() && TTI.TripCount >= transform_defaults::TILE_MIN &&
         TTI.TripCount <= transform_defaults::TILE_MAX) {
-      Max = TTI.TripCount;
+      Max = TTI.TripCount - (TTI.TripCount / 2);
       Dflt = std::max(Min, Max / 4);
 //      if (TTI.IsExact && TTI.TripCount >= transform_defaults::MIN_TILING_TRIP_COUNT) {
 //        Max = TTI.TripCount / 2;

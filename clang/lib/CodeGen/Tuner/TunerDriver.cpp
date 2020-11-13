@@ -385,6 +385,10 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   auto EvalRequest = TemplateInst.Context.Opt->optimize(
       Mod.get(), !TemplateInst.Context.Emitted);
 
+//  if (!TemplateInst.Context.Emitted) {
+//    JIT_INFO(util::dumpModule(*Mod, "Module after optimization"));
+//  }
+
   JIT_DEBUG(util::dumpModule(*Mod, "Module after optimization"));
 
   // Instrument optimized function for tuning

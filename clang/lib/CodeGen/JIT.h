@@ -7,7 +7,6 @@
 
 #include "Tuner/Tuner.h"
 #include "Tuner/Debug.h"
-#include "Tuner/StaticOptimizer.h"
 #include "Tuner/TimingHelper.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "CodeGenModule.h"
@@ -120,6 +119,8 @@
 
 namespace clang {
 namespace jit {
+
+using namespace llvm;
 
 inline void fatal() {
   report_fatal_error("Clang JIT failed!");
@@ -618,6 +619,8 @@ struct InstMapInfo {
     return true;
   }
 };
+
+bool isFastLookupSet(const InstInfo&);
 
 void updateActiveInstantiation(const InstInfo&, InstData);
 

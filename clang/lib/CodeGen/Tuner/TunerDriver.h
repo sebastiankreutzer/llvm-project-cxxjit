@@ -10,19 +10,18 @@
 #include "Tuner.h"
 #include "Optimizer.h"
 #include "TransformTreeOptimizer.h"
+#include "Util.h"
 
 namespace clang {
 namespace jit {
 
-class TemplateArgKnob : public IntKnob {
-public:
-  TemplateArgKnob(unsigned Index, int Min, int Max, int Dflt)
-      : IntKnob(Min, Max, Dflt, "Tunable Arg"), Index(Index){};
 
-  unsigned getArgIndex() const { return Index; }
+struct TunableNTTA {
+  TunableNTTA(unsigned Index, long Min, long Max, long Dflt) : Index(Index), Param(Min, Max, Dflt, "Tunable NTTA"){
+  }
 
-private:
   unsigned Index;
+  SearchDim Param;
 };
 
 using VersionID = unsigned;
@@ -77,11 +76,11 @@ struct TunedCodeVersion {
 
   TunedCodeVersion() = default;
 
-  TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr,
+  TunedCodeVersion(VersionID ID, orc::VModuleKey ModKey, void *FPtr, void* FImplPtr,
                    TimingGlobals Globals,
-                   ConfigEvalRequest Request,
+                   ConfigEval Request,
                    std::unique_ptr<MemoryBuffer> MCBuffer)
-      : ID(ID), ModKey(ModKey), FPtr(FPtr), Globals(Globals),
+      : ID(ID), ModKey(ModKey), FPtr(FPtr), FImplPtr(FImplPtr), Globals(Globals),
         Request(std::move(Request)), MCBuffer(std::move(MCBuffer)) {}
 
   TimingStats updateStats() {
@@ -99,8 +98,9 @@ struct TunedCodeVersion {
   VersionID ID{0};
   orc::VModuleKey ModKey{0};
   void *FPtr{nullptr};
+  void *FImplPtr{nullptr};
   TimingGlobals Globals;
-  ConfigEvalRequest Request;
+  ConfigEval Request;
   std::unique_ptr<MemoryBuffer> MCBuffer;
 };
 
@@ -140,8 +140,8 @@ struct JITTemplateInstantiation {
       errs() << "Invalid instantiation!\n";
       return;
     }
-    ActiveVersionID = Inst.ID;
     Instantiations[Inst.ID] = std::move(Inst);
+    ActiveVersionID = Inst.ID;
   }
 
   TunedCodeVersion *getCurrentBest() {
@@ -182,7 +182,7 @@ struct JITTemplateInstantiation {
   // Holds information that is needed for recompilation/reoptimization
   JITContext Context;
 
-  ConfigEvalRequest Request;
+  ConfigEval Request;
 
   // Holds a list of instantiations
   llvm::DenseMap<VersionID, TunedCodeVersion> Instantiations;
@@ -193,7 +193,6 @@ struct JITTemplateInstantiation {
 
   VersionID nextVersionID() { return VersionCounter++; }
 
-
 private:
   VersionID VersionCounter{InvalidID + 1};
 };
@@ -201,31 +200,39 @@ private:
 class TunableArgList {
 public:
   TunableArgList(llvm::SmallVector<TemplateArgument, 8> BaseArgs)
-      : BaseArgs(std::move(BaseArgs)) {}
+      : BaseArgs(std::move(BaseArgs)), Space(std::make_unique<SearchSpace>()) {}
 
   TunableArgList(const TunableArgList &) = delete;
   TunableArgList &operator=(const TunableArgList &) = delete;
 
   TunableArgList(TunableArgList &&) = default;
 
-  void add(std::unique_ptr<TemplateArgKnob> Knob) {
-    unsigned Idx = Knob->getArgIndex();
-    Knobs[Idx] = std::move(Knob);
-    TAKnobSet.add(Knobs[Idx].get());
+  void add(TunableNTTA TA) {
+    unsigned Idx = TA.Index;
+    Space->addDim(std::move(TA.Param));
+    TunableDimensions[Idx] = Space->getNumDimensions() - 1;
   }
 
-  KnobSet getKnobSet() { return TAKnobSet; }
 
-  bool isTunable() { return TAKnobSet.count() > 0; }
+  SearchSpace& getSearchSpace() {
+    return *Space;
+  }
+
+  bool isTunable() { return Space->getNumDimensions() > 0; }
 
   llvm::SmallVector<TemplateArgument, 8>
-  getArgsForConfig(ASTContext &Ctx, const KnobConfig &Cfg) {
+  getArgsForConfig(ASTContext &Ctx, const ParamConfig& Cfg) {
     llvm::SmallVector<TemplateArgument, 8> Args(BaseArgs);
-    for (auto &It : Knobs) {
+    for (auto &It : TunableDimensions) {
       unsigned Idx = It.first;
-      auto Val = It.second->getVal(Cfg);
-      APSInt APVal(32, Val >= 0);
-      APVal = Val;
+      auto& Dim = Space->getDim(It.second);
+      auto Val = Cfg[It.second];
+      if (!Val.getIntVal()) {
+        report_fatal_error("Expected int value");
+      }
+      auto IntVal = cantFail(Val.getIntVal());
+      APSInt APVal(32, IntVal >= 0);
+      APVal = IntVal;
       Args[Idx] = TemplateArgument(Ctx, APVal,
                                    Args[Idx].getNonTypeTemplateArgumentType());
     }
@@ -234,60 +241,17 @@ public:
 
 private:
   llvm::SmallVector<TemplateArgument, 8> BaseArgs;
-  llvm::DenseMap<unsigned, std::unique_ptr<TemplateArgKnob>> Knobs;
-  KnobSet TAKnobSet;
+
+  std::unique_ptr<SearchSpace> Space;
+
+  // Maps from parameter index to the dimension in the search space.
+  llvm::DenseMap<unsigned, unsigned> TunableDimensions;
 };
 
 class BilevelTuningPolicy {
 public:
   bool shouldChangeBaseParams(JITTemplateInstantiation &CurrentInst) {
     return CurrentInst.Instantiations.size() >= 5;
-  }
-};
-
-struct ConfigMapInfo {
-  static inline KnobConfig getEmptyKey() {
-    auto Cfg = KnobConfig();
-    Cfg.IntCfg[InvalidKnobID] = DenseMapInfo<int>::getEmptyKey();
-    return Cfg;
-  }
-
-  static inline KnobConfig getTombstoneKey() {
-    auto Cfg = KnobConfig();
-    Cfg.IntCfg[InvalidKnobID] = DenseMapInfo<int>::getTombstoneKey();
-    return Cfg;
-  }
-
-  static unsigned getHashValue(const KnobConfig &Cfg) {
-    using llvm::hash_code;
-    using llvm::hash_combine;
-    using llvm::hash_combine_range;
-
-    // TODO: This is painfully inefficient. Check if it's worth to optimize.
-    std::vector<int> Keys(Cfg.IntCfg.size());
-    for (auto It : Cfg.IntCfg) {
-      Keys.push_back(It.first);
-    }
-    std::sort(Keys.begin(), Keys.end());
-    hash_code h(1);
-    for (auto Key : Keys) {
-      h = hash_combine(Key, Cfg.IntCfg.find(Key)->second);
-    }
-
-    return (unsigned)h;
-  }
-
-  static bool isEqual(const KnobConfig &LHS,
-                      const KnobConfig &RHS) {
-    if (LHS.getNumDimensions() != RHS.getNumDimensions())
-      return false;
-    for (auto It : LHS.IntCfg) {
-      auto It2 = RHS.IntCfg.find(It.first);
-      if (It2 == RHS.IntCfg.end() || It.second != It2->second)
-        return false;
-    }
-    return true;
-    // TODO: This is just checking the integer data
   }
 };
 
@@ -305,10 +269,10 @@ struct TemplateTuningData {
   BilevelTuningPolicy Policy;
 
   // TODO: Change to another key type?
-  llvm::DenseMap<KnobConfig, JITTemplateInstantiation, ConfigMapInfo>
+  llvm::DenseMap<HashableConfig, JITTemplateInstantiation, ParamConfigMapInfo>
       Specializations;
 
-  KnobConfig ActiveConfig;
+  ParamConfig ActiveConfig;
   bool Initialized;
 
   TemplateTuningData(CompilerData &CD, unsigned Idx,
@@ -328,18 +292,26 @@ struct TemplateTuningData {
                      Policy.shouldChangeBaseParams(TemplateInst);
     }
     if (ShouldChange) {
-      auto EvalRequest = TATuner->generateNextConfig();
-      ActiveConfig = EvalRequest.Cfg;
 
-      auto Set = TunableArgs.getKnobSet();
+      ConfigEval Eval;
+      if (TATuner) {
+        Eval = TATuner->generateNextConfig();
+      } else {
+        // No tunable args
+        Eval = ConfigEval();
+      }
+      ActiveConfig = Eval.Config;
+
+//      auto Set = TunableArgs.getKnobSet();
       JIT_DEBUG(dbgs() << "Selected specialization:\n");
-      JIT_DEBUG(KnobState(Set, ActiveConfig).dump());
+      // TODO
+//      JIT_DEBUG(KnobState(Set, ActiveConfig).dump());
 
       Initialized = true;
       auto It = Specializations.find(ActiveConfig);
       if (It == Specializations.end()) {
         auto TAs = TunableArgs.getArgsForConfig(*CD.Ctx, ActiveConfig);
-        Specializations[ActiveConfig] = instantiate(TAs, EvalRequest);
+        Specializations[ActiveConfig] = instantiate(TAs, Eval);
       }
 
     }
@@ -350,15 +322,15 @@ struct TemplateTuningData {
     return TunableArgs.isTunable();
   }
 
-  JITTemplateInstantiation* getSpecialization(const KnobConfig& Cfg) {
+  JITTemplateInstantiation* getSpecialization(const ParamConfig& Cfg) {
     auto It = Specializations.find(Cfg);
     if (It != Specializations.end())
       return &It->second;
     return nullptr;
   }
 
-  llvm::Optional<std::pair<KnobConfig, JITTemplateInstantiation*>> computeOverallBest() {
-    std::pair<KnobConfig, JITTemplateInstantiation*> CurrentBest;
+  llvm::Optional<std::pair<ParamConfig, JITTemplateInstantiation*>> computeOverallBest() {
+    std::pair<ParamConfig, JITTemplateInstantiation*> CurrentBest;
     TimingStats BestStats;
     for (auto& It : Specializations) {
       auto& Inst = It.second;
@@ -366,10 +338,10 @@ struct TemplateTuningData {
       auto Stats = Inst.getCurrentBest()->updateStats();
       if (Stats.betterThan(BestStats)) {
         BestStats = Stats;
-        CurrentBest = {It.first, &Inst};
+        CurrentBest = {It.first.get(), &Inst};
       }
     }
-    if (BestStats.Valid()) {
+    if (BestStats.valid()) {
       return CurrentBest;
     }
     return {};
@@ -377,15 +349,13 @@ struct TemplateTuningData {
 
 private:
   JITTemplateInstantiation instantiate(TAList TAs,
-                                       ConfigEvalRequest Request) {
+                                       ConfigEval Request) {
     //    for (auto& TA: TAs) {
     //      TA.dump();
     //      errs() << ", ";
     //    }
     TemplateInstantiationHelper InstHelper(CD, Idx);
     auto Name = InstHelper.instantiate(TAs);
-
-
 
     auto Mod = CD.createModule(Name);
 
@@ -402,10 +372,12 @@ private:
     // TODO: Make this configurable
 #define TRANSFORM_TREE_OPT
 #ifdef TRANSFORM_TREE_OPT
+    bool AllowRegression = util::checkEnv("CJ_ALLOW_REGRESSION", "1");
+    outs() << "Autotuner option: regression allowed - " << AllowRegression << "\n";
     auto Opt = std::make_unique<TransformTreeOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
         *CD.TargetOpts, *CD.Invocation->getLangOpts(),
-        CD.CJ->getTargetMachine());
+        CD.CJ->getTargetMachine(), AllowRegression);
 #else
     auto Opt = std::make_unique<StaticOptimizer>(
         *CD.Diagnostics, *CD.HSOpts, CD.Invocation->getCodeGenOpts(),
@@ -432,6 +404,7 @@ public:
   InstData resolve(const ThisInstInfo &Inst, unsigned Idx) override;
 
   void* finishTuning(const InstInfo& Inst);
+  bool isFinished(const InstInfo &Inst);
 
 private:
   llvm::DenseMap<InstInfo, std::unique_ptr<TemplateTuningData>, InstMapInfo>

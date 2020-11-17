@@ -77,7 +77,7 @@ DereferenceIterator<Iterator> dereference_iterator(Iterator t) {
 }  // namespace util
 
 namespace MDTags {
-extern const char *LOOP_ID_TAG;
+//extern const char *LOOP_ID_TAG;
 extern const char* DISABLE_NONFORCED;
 extern const char *TILE_ENABLE_TAG;
 extern const char *TILE_DEPTH_TAG;
@@ -91,7 +91,7 @@ extern const char *INTERCHANGE_PERMUTATION_TAG;
 extern const char *INTERCHANGE_FOLLOWUP_TAG;
 extern const char *UNROLL_AND_JAM_ENABLE_TAG;
 extern const char *UNROLL_AND_JAM_COUNT_TAG;
-extern const char *UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG;
+extern const char *UNROLL_AND_JAM_FOLLOWUP_UNROLLED_TAG;
 extern const char *UNROLL_ENABLE_TAG;
 extern const char *UNROLL_COUNT_TAG;
 extern const char *UNROLL_FULL_TAG;
@@ -121,7 +121,7 @@ using IntListAttr = MDAttr<SmallVector<int, 4>>;
 using BoolAttr = MDAttr<bool>;
 using StringAttr = MDAttr<SmallString<8>>;
 using FollowupAttr = MDAttr<LoopNode*>;
-using TagAttr = MDAttr<nullptr_t>; // TODO: this is dumb
+using TagAttr = MDAttr<std::nullptr_t>; // TODO: this is dumb
 
 
 
@@ -132,7 +132,7 @@ public:
   using node_iterator = util::MapValueIterator<StringMap<LoopNodePtr>::iterator>;
   using const_node_iterator = util::MapValueIterator<StringMap<LoopNodePtr>::const_iterator>;
 
-  LoopTransformTree() {
+  LoopTransformTree(StringRef Name): Name(Name) {
   }
 
   LoopTransformTree(const LoopTransformTree&) = delete;
@@ -146,6 +146,10 @@ public:
     return *this;
   }
 
+  StringRef getName() const {
+    return Name;
+  }
+
   LoopNode* makeVirtualNode();
 
   LoopNode* makeNode(std::string Name = "");
@@ -154,6 +158,8 @@ public:
     auto It = Nodes.find(Name);
     return It == Nodes.end() ? nullptr : It->second.get();
   }
+
+  LoopNode* getEffectiveSuccessorRoot() const;
 
   LoopNode* getRoot() const {
     return Root;
@@ -195,6 +201,7 @@ private:
   LoopNode* cloneNode(LoopNode* Node);
 
 private:
+  SmallString<16> Name;
   LoopNode* Root{nullptr};
   StringMap<LoopNodePtr> Nodes;
   unsigned NodeCount{0};
@@ -260,6 +267,14 @@ public:
     return Tree;
   }
 
+  unsigned getEffectiveUnrollFactor() const {
+    return EffectiveUnrollFactor;
+  }
+
+  void setUnrolledByFactor(unsigned k) {
+    this->EffectiveUnrollFactor *= k;
+  }
+
   unsigned getFlags() const {
     return Flags;
   }
@@ -272,7 +287,7 @@ public:
     Flags = 0;
   }
 
-  bool isSet(unsigned Flag) {
+  bool isSet(unsigned Flag) const {
     return (bool) (Flags & Flag);
   }
 
@@ -299,6 +314,10 @@ public:
   }
 
   LoopNode* getSuccessor() {
+    return Successor;
+  }
+
+  const LoopNode* getSuccessor() const {
     return Successor;
   }
 
@@ -332,6 +351,17 @@ public:
 
   LoopNode* getFirstSubLoop() {
     return SubLoops.empty() ? nullptr : SubLoops.front();
+  }
+
+  /**
+   * Returns the first innermost loop (last successor).
+   * @return
+   */
+  LoopNode* getInnermostLoop() {
+    auto* Succ = getLastSuccessor();
+    if (!Succ->hasSubLoop())
+      return Succ;
+    return Succ->getFirstSubLoop()->getInnermostLoop();
   }
 
   llvm::iterator_range<LoopList::iterator> subLoops() {
@@ -406,7 +436,7 @@ public:
     return Attrs;
   }
 
-  bool hasInterchangeBarrier() {
+  bool hasInterchangeBarrier() const {
     return InterchangeBarrier;
   }
 
@@ -426,6 +456,7 @@ private:
   AttributeBag Attrs;
   TripCountInfo TCI;
   bool InterchangeBarrier{false};
+  unsigned EffectiveUnrollFactor{1};
 };
 
 

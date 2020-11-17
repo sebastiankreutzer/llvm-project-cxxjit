@@ -308,8 +308,12 @@ inline LogLevel loadDebugLvlEnv() {
   unsigned Lvl = LOG_ERROR;
   if (DebugStr) {
     int StrInt = std::atoi(DebugStr);
-    if (StrInt >= 0 && StrInt <= LOG_DEBUG)
+    if (StrInt >= 0 && StrInt <= LOG_DEBUG) {
       Lvl = StrInt;
+      outs() << "[JIT] Debug level is " << Lvl << "\n";
+    } else {
+      outs () << "[JIT] Invalid debug level: " << DebugStr << "\n";
+    }
   }
   return static_cast<LogLevel>(Lvl);
 }
@@ -1163,6 +1167,15 @@ void CompilerData::makeDefsAvailable(std::unique_ptr<llvm::Module> NewMod) {
     fatal();
 }
 
+bool isFastLookupSet(const InstInfo& Inst) {
+  llvm::sys::ScopedLock Guard(IMutex);
+  auto Entry = Instantiations.find(Inst);
+  if (Entry != Instantiations.end()) {
+    return Entry->second.UseFastLookup;
+  }
+  return false;
+}
+
 void updateActiveInstantiation(const InstInfo& Inst, InstData Data) {
   llvm::sys::ScopedLock Guard(IMutex);
   Instantiations[Inst] = std::move(Data);
@@ -1232,7 +1245,7 @@ extern "C"
       static const auto ActiveDriverType = loadDriverTypeEnv();
       switch(ActiveDriverType) {
         case DriverType::TUNER:
-          JIT_INFO(llvm::dbgs() << "JIT Tuning enabled\n");
+          JIT_INFO(llvm::outs() << "JIT Tuning enabled\n");
           TUD.CompilerDriver = std::make_unique<TunerDriver>(*CD);
           break;
         case DriverType::FAST:

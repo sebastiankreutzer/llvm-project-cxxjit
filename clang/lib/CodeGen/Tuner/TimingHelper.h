@@ -37,6 +37,7 @@ class TimingHelper {
   std::string VarNGlobalName;
 
   llvm::Value *insertRDTSCP(llvm::IRBuilder<> &IRB);
+  llvm::Value *insertReadCycleCounter(llvm::IRBuilder<> &IRB);
 
   llvm::Value *instrumentPreCall(llvm::IRBuilder<> &IRB);
 

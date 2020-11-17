@@ -57,7 +57,7 @@ void printReport(JITTemplateInstantiation &TemplateInst) {
       continue;
     }
     auto Stats = Inst.updateStats();
-    if (!Stats.Valid()) {
+    if (!Stats.valid()) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
@@ -109,10 +109,6 @@ void printShortReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) 
   OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
   OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
 
-  auto TAKnobs = Data.TunableArgs.getKnobSet();
-  KnobState(TAKnobs, OverallBest.getValue().first).dump();
-  KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
-
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 
 }
@@ -153,7 +149,7 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
         continue;
       }
       auto Stats = Inst.updateStats();
-      if (!Stats.Valid()) {
+      if (!Stats.valid()) {
         OS << "No data collected\n";
         return;
       }
@@ -177,7 +173,7 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 
   if (OverallBest) {
-    auto BestSpecialization = OverallBest.getValue().second;
+    auto& BestSpecialization = OverallBest.getValue().second;
     auto BestVersion = BestSpecialization->getCurrentBest();
     auto BestStats = BestVersion->updateStats();
     auto& BaseLine = BestSpecialization->Instantiations[1];
@@ -190,9 +186,6 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
     OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     OS << "Found configuration: \n";
-    auto TAKnobs = Data.TunableArgs.getKnobSet();
-    KnobState(TAKnobs, OverallBest.getValue().first).dump();
-    KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
     OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
   }
 }
@@ -225,7 +218,7 @@ void printReport(TemplateTuningData &Data) {
       continue;
     }
     auto Stats = Version.updateStats();
-    if (!Stats.Valid()) {
+    if (!Stats.valid()) {
       outs() << FName.str() << " No data collected\n";
       return;
     }
@@ -254,14 +247,14 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     JIT_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
 
     // TODO: move to fdata (?)
-    SmallVector<std::unique_ptr<TemplateArgKnob>, 4> TAKnobs;
+    SmallVector<TunableNTTA, 4> TunableNTTAs;
 
     llvm::SmallVector<TemplateArgument, 8> BaseArgs;
 
     TemplateInstantiationHelper InstHelper(CD, Idx);
     InstHelper.processTemplateArgs(
         Inst.NTTPValues, Inst.TypeStrings, BaseArgs,
-        [this, &TAKnobs](QualType CanonType, unsigned Pos,
+        [this, &TunableNTTAs](QualType CanonType, unsigned Pos,
                          const SmallVectorImpl<uint64_t> &IntWords)
             -> Optional<TemplateArgument> {
           // errs() << "Instantiating NTTA with " << Size << " bytes: \n";
@@ -289,8 +282,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
             llvm::APSInt SIntVal(32); // TODO allow varying bit widths
             SIntVal = Range.Min;
 
-            TAKnobs.push_back(std::make_unique<TemplateArgKnob>(
-                Pos, Range.Min, Range.Max, Range.Min));
+            TunableNTTAs.emplace_back(Pos, Range.Min, Range.Max, Range.Min);
 
             return TemplateArgument(
                 *CD.Ctx, SIntVal,
@@ -301,16 +293,17 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
           return {};
         });
 
-    JIT_INFO(dbgs() << "Looking for tunable template arguments..." << "\n");
+    JIT_INFO(outs() << "Looking for tunable template arguments..." << "\n");
     TunableArgList TAL(BaseArgs);
-    for (auto &Knob : TAKnobs) {
-      JIT_INFO(dbgs() << "Template argument marked tunable: "
-                       << Knob->getArgIndex() << "\n");
-      TAL.add(std::move(Knob));
+    for (auto& NTTA : TunableNTTAs) {
+      TAL.add(NTTA);
     }
 
-    KnobSet TAKnobSet = TAL.getKnobSet();
-    std::unique_ptr<Tuner> TATuner = createTuner(loadSearchAlgoEnv(), TAKnobSet);
+    std::unique_ptr<Tuner> TATuner;
+    if (TAL.isTunable()) {
+      TATuner = createTuner(loadSearchAlgoEnv(), TAL.getSearchSpace());
+    }
+
     auto NewTuningData = std::make_unique<TemplateTuningData>(
         CD, Idx, std::move(TATuner), std::move(TAL));
     TTD = NewTuningData.get();
@@ -360,19 +353,26 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
 
   if (TemplateInst.Context.Opt->isDone()) {
-    JIT_INFO(dbgs() << "Tuner has finished!\n");
     auto Best = TemplateInst.getCurrentBest();
     auto& BaseLine = TemplateInst.Instantiations[1];
-    outs() << "Tuning done: " << FName;
-    outs() << formatv("Speedup: {0:f2}\n", BaseLine.updateStats().Mean / Best->updateStats().Mean);
+    auto BaselineStats = BaseLine.updateStats();
+    auto BestStats = Best->updateStats();
+    JIT_INFO(outs() << "Tuning done: " << FName << "\n");
+    JIT_INFO(outs() << formatv("Speedup: {0:f2}\n", BaselineStats.Mean / BestStats.Mean));
+    auto* ReturnPtr = Best->FImplPtr;
+    if (BaselineStats.betterThan(BestStats)) {
+      ReturnPtr = BaseLine.FImplPtr;
+      JIT_INFO(outs() << "Autotuner was unable to produce speedups.\n");
+    }
 
     if (!TTD->hasTunableArgs()) {
       // TODO: Serialization only available for non-tuned template args
       outs() << "Serializing...\n";
       serialize(*Best, TemplateInst.Context.getMCFilename());
     }
+
     // Only enable fast lookup if template arguments are not tuned.
-    return {Best->FPtr, !TTD->hasTunableArgs()};
+    return {ReturnPtr, !TTD->hasTunableArgs()};
   }
 
   if (TemplateInst.Context.Emitted && !TemplateInst.Instantiations.empty()) {
@@ -385,7 +385,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     const double MaxRelStdErr = 0.05;
 
     bool Recompile = false;
-    if (Stats.Valid()) {
+    if (Stats.valid()) {
       // Recompile if the function has been called enough times and the relative
       // standard error of mean is below a certain threshold.
       Recompile =
@@ -397,8 +397,8 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     JIT_DEBUG(dbgs() << "Recompiling " << TemplateInst.Context.DeclName
                      << "\n");
-    JIT_REPORT({outs() << "Tuner report:\n"; printFullReport(*TTD, outs());});
-    JIT_INFO({if (clang::jit::LogLvl < LOG_REPORT) {outs() << "Tuner report:\n"; printShortReport(*TTD, outs());};});
+    //JIT_REPORT({outs() << "Tuner report:\n"; printFullReport(*TTD, outs());});
+    //JIT_INFO({if (clang::jit::LogLvl < LOG_REPORT) {outs() << "Tuner report:\n"; printShortReport(*TTD, outs());};});
   }
 
   auto Mod = llvm::CloneModule(*TemplateInst.Context.Mod);
@@ -418,19 +418,25 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   MemBufferPtr MCBuffer;
   auto Key = CD.CJ->addModule(std::move(Mod), &MCBuffer);
 
+  auto lookupFunction = [&](llvm::StringRef Name) -> void* {
+    auto SpecSymbol = CD.CJ->findSymbol(Name);
+    assert(SpecSymbol && "Can't find the specialization just generated?");
+
+    if (auto Err = SpecSymbol.takeError()) {
+      errs() << "JIT Error: " << Err << "\n";
+      fatal();
+    }
+
+    if (!SpecSymbol.getAddress())
+      fatal();
+
+    return (void *)llvm::cantFail(SpecSymbol.getAddress());
+  };
+
   // Lookup the address of the generated function.
-  auto SpecSymbol = CD.CJ->findSymbol(FName.str());
-  assert(SpecSymbol && "Can't find the specialization just generated?");
-
-  if (auto Err = SpecSymbol.takeError()) {
-    errs() << "JIT Error: " << Err << "\n";
-    fatal();
-  }
-
-  if (!SpecSymbol.getAddress())
-    fatal();
-
-  auto *FPtr = (void *)llvm::cantFail(SpecSymbol.getAddress());
+  auto *FPtr = lookupFunction(FName.str());
+  // Lookup the non-timed function
+  auto *FImplPtr = lookupFunction(TimingHelper::getImplName(FName.str()));
 
   // Look up addresses of timing globals.
   auto *CJPtr = CD.CJ.get();
@@ -451,7 +457,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   PtrToInstInfo.insert({FPtr, PtrData(this, InstInfo(Inst.InstKey, Inst.NTTPValues, Inst.NTTPValuesSize,
                                  Inst.TypeStrings, Inst.TypeStringsCnt))});
 
-  TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, Globals,
+  TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, FImplPtr, Globals,
                            std::move(EvalRequest), std::move(MCBuffer));
   TemplateInst.add(std::move(Version));
   TemplateInst.Context.Emitted =
@@ -477,10 +483,27 @@ void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
     llvm::errs() << "No optimized instantiation found\n";
     return nullptr;
   }
-  InstData IData = {BestVersion->FPtr, true};
+
+  // Select the non-timed version of the function.
+  InstData IData = {BestVersion->FImplPtr, true};
   updateActiveInstantiation(Inst, IData);
-  JIT_INFO(dbgs() << "Finished tuning: " << Inst.Key << "\n");
+  JIT_INFO(outs() << "Finished tuning: " << Inst.Key << "\n");
   return IData.FPtr;
+}
+
+bool TunerDriver::isFinished(const clang::jit::InstInfo &Inst) {
+  auto It = TuningDataMap.find(Inst);
+  if (It == TuningDataMap.end()) {
+    llvm::errs() << "Could not find tuning data for instantiation\n";
+    return false;
+  }
+  auto& TuningData = It->second;
+  if (TuningData->hasTunableArgs())
+    return false; // TODO: Needs to be properly checked for parameter tuning
+  if (TuningData->Specializations.empty())
+    return false;
+   auto& Opt = TuningData->Specializations[TuningData->ActiveConfig].Context.Opt;
+   return Opt->isDone();
 }
 
 
@@ -491,7 +514,18 @@ void* finish_tuning(void* FPtr) {
     auto& Driver = PtrData.Driver;
     return Driver->finishTuning(PtrData.Inst);
   }
+  llvm::errs() << "finish tuning: Could not find instantiation data\n";
   return nullptr;
+}
+
+bool is_finished(void* FPtr) {
+  auto It = PtrToInstInfo.find(FPtr);
+  if (It != PtrToInstInfo.end()) {
+    auto& PtrData = It->second;
+    return PtrData.Driver->isFinished(PtrData.Inst);
+  }
+//  llvm::errs() << "Could not find instantiation data\n";
+  return true;
 }
 
 } // namespace jit

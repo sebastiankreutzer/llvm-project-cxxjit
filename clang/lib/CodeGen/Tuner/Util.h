@@ -21,6 +21,25 @@ inline unsigned genSeed() {
       std::chrono::system_clock::now().time_since_epoch().count());
 }
 
+/**
+ * Check if the environment variable with the given name is set to the expected value.
+ *
+ * @param Name
+ * @param Expected If empty, checks if any value is set.
+ * @return
+ */
+inline bool checkEnv(const char* Name, const char* Expected) {
+  auto EnvStr = std::getenv(Name);
+  if (EnvStr) {
+    if (!Expected || !Expected[0]) {
+      return true;
+    }
+    if (std::strcmp(EnvStr, Expected) == 0)
+      return true;
+  }
+  return false;
+}
+
 inline void dumpModule(const llvm::Module& M, llvm::StringRef Status) {
   llvm::dbgs() << "*****************************\n";
   llvm::dbgs() << Status << "\n";

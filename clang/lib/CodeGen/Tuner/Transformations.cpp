@@ -2,10 +2,11 @@
 // Created by sebastian on 20.12.19.
 //
 
+#include <algorithm>
+
 #include "LoopTransformTreeTraits.h"
 #include "llvm/Support/GraphWriter.h"
 #include "Transformations.h"
-#include "SimpleKnobs.h"
 #include "Debug.h"
 
 namespace clang {
@@ -20,21 +21,42 @@ void findUnrollTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformatio
   // TODO: Right now, each loop unroll is treated as a single transformation.
   //  It might be better to tune them together, will have to try that out.
 
+  // TODO: Unrolling only on last-level loop sensible?
+
   LoopNode* Node = Root->getLastSuccessor();
   // Avoid unrolling floor loops from preceding tiling transformation, as well as previously unrolled loops
-  if (! (Node->isSetInPredecessors(LoopNode::TILED_FLOOR) || Node->isSetInPredecessors(LoopNode::UNROLLED))) {
+  if (!Node->hasSubLoop() && !(Node->isSetInPredecessors(LoopNode::TILED_FLOOR) || Node->isSetInPredecessors(LoopNode::UNROLLED))) {
     LoopTransformation Trans;
     Trans.Root = Node->getLoopName();
     Trans.Kind = LoopTransformation::UNROLL;
     auto Name = ("Loop " + Node->getLoopName() + " - Unroll factor").str();
     auto& TTI = Node->getTripCountInfo();
-    auto Min = transform_defaults::UNROLL_MIN;
-    // Avoid extremely hight unroll counts
-    auto Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX) : transform_defaults::UNROLL_MAX;
-    auto Dflt = std::max(Min, Max / 4);
-    IntKnob* UnrollFactor = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(UnrollFactor, "unroll");
-    Transformations.push_back(Trans);
+
+    // Only proceed if the trip count is above 1
+    if (!TTI.hasInfo() || TTI.TripCount > 1) {
+      unsigned Min = 2;//transform_defaults::UNROLL_MIN;
+      // Avoid extremely high unroll counts
+      unsigned Max = TTI.hasInfo() ? std::min(TTI.TripCount, transform_defaults::UNROLL_MAX)
+                               : transform_defaults::UNROLL_MAX;
+
+      // If the loop has already been jammed, we don't want to unroll with a high factor.
+      auto PrevUnrollFactor = Node->getEffectiveUnrollFactor();
+      Max = std::max(Min, Max / PrevUnrollFactor);
+
+
+      auto Dflt = std::max(Min, Max / 4);
+
+
+
+      if (Max == Min) {
+        assert(Min == Max);
+        Trans.IntParams.push_back(0);
+        Trans.FixedParams.push_back(Min);
+      } else {
+        Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+        Transformations.push_back(Trans);
+      }
+    }
   }
   for (auto& SL : Node->subLoops()) {
     findUnrollTransformations(SL, Transformations);
@@ -67,7 +89,13 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
   if (!Node->hasSubLoop())
     return;
 
+  // Don't apply unroll-and-jam after unroll
+  if (Node->getInnermostLoop()->isSetInPredecessors(LoopNode::UNROLLED)) {
+    return;
+  }
+
   unsigned Depth = Node->getRelativeMaxDepth();
+
   LoopTransformation Trans;
   Trans.Root = Node->getLoopName();
   Trans.Kind = LoopTransformation::UNROLL_AND_JAM;
@@ -87,6 +115,13 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
     auto& TTI = Node->getTripCountInfo();
     auto Min = transform_defaults::UNROLL_AND_JAM_MIN;
 
+    // If only one unrolled loop, set minimal factor to 2.
+    if (Depth == 2) {
+      if (TTI.hasInfo() && TTI.TripCount == 1) {
+        return;
+      }
+      Min = 2;
+    }
 
     int Level = Depth - 1 - i;
     auto LevelMax = transform_defaults::UNROLL_AND_JAM_MAX;
@@ -99,11 +134,19 @@ void findUnrollAndJamTransformations(LoopNode* Root, SmallVectorImpl<LoopTransfo
     auto Max = TTI.hasInfo() ? std::min(TTI.TripCount, LevelMax) : LevelMax;
 
     auto Dflt = std::max(Min, Max / 4);
-    IntKnob* UnrollFactor = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(UnrollFactor, "unroll");
+
+    if (Min == Max) {
+      assert(Min == Max);
+      Trans.IntParams.push_back(i);
+      Trans.FixedParams.push_back(Min);
+    } else {
+      Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+    }
+
     Node = Node->getFirstSubLoop();
   }
-  Transformations.push_back(Trans);
+  if (!Trans.Space.empty())
+    Transformations.push_back(Trans);
 }
 
 static SmallVector<SmallVector<int, 4>, 4> listPermutations(ArrayRef<int> Vals) {
@@ -158,8 +201,14 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
   for (unsigned i = 0; i < Depth; i++) {
     assert(Node && "Node is null");
     Node = Node->getLastSuccessor();
-    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED))
+    // Do not allow interchaning multiple times or interchanging already unrolled loops.
+    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED) || Node->isSetInPredecessors(LoopNode::UNROLLED)) {
+      // Try to use the next subloop as base.
+      // This is necessary if we want to allow interchaging of tile loops, even if the original loops have been interchanged before.
+      if (Node->hasSubLoop())
+        findInterchangeTransformationsSeparate(Node->getFirstSubLoop(), Transformations);
       return;
+    }
     Indices.push_back(i);
     if (Node->hasInterchangeBarrier())
       Barrier = i;
@@ -175,12 +224,19 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
     return false;
   };
 
+  auto isIdentity = [](ArrayRef<int> Perm) -> bool {
+    for (int I = 0; I < Perm.size(); I++) {
+      if (Perm[I] != I)
+        return false;
+    }
+    return true;
+  };
+
   auto Perms = listPermutations(Indices);
   assert(Perms.size() == factorial(Depth) && "Wrong number of permutations");
   auto NumValid = 0;
   for (auto& Perm : Perms) {
-    if (violatesConstraints(Perm)) {
-
+    if (violatesConstraints(Perm) || isIdentity(Perm)) {
       continue;
     }
 //    outs() << "Found permutation: " << "\n";
@@ -198,38 +254,38 @@ void findInterchangeTransformationsSeparate(LoopNode* Root, SmallVectorImpl<Loop
   //outs() << "Found " << NumValid << " valid permutations\n";
 }
 
-void findInterchangeTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation> & Transformations) {
-  Root = Root->getLastSuccessor();
-
-  if (!Root->hasSubLoop())
-    return;
-
-  if (!Root->isTightlyNested()) {
-    for (auto& SubLoop : Root->subLoops()) {
-      findInterchangeTransformations(&*SubLoop, Transformations);
-    }
-    return;
-  }
-
-  unsigned Depth = Root->getRelativeMaxDepth();
-  LoopTransformation Trans;
-  Trans.Root = Root->getLoopName();
-  Trans.Kind = LoopTransformation::INTERCHANGE;
-  LoopNode* Node = Root;
-  for (unsigned i = 1; i <= Depth; i++) {
-    assert(Node && "Node is null");
-    Node = Node->getLastSuccessor();
-    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED))
-      return;
-    auto Name = ("Loop " + Node->getLoopName() + " - Interchange priority").str();
-    // TODO: Interchange permutation is a structural transformation, should not be controlled with knobs!
-    //  Instead enumerate all legal permutations, respecting dependencies induced by previous transformations
-    IntKnob* InterchangePriority = new IntKnob(1, 256, 1, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(InterchangePriority, "interchange");
-    Node = Node->getFirstSubLoop();
-  }
-  Transformations.push_back(std::move(Trans));
-}
+//void findInterchangeTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation> & Transformations) {
+//  Root = Root->getLastSuccessor();
+//
+//  if (!Root->hasSubLoop())
+//    return;
+//
+//  if (!Root->isTightlyNested()) {
+//    for (auto& SubLoop : Root->subLoops()) {
+//      findInterchangeTransformations(&*SubLoop, Transformations);
+//    }
+//    return;
+//  }
+//
+//  unsigned Depth = Root->getRelativeMaxDepth();
+//  LoopTransformation Trans;
+//  Trans.Root = Root->getLoopName();
+//  Trans.Kind = LoopTransformation::INTERCHANGE;
+//  LoopNode* Node = Root;
+//  for (unsigned i = 1; i <= Depth; i++) {
+//    assert(Node && "Node is null");
+//    Node = Node->getLastSuccessor();
+//    if (Node->isSetInPredecessors(LoopNode::INTERCHANGED))
+//      return;
+//    auto Name = ("Loop " + Node->getLoopName() + " - Interchange priority").str();
+//    // TODO: Interchange permutation is a structural transformation, should not be controlled with knobs!
+//    //  Instead enumerate all legal permutations, respecting dependencies induced by previous transformations
+//    IntKnob* InterchangePriority = new IntKnob(1, 256, 1, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
+//    Trans.addKnob(InterchangePriority, "interchange");
+//    Node = Node->getFirstSubLoop();
+//  }
+//  Transformations.push_back(std::move(Trans));
+//}
 
 
 void findTilingTransformations(LoopNode *Root, SmallVectorImpl<LoopTransformation> &Transformations) {
@@ -252,27 +308,53 @@ void findTilingTransformations(LoopNode *Root, SmallVectorImpl<LoopTransformatio
       return;
     auto Name = ("Loop " + Node->getLoopName() + " - Tile Size").str();
     auto& TTI = Node->getTripCountInfo();
-    auto Min = transform_defaults::TILE_MIN;
-    auto Max = TTI.hasInfo() ? TTI.TripCount / 2 : transform_defaults::TILE_MAX;
-    auto Dflt = std::max(Min, Max / 4);
-    IntKnob* TilingSize = new IntKnob(Min, Max, Dflt, std::move(Name)); // TODO: Heuristic for max value (also memory leak)
-    Trans.addKnob(TilingSize, "size");
+
+    // A tile size of one disables tiling for the corresponding loop.
+
+    unsigned Min = transform_defaults::TILE_MIN;
+    unsigned Max = Min;
+    unsigned Dflt = Min;
+
+    if (TTI.hasInfo() && TTI.TripCount >= transform_defaults::TILE_MIN &&
+        TTI.TripCount <= transform_defaults::TILE_MAX) {
+      Max = TTI.TripCount - (TTI.TripCount / 2);
+      Dflt = std::max(Min, Max / 4);
+//      if (TTI.IsExact && TTI.TripCount >= transform_defaults::MIN_TILING_TRIP_COUNT) {
+//        Max = TTI.TripCount / 2;
+//        Dflt = std::max(Min, Max / 4);
+//      }
+    } else {
+      // Trip count is unknown.
+      Max = transform_defaults::TILE_MAX;
+      Dflt = transform_defaults::TILE_DFLT;
+    }
+
+    if (Max == transform_defaults::TILE_MIN) {
+      assert(Min == Max);
+      // Save depth and fixed parameter value.
+      Trans.IntParams.push_back(i-1);
+      Trans.FixedParams.push_back(ParamVal(Min));
+    } else {
+      Trans.addSearchDim(SearchDim(Min, Max, Dflt, Name));
+    }
     Node = Node->getFirstSubLoop();
   }
-  Transformations.push_back(std::move(Trans));
+  // Only register the transformation if at least one loop can be tiled.
+  if (!Trans.Space.empty())
+    Transformations.push_back(std::move(Trans));
 }
 
 void findTransformations(LoopNode* Root, SmallVectorImpl<LoopTransformation>& Transformations) {
   findTilingTransformations(Root, Transformations);
   findInterchangeTransformationsSeparate(Root, Transformations);
   findUnrollAndJamTransformations(Root, Transformations);
-  //findUnrollTransformations(Root, Transformations);
+  findUnrollTransformations(Root, Transformations);
 }
 
 SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree *Tree) {
   assert(Tree && "Tree is null");
   SmallVector<LoopTransformation, 4> Transformations;
-  auto Root = Tree->getRoot();
+  auto Root = Tree->getEffectiveSuccessorRoot();
   if (Root) {
     findTransformations(Root, Transformations);
   }
@@ -280,23 +362,47 @@ SmallVector<LoopTransformation, 4> findTransformations(LoopTransformTree *Tree) 
 }
 
 
-void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConfig& Cfg) {
+TransformationResult apply(LoopTransformation& Transformation, LoopTransformTree& Tree, ParamConfig& Cfg) {
+
+  auto FetchFixedAndTunableIntParams = [&Transformation, &Cfg](SmallVectorImpl<unsigned>& Params) {
+    unsigned Depth = Cfg.size() + Transformation.FixedParams.size();
+    assert(Transformation.IntParams.size() == Transformation.FixedParams.size() && "IntParams must store loop indices");
+    auto IndexIt = Transformation.IntParams.begin();
+    auto FixedValIt = Transformation.FixedParams.begin();
+    unsigned TunedDimIndex = 0;
+    for (unsigned I = 0; I < Depth; I++) {
+      if (IndexIt != Transformation.IntParams.end() && *IndexIt == I) {
+        Params.push_back(cantFail((FixedValIt++)->getIntVal()));
+//        outs() << "Fixed param: " << Params.back() << "\n";
+        IndexIt++;
+      } else {
+        Params.push_back(cantFail(Cfg[TunedDimIndex++].getIntVal()));
+      }
+    }
+  };
+
+  auto AllEqualTo = [](ArrayRef<unsigned> Vals, unsigned Val) -> bool {
+    if (Vals.empty())
+      return false;
+    for (auto X : Vals) {
+      if (X != Val)
+        return false;
+    }
+    return true;
+  };
+
   if (Transformation.Kind == LoopTransformation::NONE) {
-    return;
+    return TransformationResult::SUCCESS_IDENTITY;
   }
   auto Root = Tree.getNode(Transformation.Root);
   assert(Root && "Root node of transformation does not exist in tree");
   switch(Transformation.Kind) {
     case LoopTransformation::TILE: {
-      ArrayRef<KnobID> SizeKnobs = Transformation.getKnobs("size");
+
+      // Collect tile sizes from tunable and fixed parameters.
       SmallVector<unsigned, 4> Sizes;
-      for (auto ID : SizeKnobs) {
-        auto Knob = Transformation.Knobs.IntKnobs[ID];
-        assert(Knob);
-        auto Val = Knob->getVal(Cfg);
-        Sizes.push_back(Val);
-        //outs() << "Tile size: " << Knob->getVal(Cfg) << "\n";
-      }
+      FetchFixedAndTunableIntParams(Sizes);
+      auto Depth = Sizes.size();
 
       // FIXME: Polly triggers an assertion when the trip count is a multiple of the tile size.
       //  This is a workaround that should be removed ASAP.
@@ -321,28 +427,16 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConf
 //        }
 //      }
 
-      unsigned Depth = Sizes.size();
+      if (AllEqualTo(Sizes, 1)) {
+        return TransformationResult::SUCCESS_IDENTITY;
+      }
+
+
       assert(Depth > 0);
       applyTiling(Root, Depth, Sizes);
       break;
     }
     case LoopTransformation::INTERCHANGE: {
-//      ArrayRef<KnobID> SizeKnobs = Transformation.getKnobs("interchange");
-//      SmallVector<std::pair<int, int>, 4> Priority;
-//      int i = 0;
-//      for (auto ID : SizeKnobs) {
-//        auto Knob = Transformation.Knobs.IntKnobs[ID];
-//        assert(Knob);
-//        Priority.push_back({i, Knob->getVal(Cfg)});
-//        outs() << "Interchange priority: " << Knob->getVal(Cfg) << "\n";
-//        i++;
-//      }
-//      std::sort(Priority.begin(), Priority.end(), [](auto& LHS, auto& RHS) -> bool {return LHS.second < RHS.second;});
-//
-//      SmallVector<int, 4> Permutation;
-//      for (auto I : Priority) {
-//        Permutation.push_back(I.first);
-//      }
 
       auto Permutation = Transformation.IntParams;
 
@@ -352,32 +446,35 @@ void apply(LoopTransformation& Transformation, LoopTransformTree& Tree, KnobConf
       break;
     }
     case LoopTransformation::UNROLL_AND_JAM: {
-      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
       SmallVector<unsigned, 4> Counts;
-      for (auto ID : CountKnobs) {
-        auto Knob = Transformation.Knobs.IntKnobs[ID];
-        assert(Knob);
-        Counts.push_back(Knob->getVal(Cfg));
-        //outs() << "Unroll(-and-jam) count: " << Knob->getVal(Cfg) << "\n";
+      // Collect unroll counts from tunable and fixed parameters.
+      FetchFixedAndTunableIntParams(Counts);
+
+      if (AllEqualTo(Counts, 1)) {
+        return TransformationResult::SUCCESS_IDENTITY;
       }
+
       applyUnrollAndJam(Root, Counts);
       break;
     }
     case LoopTransformation::UNROLL: {
-      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
+//      ArrayRef<KnobID> CountKnobs = Transformation.getKnobs("unroll");
       SmallVector<unsigned, 4> Counts;
-      for (auto ID : CountKnobs) {
-        auto Knob = Transformation.Knobs.IntKnobs[ID];
-        assert(Knob);
-        Counts.push_back(Knob->getVal(Cfg));
-        //outs() << "Unroll count: " << Knob->getVal(Cfg) << "\n";
+      // Collect unroll counts from tunable and fixed parameters
+      // (should only be tunable in this case, since each loop is unrolled separately).
+      FetchFixedAndTunableIntParams(Counts);
+
+      if (AllEqualTo(Counts, 1)) {
+        return TransformationResult::SUCCESS_IDENTITY;
       }
+
       applyUnroll(Root, Counts);
       break;
     }
     default:
       llvm_unreachable("Invalid transformation kind.");
   }
+  return TransformationResult ::SUCCESS;
 }
 
 void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts) {
@@ -386,21 +483,30 @@ void applyUnroll(LoopNode* Root, ArrayRef<unsigned> Counts) {
 
   auto& Tree = *Root->getTransformTree();
 
+//  outs() << "Unroll factors: ";
+//  for (auto K : Counts) {
+//    outs() << K << ", ";
+//  }
+//  outs() << "\n";
+
   auto* Node = Root->getLastSuccessor();
   unsigned Count = Counts.front();
   bool DoUnroll = Count > 1;
   if (DoUnroll) {
     bool Full = Node->getTripCountInfo().IsExact && Node->getTripCountInfo().TripCount == Count;
     Node->addBoolAttribute(MDTags::UNROLL_ENABLE_TAG, true);
-    if (Full) {
-      Node->addBoolAttribute(MDTags::UNROLL_FULL_TAG, true);
-    } else {
+    // FIXME: Theres seems to be a bug in the polly extensions, that makes full unrolling extremely slow.
+    //        I don't know what's causing it, but it seems like if we simply set the factor equal to the trip count, we get the expected result.
+//    if (Full) {
+//      Node->addBoolAttribute(MDTags::UNROLL_FULL_TAG, true);
+//    } else {
       Node->addIntAttribute(MDTags::UNROLL_COUNT_TAG, Count);
-    }
+//    }
     auto Unrolled = Tree.makeVirtualNode();
     Unrolled->setFlag(LoopNode::UNROLLED);
     Unrolled->getTripCountInfo() = Node->getTripCountInfo();
     Unrolled->getTripCountInfo().TripCount /= Count;
+    Unrolled->setUnrolledByFactor(Count);
     Node->addSuccesor(Unrolled);
     // TODO: For full unroll, modify graph correctly
     // TODO: Followup for simple unroll not implemented yet
@@ -415,29 +521,63 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
   assert(Root && "Root is null");
   assert(Root->isTightlyNested() && "Root not tightly nested"); // TODO: Actually needs perfect nesting, check for that
 
+//  outs() << "Unroll factors: ";
+//  for (auto K : Counts) {
+//    outs() << K << ", ";
+//  }
+//  outs() << "\n";
+
   auto& Tree = *Root->getTransformTree();
+
+  //SmallVector<LoopNode*, 4> UnrolledLoops(Counts.size(), nullptr);
+
+  LoopNode* LastUnrolled = nullptr;
+  bool AddSubloop = false;
+
+  unsigned JamFactor = 1;
 
   auto Node = Root;
   for (auto Count : Counts) {
     assert(Node && "Unroll-and-jam not compatible with loop structure");
     Node = Node->getLastSuccessor();
+    JamFactor *= Count;
     bool DoUnroll = Count > 1;
     if (DoUnroll) {
       Node->addBoolAttribute(MDTags::UNROLL_AND_JAM_ENABLE_TAG, true);
       Node->addIntAttribute(MDTags::UNROLL_AND_JAM_COUNT_TAG, Count);
       // NOTE: We ignore remainder loops, as they are usually unrolled fully.
       auto Unrolled = Tree.makeVirtualNode();
+      if (Node->hasInterchangeBarrier())
+        Unrolled->setInterchangeBarrier();
       Unrolled->setFlag(LoopNode::UNROLLED);
       Unrolled->getTripCountInfo() = Node->getTripCountInfo();
       Unrolled->getTripCountInfo().TripCount /= Count;
       Node->addSuccesor(Unrolled);
-      Node->addRedirectAttribute(MDTags::UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG, Unrolled);
+      Node->addRedirectAttribute(MDTags::UNROLL_AND_JAM_FOLLOWUP_UNROLLED_TAG, Unrolled);
+
+      if (LastUnrolled && AddSubloop) {
+        LastUnrolled->addSubLoop(Unrolled);
+      }
+      LastUnrolled = Unrolled;
+      AddSubloop = true;
     } else {
       // Loops are marked as unrolled, even if no unrolling actually occurs.
       Node->setFlag(LoopNode::UNROLLED);
+      if (LastUnrolled && AddSubloop) {
+        LastUnrolled->addSubLoop(Node);
+      }
+      LastUnrolled = Node;
+      AddSubloop = false;
     }
     Node = Node->getFirstSubLoop();
+  }
 
+  assert(Node && "There must be a jammed loop");
+  // Update jam factor of innermost loop
+  Node->setUnrolledByFactor(JamFactor);
+  // Set the jammed loop as child of the last unrolled loop
+  if (LastUnrolled && !LastUnrolled->hasSubLoop()) {
+    LastUnrolled->addSubLoop(Node);
   }
 }
 
@@ -457,12 +597,14 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
 //    outs() << "Interchange with depth > 2\n";
   }
 
-  SmallVector<SmallVector<int, 2>, 4> Constraints;
+//  SmallVector<SmallVector<int, 2>, 4> Constraints;
 
   SmallVector<LoopNode*, 4> InterchangedLoops(Depth, nullptr);
 
+
   // Create virtual interchanged successor loops
   LoopNode *Node = Root;
+  auto* PrevInnermostLoop = Node->getInnermostLoop();
   for (unsigned I = 0; I < Depth; I++) {
     assert(Node && "Interchange not compatible with loop structure");
     Node = Node->getLastSuccessor();
@@ -480,6 +622,9 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
     Node = Node->getFirstSubLoop();
   }
 
+  // Move unroll factor to new innermost loop
+  InterchangedLoops.back()->setUnrolledByFactor(PrevInnermostLoop->getEffectiveUnrollFactor());
+
   // Fix loop nesting
   auto* LastNode = Root->getParent();
   for (int i = 0; i < Depth; i++) {
@@ -490,6 +635,7 @@ void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation)
     }
     LastNode = Node;
   }
+
 }
 
 void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, StringRef PeelType) {
@@ -513,13 +659,14 @@ void applyTiling(LoopNode *Root, unsigned Depth, ArrayRef<unsigned> Sizes, Strin
     Node = Node->getLastSuccessor();
 
     unsigned TileSize = Sizes[I];
+    assert(TileSize > 0 && "The tile size cannot be 0");
     Node->addIntAttribute(MDTags::TILE_SIZE_TAG, TileSize);
 
     auto& OriginalTripCount = Node->getTripCountInfo();
 
     auto *FloorNode = Tree.makeVirtualNode();
     if (LastFloor)
-      LastFloor->addSubLoop(FloorNode); // TODO: Should they even be added here as subloops? Relationship is apparent from original structure
+      LastFloor->addSubLoop(FloorNode);
     Node->addSuccesor(FloorNode);
     Node->addRedirectAttribute(MDTags::TILE_FOLLOWUP_FLOOR_TAG, FloorNode);
     FloorNode->getTripCountInfo() = OriginalTripCount;

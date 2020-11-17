@@ -52,7 +52,7 @@ private:
     Root->getTripCountInfo() = LoopNode::TripCountInfo(TripCount > 0 ? TripCount : MaxTripCount, TripCount > 0);
     Root->addTagAttribute(MDTags::DISABLE_NONFORCED, true);
     auto LoopName = assignLoopName(L, Root->getLoopName());
-    outs() << "Trip count for loop " << Root->getLoopName() << " is " << Root->getTripCountInfo().TripCount << ", exact: " << Root->getTripCountInfo().IsExact << "\n";
+    JIT_INFO(outs() << "Trip count for loop " << Root->getLoopName() << " is " << Root->getTripCountInfo().TripCount << ", exact: " << Root->getTripCountInfo().IsExact << "\n");
     for (auto L : L->getSubLoops()) {
       auto SubTree = createSubTree(Tree, L, SE, Root);
       Root->addSubLoop(SubTree);
@@ -73,7 +73,9 @@ public:
   bool runOnLoop(Loop *Loop, LPPassManager &LPM) override {
     assert(LoopTrees && "Result vector not set");
 
-    if (Loop->getHeader()->getParent()->isDeclarationForLinker()) {
+    auto* Function = Loop->getHeader()->getParent();
+
+    if (Function->isDeclarationForLinker()) {
       // We don't want to consider loops in functions that are marked available_externally
       return false;
     }
@@ -81,7 +83,8 @@ public:
     ScalarEvolution &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
 
     if (!Loop->getParentLoop()) {
-      LoopTransformTreePtr Tree = std::make_unique<LoopTransformTree>();
+      Twine Name = Function->getName() + "_" + std::to_string(NumTrees[Function]++);
+      LoopTransformTreePtr Tree = std::make_unique<LoopTransformTree>(Name.str());
       auto Root = createSubTree(*Tree, Loop, SE, nullptr);
       Tree->setRoot(Root);
       LoopTrees->push_back(std::move(Tree));
@@ -95,6 +98,9 @@ public:
     AU.addRequired<ScalarEvolutionWrapperPass>();
     getLoopAnalysisUsage(AU);
   }
+
+private:
+  llvm::DenseMap<Function*, unsigned> NumTrees;
 
 }; // end class
 

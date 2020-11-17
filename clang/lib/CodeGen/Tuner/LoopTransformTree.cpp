@@ -10,7 +10,7 @@ namespace clang {
 namespace jit {
 
 namespace MDTags {
-const char *LOOP_ID_TAG = "llvm.loop.id";
+//const char *LOOP_ID_TAG = "llvm.loop.id";
 const char *DISABLE_NONFORCED = "llvm.loop.disable_nonforced";
 const char *TILE_ENABLE_TAG = "llvm.loop.tile.enable";
 const char *TILE_DEPTH_TAG = "llvm.loop.tile.depth";
@@ -24,7 +24,7 @@ const char *INTERCHANGE_PERMUTATION_TAG = "llvm.loop.interchange.permutation";
 const char *INTERCHANGE_FOLLOWUP_TAG = "llvm.loop.interchange.followup_interchanged";
 const char *UNROLL_AND_JAM_ENABLE_TAG = "llvm.loop.unroll_and_jam.enable";
 const char *UNROLL_AND_JAM_COUNT_TAG = "llvm.loop.unroll_and_jam.count";
-const char *UNROLL_AND_JAME_FOLLOWUP_UNROLLED_TAG = "llvm.loop.unroll_and_jam.followup_outer_unrolled";
+const char *UNROLL_AND_JAM_FOLLOWUP_UNROLLED_TAG = "llvm.loop.unroll_and_jam.followup_outer_unrolled";
 const char *UNROLL_ENABLE_TAG = "llvm.loop.unroll.enable";
 const char *UNROLL_COUNT_TAG = "llvm.loop.unroll.count";
 const char *UNROLL_FULL_TAG = "llvm.loop.unroll.full";
@@ -41,7 +41,7 @@ LoopTransformTree::LoopTransformTree(LoopTransformTree &&Rhs) noexcept
 
 
 std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
-  auto TreeClone = std::make_unique<LoopTransformTree>();
+  auto TreeClone = std::make_unique<LoopTransformTree>(Name);
 
   // First create a copy of all nodes
   for (auto& It : Nodes) {
@@ -88,41 +88,11 @@ std::unique_ptr<LoopTransformTree> LoopTransformTree::clone() const {
   return TreeClone;
 }
 
-LoopNode* LoopTransformTree::cloneNode(LoopNode* Node) {
-  llvm_unreachable("");
-  if (!Node)
-    return nullptr;
-  auto* Existing = getNode(Node->LoopName);
-  if (Existing)
-    return Existing;
-  auto* ParentClone = cloneNode(Node->Parent);
-  // Can't use make_unique here because the constructor is private
-  LoopNodePtr Clone = std::unique_ptr<LoopNode>(new LoopNode(this, Node->IsVirtualLoop, Node->LoopName, ParentClone));
-  auto* ClonePtr = Clone.get();
-  Nodes[Clone->LoopName] = std::move(Clone);
-
-  ClonePtr->Predecessor = cloneNode(Node->Predecessor);
-  for (auto *SubLoop : Node->SubLoops) {
-    ClonePtr->SubLoops.push_back(cloneNode(SubLoop));
-  }
-
-  ClonePtr->Successor = cloneNode(Node->Successor);
-
-  ClonePtr->Attrs = Node->Attrs;
-
-  // Fix pointers in attributes
-  for (auto& Attr : ClonePtr->Attrs.FollowupAttrs) {
-    Attr.Val = cloneNode(Attr.Val);
-  }
-
-  return ClonePtr;
-}
-
 
 LoopNode *LoopTransformTree::makeVirtualNode() {
   auto Name = std::to_string(NodeCount++);
   auto Node = new LoopNode(this, true, Name);
-  Node->addStringAttribute(MDTags::LOOP_ID_TAG, Name);
+  Node->addStringAttribute(LOOP_NAME_TAG, Name);
   Nodes[Name].reset(Node);
   return Node;
 }
@@ -135,6 +105,17 @@ LoopNode *LoopTransformTree::makeNode(std::string Name) {
   NodeCount++;
   Nodes[Name] = std::unique_ptr<LoopNode>(new LoopNode(this, false, Name));
   return Nodes[Name].get();
+}
+
+LoopNode* LoopTransformTree::getEffectiveSuccessorRoot() const {
+  if (!Root)
+    return nullptr;
+  auto EffectiveRoot = Root->getLastSuccessor();
+  // After interchange, the root may not be the outermost loop
+  while (EffectiveRoot->Parent) {
+    EffectiveRoot = EffectiveRoot->Parent->getLastSuccessor();
+  }
+  return EffectiveRoot;
 }
 
 void LoopTransformTree::setRoot(LoopNode *Node) {

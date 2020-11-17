@@ -7,15 +7,17 @@
 
 #include <random>
 
-#include "KnobSet.h"
-#include "LoopKnob.h"
-#include "SimpleKnobs.h"
+#include "Search.h"
 #include "Util.h"
 
 namespace clang {
 namespace jit {
 
 using TunerRNE = std::mt19937_64;
+
+using TuningClock = std::chrono::steady_clock;
+using TunerTimeStamp = TuningClock::time_point;
+
 
 struct TimingStats {
   unsigned N{0};
@@ -30,13 +32,13 @@ struct TimingStats {
     SD = std::sqrt(Variance);
   }
 
-  bool Valid() const { return N > 0 && Mean > 0 && Variance >= 0; }
+  bool valid() const { return N > 0 && Mean > 0 && Variance >= 0; }
 
   bool betterThan(const TimingStats &Other) {
-    // TODO: Do t-test instead
-    if (!Valid())
+    // TODO: Do t-test instead?
+    if (!valid())
       return false;
-    if (!Other.Valid())
+    if (!Other.valid())
       return true;
     return Mean < Other.Mean;
   }
@@ -54,6 +56,7 @@ struct TimingStats {
 
 using SharedEvalStats = std::shared_ptr<TimingStats>;
 
+#if 0
 class ConfigEvalRequest {
 public:
   ConfigEvalRequest() : Stats(std::make_shared<TimingStats>()){
@@ -84,126 +87,123 @@ public:
 
   virtual ConfigEvalRequest generateNextConfig() = 0;
 };
+#endif
 
-struct GenDefaultConfigFn : public KnobSetFn {
+struct ConfigEval {
+  ConfigEval() : Stats(std::make_shared<TimingStats>()) {
+    TimeStamp = TuningClock::now();
+  }
 
-  void operator()(IntKnob &K) override { K.setVal(Cfg, K.getDefault()); }
+  explicit ConfigEval(SearchSpace* Space) : Config(*Space), Stats(std::make_shared<TimingStats>()) {
+    TimeStamp = TuningClock::now();
+  }
 
-  void operator()(LoopKnob &K) override { K.setVal(Cfg, K.getDefault()); }
+  explicit ConfigEval(ParamConfig Config, std::string Op = "") : Config(std::move(Config)), Stats(std::make_shared<TimingStats>()), Op(std::move(Op)) {
+    TimeStamp = TuningClock::now();
+  }
 
-  KnobConfig Cfg;
+  bool isConfigEmpty() const {
+    return Config.isEmpty();
+  }
+
+  ParamConfig Config;
+  SharedEvalStats Stats;
+  std::string Op;
+  TunerTimeStamp TimeStamp;
+
 };
 
-template<typename RNETy>
-struct GenRandomConfigFn : public KnobSetFn {
-
-  explicit GenRandomConfigFn(RNETy &RNE) : RNE(RNE) {};
-
-  void operator()(IntKnob &K) override {
-    std::uniform_int_distribution<int> dist(K.min(), K.max());
-    auto Val = dist(RNE);
-    K.setVal(Cfg, Val);
+struct CompareConfigEval {
+  bool operator()(ConfigEval &A, ConfigEval &B) {
+    if (!A.Stats || !A.Stats->valid())
+      return false;
+    if (!B.Stats || !B.Stats->valid())
+      return true;
+    return A.Stats->betterThan(*B.Stats);
   }
-
-  void operator()(LoopKnob &K) override {
-    auto LCfg = createRandomLoopConfig(K, RNE);
-    K.setVal(Cfg, LCfg);
-  }
-
-  RNETy &RNE;
-  KnobConfig Cfg;
 };
 
-inline void setEnableLoopTransform(KnobConfig &Cfg, bool Enable) {
-  for (auto &It : Cfg.LoopCfg) {
-    It.second.DisableLoopTransform = !Enable;
-  }
-}
-
-template<typename RNETy>
-KnobConfig createRandomConfig(RNETy &RNE, KnobSet &Set) {
-  GenRandomConfigFn<RNETy> Fn(RNE);
-  apply(Fn, Set);
-  return Fn.Cfg;
-}
-
-inline KnobConfig createDefaultConfig(KnobSet &Set) {
-  GenDefaultConfigFn Fn;
-  apply(Fn, Set);
-  return Fn.Cfg;
-}
-
-class RandomTuner : public Tuner {
+class Tuner {
 public:
-  explicit RandomTuner(KnobSet Knobs)
-      : Knobs(std::move(Knobs)), RNE(TunerRNE(util::genSeed())) {}
+  virtual ~Tuner() {}
 
-  void reset(KnobSet Knobs) override { this->Knobs = std::move(Knobs); }
+  virtual ConfigEval generateNextConfig() = 0;
 
-  ConfigEvalRequest generateNextConfig() override {
-    //    for (auto It : Knobs.IntKnobs)
-    //      outs() << It.first << ": " << It.second->getName() << "\n";
-    //    for (auto It : Knobs.LoopKnobs)
-    //      outs() << It.first << ": " << It.second->getName() << "\n";
-    CurrentConfig = createRandomConfig(RNE, Knobs);
-    return ConfigEvalRequest(CurrentConfig);
+  virtual bool isDone() {
+    return false;
+  }
+
+  virtual unsigned getNumRestarts() const {
+    return 0;
+  }
+};
+
+class CachingTuner: public Tuner{
+public:
+  CachingTuner();
+  virtual ~CachingTuner() = default;
+
+  ConfigEval generateNextConfig() override;
+
+  llvm::Optional<ConfigEval> getEval(const ParamConfig&);
+
+  bool isEvaluated(const ParamConfig& Config) {
+    return ConfigMap.find(Config) != ConfigMap.end();
+  }
+
+  bool isDone() override {
+    return Done;
   }
 
 private:
-  KnobSet Knobs;
-  TunerRNE RNE;
-  KnobConfig CurrentConfig;
-};
+  virtual std::pair<ParamConfig, std::string> generateNextConfigInternal() = 0;
 
-class TunerFactory {
-public:
-  virtual std::unique_ptr<Tuner> createTuner() = 0;
-};
-
-class BilevelTuner {
-public:
-  explicit BilevelTuner(Tuner &L1Tuner) : L1Tuner(L1Tuner) {};
-
-  virtual bool updatePartialConfig() = 0;
-
-  KnobConfig getPartialConfig() const { return PartialConfig; }
-
-  ConfigEvalRequest generateNextL2Config(Tuner &L2Tuner) {
-    auto EvalRequest = L2Tuner.generateNextConfig();
-    CurrentL2Configs.push_back(EvalRequest);
-    return EvalRequest;
-  }
-
-protected:
-  void changeL1Config(KnobConfig L1Cfg) {
-    PartialConfig = std::move(L1Cfg);
-    CurrentL2Configs.clear();
-  }
-
-protected:
-  Tuner &L1Tuner;
-
-  KnobConfig PartialConfig;
-
-  SmallVector<ConfigEvalRequest, 8> CurrentL2Configs;
-};
-
-class SimpleBilevelTuner : public BilevelTuner {
-public:
-  explicit SimpleBilevelTuner(Tuner &L1Tuner) : BilevelTuner(L1Tuner) {};
-
-  bool updatePartialConfig() override {
-    if (CurrentL2Configs.size() >= 8) {
-      changeL1Config(L1Tuner.generateNextConfig().Cfg);
-    }
+  virtual bool attemptRestart() {
     return false;
-  }
+  };
+
+  // Stores all configuration generated by the search algo.
+  llvm::SmallVector<ConfigEval, 16> Evals;
+  // Maps already evaluated configurations to the evaluation data.
+  llvm::DenseMap<HashableConfig, unsigned, ParamConfigMapInfo> ConfigMap;
+
+  bool Done{false};
 };
 
-// struct CostFunction {
-// public:
-//  virtual llvm::Optional<double> eval(unsigned ID) = 0;
-//};
+class RandomTuner : public Tuner {
+public:
+  explicit RandomTuner(SearchSpace& Space)
+      : Space(Space), RNE(TunerRNE(util::genSeed())) {}
+
+  ConfigEval generateNextConfig() override {
+    return ConfigEval(createRandomConfig(RNE, Space));
+  }
+
+private:
+  SearchSpace& Space;
+  TunerRNE RNE;
+};
+
+class CachedRandomTuner : public CachingTuner {
+public:
+  explicit CachedRandomTuner(SearchSpace& Space)
+          : Space(Space), RNE(TunerRNE(util::genSeed())) {}
+
+  std::pair<ParamConfig, std::string> generateNextConfigInternal() {
+    auto Cfg = createRandomConfig(RNE, Space);
+    unsigned Tries = 0;
+    while (isEvaluated(Cfg) && Tries < 10) {
+      Cfg = createRandomConfig(RNE, Space);
+      Tries++;
+    }
+    return {Cfg, "RNG"};
+  }
+
+private:
+  SearchSpace& Space;
+  TunerRNE RNE;
+};
+
 
 }
 }

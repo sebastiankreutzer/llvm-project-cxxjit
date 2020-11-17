@@ -571,9 +571,14 @@ void applyUnrollAndJam(LoopNode* Root, ArrayRef<unsigned> Counts) {
     }
     Node = Node->getFirstSubLoop();
   }
-  // Update jam factor of innermost loop
+
   assert(Node && "There must be a jammed loop");
+  // Update jam factor of innermost loop
   Node->setUnrolledByFactor(JamFactor);
+  // Set the jammed loop as child of the last unrolled loop
+  if (LastUnrolled && !LastUnrolled->hasSubLoop()) {
+    LastUnrolled->addSubLoop(Node);
+  }
 }
 
 void applyInterchange(LoopNode *Root, unsigned Depth, ArrayRef<int> Permutation) {

@@ -346,7 +346,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
         fatal();
 
       auto *FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
-      outs() << "Successfully loaded tuned function " << FName << "\n";
+      JIT_INFO(outs() << "Successfully loaded tuned function " << FName << "\n");
       return {FPtr, true};
     }
   }
@@ -486,6 +486,8 @@ void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
 
   // Select the non-timed version of the function.
   InstData IData = {BestVersion->FImplPtr, true};
+  JIT_INFO(outs() << "Serializing...");
+  serialize(*BestVersion, TuningData->selectSpecialization().Context.getMCFilename());
   updateActiveInstantiation(Inst, IData);
   JIT_INFO(outs() << "Finished tuning: " << Inst.Key << "\n");
   return IData.FPtr;

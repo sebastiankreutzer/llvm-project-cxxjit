@@ -120,6 +120,7 @@ void TransformTreeOptimizer::init(Module *M) {
     return;
   }
   JIT_INFO(outs() << "Number of detected loop trees: " << LoopTrees.size() << "\n");
+   // outs() << "Tuner start: " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count() << "\n";
 
   CurrentLoopTree = LoopTrees.begin();
   Done = false;

@@ -367,8 +367,14 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
 
     if (!TTD->hasTunableArgs()) {
       // TODO: Serialization only available for non-tuned template args
-      outs() << "Serializing...\n";
-      serialize(*Best, TemplateInst.Context.getMCFilename());
+      JIT_INFO(outs() << "Saving tuned function binary...\n");
+      if (BaselineStats.betterThan(BestStats)) {
+        serialize(BaseLine, TemplateInst.Context.getMCFilename());
+      } else {
+        serialize(*Best, TemplateInst.Context.getMCFilename());
+      }
+      //outs() << "Tuner stop: " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count() << "\n";
+
     }
 
     // Only enable fast lookup if template arguments are not tuned.

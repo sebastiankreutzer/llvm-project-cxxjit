@@ -68,10 +68,10 @@ void printReport(JITTemplateInstantiation &TemplateInst) {
   }
   outs() << formatv("{0}\n", fmt_repeat("=", Header.size()));
   auto BestID = TemplateInst.getCurrentBest()->ID;
-  auto Best = TemplateInst.Instantiations[BestID];
+  auto& Best = TemplateInst.Instantiations[BestID];
   // TODO: We assume here that the first version is the baseline, make this
   // explicit
-  auto BaseLine = TemplateInst.Instantiations[1];
+  auto& BaseLine = TemplateInst.Instantiations[1];
   outs() << formatv("Best version: {0} ({1:p} speedup)\n", BestID,
                     BaseLine.updateStats().Mean / Best.updateStats().Mean -
                         1.0);
@@ -99,7 +99,7 @@ void printShortReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) 
   auto BestSpecialization = OverallBest.getValue().second;
   auto BestVersion = BestSpecialization->getCurrentBest();
   auto BestStats = BestVersion->updateStats();
-  auto BaseLine = BestSpecialization->Instantiations[1];
+  auto& BaseLine = BestSpecialization->Instantiations[1];
   OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n",
                 BestSpecialization->Context.DeclName, BestVersion->ID, BestStats.N,
                 formatv("{0:f1}", BestStats.Mean),
@@ -108,10 +108,6 @@ void printShortReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) 
   OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
   OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
   OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
-
-//  auto TAKnobs = Data.TunableArgs.getKnobSet();
-//  KnobState(TAKnobs, OverallBest.getValue().first).dump();
-//  KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
 
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 
@@ -166,10 +162,10 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
 
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     auto BestID = TemplateInst.getCurrentBest()->ID;
-    auto Best = TemplateInst.Instantiations[BestID];
+    auto& Best = TemplateInst.Instantiations[BestID];
     // TODO: We assume here that the first version is the baseline, make this
     // explicit
-    auto BaseLine = TemplateInst.Instantiations[1];
+    auto& BaseLine = TemplateInst.Instantiations[1];
     OS << formatv("Best version: {0} ({1:p} speedup)\n", BestID,
                   BaseLine.updateStats().Mean / Best.updateStats().Mean - 1.0);
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
@@ -177,10 +173,10 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
   OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
 
   if (OverallBest) {
-    auto BestSpecialization = OverallBest.getValue().second;
+    auto& BestSpecialization = OverallBest.getValue().second;
     auto BestVersion = BestSpecialization->getCurrentBest();
     auto BestStats = BestVersion->updateStats();
-    auto BaseLine = BestSpecialization->Instantiations[1];
+    auto& BaseLine = BestSpecialization->Instantiations[1];
     OS << "Overall best: \n";
     OS << formatv("{0} {1,4} {2,10}  {3,12}  {4,10}  {5,10}\n",
                   BestSpecialization->Context.DeclName, BestVersion->ID, BestStats.N,
@@ -190,10 +186,6 @@ void printFullReport(TemplateTuningData &Data, llvm::raw_ostream &OS = dbgs()) {
     OS << formatv("Speedup: ({0:p} speedup)\n", BaseLine.updateStats().Mean / BestStats.Mean - 1.0);
     OS << formatv("{0}\n", fmt_repeat("-", Header.size()));
     OS << "Found configuration: \n";
-    OS << "TODO\n";
-//    auto TAKnobs = Data.TunableArgs.getKnobSet();
-//    KnobState(TAKnobs, OverallBest.getValue().first).dump();
-//    KnobState(BestSpecialization->Context.Opt->getKnobs(), BestVersion->Request.Cfg).dump();
     OS << formatv("{0}\n", fmt_repeat("=", Header.size()));
   }
 }
@@ -255,7 +247,6 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     JIT_DEBUG(dbgs() << "Resolving JIT template " << Inst.InstKey << "\n");
 
     // TODO: move to fdata (?)
-//    SmallVector<std::unique_ptr<TemplateArgKnob>, 4> TAKnobs;
     SmallVector<TunableNTTA, 4> TunableNTTAs;
 
     llvm::SmallVector<TemplateArgument, 8> BaseArgs;
@@ -292,8 +283,6 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
             SIntVal = Range.Min;
 
             TunableNTTAs.emplace_back(Pos, Range.Min, Range.Max, Range.Min);
-//            TAKnobs.push_back(std::make_unique<TemplateArgKnob>(
-//                Pos, Range.Min, Range.Max, Range.Min));
 
             return TemplateArgument(
                 *CD.Ctx, SIntVal,
@@ -309,13 +298,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
     for (auto& NTTA : TunableNTTAs) {
       TAL.add(NTTA);
     }
-//    for (auto &Knob : TAKnobs) {
-//      JIT_INFO(outs() << "Template argument marked tunable: "
-//                       << Knob->getArgIndex() << "\n");
-//      TAL.add(std::move(Knob));
-//    }
 
-//    KnobSet TAKnobSet = TAL.getKnobSet();
     std::unique_ptr<Tuner> TATuner;
     if (TAL.isTunable()) {
       TATuner = createTuner(loadSearchAlgoEnv(), TAL.getSearchSpace());
@@ -337,10 +320,41 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   auto &TemplateInst = TTD->selectSpecialization();
 
   auto FName = TemplateInst.Context.DeclName;
-  
+
+
+  if (TemplateInst.empty()) {
+    // Serialization
+    // TODO: This currently only works for IR tuning, not for template args
+    // TODO: Accessing the filesystem every time a new instantiation is requested. For performance reasons, we should cache the available .jit.o files.
+    auto Buf = MemoryBuffer::getFile(TemplateInst.Context.getMCFilename());
+    if (Buf) {
+      // Add to the JIT engine.
+      auto Key = CD.CJ->addPrecompiledModule(std::move(Buf.get()));
+
+      auto ImplName = TimingHelper::getImplName(FName.str());
+
+      // Lookup the address of the generated function.
+      auto SpecSymbol = CD.CJ->findSymbol(ImplName);
+      assert(SpecSymbol && "Can't find the specialization just generated?");
+
+      if (auto Err = SpecSymbol.takeError()) {
+        errs() << "JIT Error: " << Err << "\n";
+        fatal();
+      }
+
+      if (!SpecSymbol.getAddress())
+        fatal();
+
+      auto *FPtr = (void *) llvm::cantFail(SpecSymbol.getAddress());
+      JIT_INFO(outs() << "Successfully loaded tuned function " << FName << "\n");
+      return {FPtr, true};
+    }
+  }
+
+
   if (TemplateInst.Context.Opt->isDone()) {
     auto Best = TemplateInst.getCurrentBest();
-    auto BaseLine = TemplateInst.Instantiations[1];
+    auto& BaseLine = TemplateInst.Instantiations[1];
     auto BaselineStats = BaseLine.updateStats();
     auto BestStats = Best->updateStats();
     JIT_INFO(outs() << "Tuning done: " << FName << "\n");
@@ -350,6 +364,19 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
       ReturnPtr = BaseLine.FImplPtr;
       JIT_INFO(outs() << "Autotuner was unable to produce speedups.\n");
     }
+
+    if (!TTD->hasTunableArgs()) {
+      // TODO: Serialization only available for non-tuned template args
+      JIT_INFO(outs() << "Saving tuned function binary...\n");
+      if (BaselineStats.betterThan(BestStats)) {
+        serialize(BaseLine, TemplateInst.Context.getMCFilename());
+      } else {
+        serialize(*Best, TemplateInst.Context.getMCFilename());
+      }
+      //outs() << "Tuner stop: " << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count() << "\n";
+
+    }
+
     // Only enable fast lookup if template arguments are not tuned.
     return {ReturnPtr, !TTD->hasTunableArgs()};
   }
@@ -385,10 +412,6 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   auto EvalRequest = TemplateInst.Context.Opt->optimize(
       Mod.get(), !TemplateInst.Context.Emitted);
 
-//  if (!TemplateInst.Context.Emitted) {
-//    JIT_INFO(util::dumpModule(*Mod, "Module after optimization"));
-//  }
-
   JIT_DEBUG(util::dumpModule(*Mod, "Module after optimization"));
 
   // Instrument optimized function for tuning
@@ -397,10 +420,9 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
   TimingHelper TH(SMF);
   TH.createTimingWrapper();
 
-  JIT_DEBUG(util::dumpModule(*Mod, "With wrapper:"));
-
   // Add to the JIT engine.
-  auto Key = CD.CJ->addModule(std::move(Mod));
+  MemBufferPtr MCBuffer;
+  auto Key = CD.CJ->addModule(std::move(Mod), &MCBuffer);
 
   auto lookupFunction = [&](llvm::StringRef Name) -> void* {
     auto SpecSymbol = CD.CJ->findSymbol(Name);
@@ -442,7 +464,7 @@ InstData TunerDriver::resolve(const ThisInstInfo &Inst, unsigned Idx) {
                                  Inst.TypeStrings, Inst.TypeStringsCnt))});
 
   TunedCodeVersion Version(TemplateInst.nextVersionID(), Key, FPtr, FImplPtr, Globals,
-                           std::move(EvalRequest));
+                           std::move(EvalRequest), std::move(MCBuffer));
   TemplateInst.add(std::move(Version));
   TemplateInst.Context.Emitted =
       true; // TODO: We probably don't need this anymore
@@ -470,6 +492,8 @@ void* TunerDriver::finishTuning(const clang::jit::InstInfo &Inst) {
 
   // Select the non-timed version of the function.
   InstData IData = {BestVersion->FImplPtr, true};
+  JIT_INFO(outs() << "Serializing...");
+  serialize(*BestVersion, TuningData->selectSpecialization().Context.getMCFilename());
   updateActiveInstantiation(Inst, IData);
   JIT_INFO(outs() << "Finished tuning: " << Inst.Key << "\n");
   return IData.FPtr;

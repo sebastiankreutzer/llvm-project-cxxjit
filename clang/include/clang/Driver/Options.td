@@ -3328,6 +3328,11 @@ def fenable_matrix : Flag<["-"], "fenable-matrix">, Group<f_Group>,
     HelpText<"Enable matrix data type and related builtin functions">,
     MarshallingInfoFlag<LangOpts<"MatrixTypes">>;
 
+def fjit : Flag<["-"], "fjit">, Group<f_Group>,
+  HelpText<"Enable C++ JIT extensions">, Flags<[CC1Option]>;
+def fno_jit : Flag<["-"], "fno-jit">, Group<f_Group>,
+  HelpText<"Disable C++ JIT extensions">;
+
 def fzero_call_used_regs_EQ
     : Joined<["-"], "fzero-call-used-regs=">, Group<f_Group>, Flags<[CC1Option]>,
       HelpText<"Clear call-used registers upon function return (AArch64/x86 only)">,
@@ -6762,6 +6767,9 @@ def fcuda_allow_variadic_functions : Flag<["-"], "fcuda-allow-variadic-functions
 def fno_cuda_host_device_constexpr : Flag<["-"], "fno-cuda-host-device-constexpr">,
   HelpText<"Don't treat unattributed constexpr functions as __host__ __device__.">,
   MarshallingInfoNegativeFlag<LangOpts<"CUDAHostDeviceConstexpr">>;
+
+def fjit_device_ir_file_path : Separate<["-"], "fjit-device-ir-file-path">,
+  HelpText<"Path to the IR file produced by the frontend for the device for JIT.">;
 
 } // let Flags = [CC1Option, NoDriverOption]
 

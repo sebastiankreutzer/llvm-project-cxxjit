@@ -143,6 +143,10 @@ private:
   /// file is up to date, but not otherwise.
   bool IncludeTimestamps;
 
+  /// Indicates that all files should be included in the serialized AST (even
+  /// if they're not actually marked as transient in the source manager).
+  bool TreatAllFilesAsTransient;
+
   /// Indicates when the AST writing is actively performing
   /// serialization, rather than just queueing updates.
   bool WritingAST = false;
@@ -571,7 +575,8 @@ public:
   ASTWriter(llvm::BitstreamWriter &Stream, SmallVectorImpl<char> &Buffer,
             InMemoryModuleCache &ModuleCache,
             ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
-            bool IncludeTimestamps = true);
+            bool IncludeTimestamps = true,
+            bool TreatAllFilesAsTransient = false);
   ~ASTWriter() override;
 
   ASTContext &getASTContext() const {

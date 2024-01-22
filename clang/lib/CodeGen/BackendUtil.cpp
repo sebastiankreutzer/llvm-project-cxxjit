@@ -30,11 +30,14 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/IRReader/IRReader.h"
 #include "llvm/IRPrinter/IRPrintingPasses.h"
+#include "llvm/Linker/Linker.h"
 #include "llvm/LTO/LTOBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -193,6 +196,8 @@ public:
   // Emit output using the new pass manager for the optimization pipeline.
   void EmitAssembly(BackendAction Action,
                     std::unique_ptr<raw_pwrite_stream> OS);
+
+  void FinalizeForJIT();
 };
 }
 
@@ -506,6 +511,313 @@ getGCOVOptions(const CodeGenOptions &CodeGenOpts, const LangOptions &LangOpts) {
   Options.Exclude = CodeGenOpts.ProfileExcludeFiles;
   Options.Atomic = CodeGenOpts.AtomicProfileUpdate;
   return Options;
+}
+
+void EmitAssemblyHelper::FinalizeForJIT() {
+  if (!LangOpts.isJITEnabled())
+    return;
+
+  if (LangOpts.CUDAIsDevice) {
+    auto DevMod =
+        std::make_unique<llvm::Module>("clang-jit-device",
+                                       TheModule->getContext());
+
+    // We can't save the IR here and reuse it later as that might effectively
+    // add users to internal functions inconsistent with how they have been
+    // optimized. For kernels, everything will need to be regenerated at
+    // runtime.
+
+    auto *SzTy =
+        llvm::Type::getIntNTy(DevMod->getContext(),
+                              DevMod->getDataLayout().getPointerSizeInBits());
+
+    auto &CmdArgs = CodeGenOpts.CmdArgsForJIT;
+
+    auto NewStrGV = [&](StringRef Data, StringRef Name)
+        -> llvm::GlobalVariable * {
+      auto *Str =
+          llvm::ConstantDataArray::getString(DevMod->getContext(), Data);
+      auto *GV =
+          new llvm::GlobalVariable(*DevMod, Str->getType(), true,
+                                   llvm::GlobalValue::PrivateLinkage, Str, Name);
+      GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+      GV->setAlignment(decodeMaybeAlign(1));
+
+      return GV;
+    };
+
+    auto *CmdArgsGV =
+        NewStrGV(StringRef((const char *) &*CmdArgs.begin(),
+                           CmdArgs.size()),
+                 "__clang_jit_cmdline");
+    auto *CmdLineStrLen =
+        llvm::ConstantInt::get(SzTy, CmdArgs.size());
+
+    auto &ASTBuffer = CodeGenOpts.ASTBufferForJIT;
+
+    auto *ASTDataGV = NewStrGV(ASTBuffer, "__clang_jit_ast");
+    auto *ASTDataLen =
+        llvm::ConstantInt::get(SzTy, ASTBuffer.size());
+
+    auto *BytePtrTy = llvm::Type::getInt8PtrTy(DevMod->getContext());
+
+    auto *FileDataTy = llvm::StructType::get(BytePtrTy, BytePtrTy, SzTy);
+    SmallVector<llvm::Constant *, 1> FileData;
+    for (auto &F : CodeGenOpts.LinkBitcodeFiles) {
+      auto DevBCFile = llvm::MemoryBuffer::getFile(F.Filename);
+      if (!DevBCFile)
+        continue;
+
+      auto *FNGV = NewStrGV(F.Filename, "__clang_jit_device_bc_filename");
+      auto *FDataGV = NewStrGV(DevBCFile.get()->getBuffer(),
+                               "__clang_jit_device_bc");
+      auto *FDataSz =
+          llvm::ConstantInt::get(SzTy, DevBCFile.get()->getBufferSize());
+      auto *FData =
+          llvm::ConstantStruct::get(FileDataTy,
+                                    llvm::ConstantExpr::getBitCast(FNGV,
+                                                                   BytePtrTy),
+                                    llvm::ConstantExpr::getBitCast(FDataGV,
+                                                                   BytePtrTy),
+                                    FDataSz);
+      FileData.push_back(FData);
+    }
+
+    auto *FileDataArrTy = llvm::ArrayType::get(FileDataTy, FileData.size());
+    auto *FileDataArr = llvm::ConstantArray::get(FileDataArrTy, FileData);
+    auto *FileDataGV =
+        new llvm::GlobalVariable(*DevMod, FileDataArrTy, true,
+                                 llvm::GlobalValue::PrivateLinkage, FileDataArr,
+                                 "__clang_jit_device_files");
+    FileDataGV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+
+    auto *FileDataCnt = llvm::ConstantInt::get(SzTy, FileData.size());
+
+    auto *STy = llvm::StructType::get(BytePtrTy,
+                                      BytePtrTy,
+                                      BytePtrTy, SzTy,
+                                      BytePtrTy, SzTy,
+                                      BytePtrTy, SzTy);
+
+    auto *TripleGV = NewStrGV(TargetOpts.Triple,
+                              "__clang_jit_device_triple");
+    auto *ArchGV = NewStrGV(TargetOpts.CPU, "__clang_jit_device_arch");
+
+    auto *SData =
+        llvm::ConstantStruct::get(STy,
+                                  llvm::ConstantExpr::getBitCast(TripleGV,
+                                                                 BytePtrTy),
+                                  llvm::ConstantExpr::getBitCast(ArchGV,
+                                                                 BytePtrTy),
+                                  llvm::ConstantExpr::getBitCast(ASTDataGV,
+                                                                 BytePtrTy),
+                                  ASTDataLen,
+                                  llvm::ConstantExpr::getBitCast(CmdArgsGV,
+                                                                 BytePtrTy),
+                                  CmdLineStrLen,
+                                  llvm::ConstantExpr::getBitCast(FileDataGV,
+                                                                 BytePtrTy),
+                                  FileDataCnt);
+
+    auto *ASTy = llvm::ArrayType::get(STy, 1);
+    auto *ASData = llvm::ConstantArray::get(ASTy, SData);
+    new llvm::GlobalVariable(*DevMod, ASTy, true,
+                             llvm::GlobalValue::AppendingLinkage, ASData,
+                             "__clang_jit_device");
+
+    // Now we've created a global with a trivial array with the current device
+    // data with appending linkage. If the named .bc file already exists, we
+    // need to link with it (which will concatenate our array to make a larger
+    // array in a global of the same name).
+    {
+      auto OldBCFile = llvm::MemoryBuffer::getFile(CodeGenOpts.DeviceJITBCFile);
+      if (OldBCFile) {
+        SMDiagnostic Err;
+        auto OldDevMod = llvm::parseIR(*OldBCFile->get(), Err, DevMod->getContext());
+        if (OldDevMod)
+          Linker::linkModules(*DevMod, std::move(OldDevMod));
+      }
+    }
+
+    std::error_code EC;
+    llvm::raw_fd_ostream BCOS(CodeGenOpts.DeviceJITBCFile, EC,
+                              llvm::sys::fs::CD_CreateAlways);
+    if (!EC)
+      llvm::WriteBitcodeToFile(*DevMod, BCOS,
+                               /*ShouldPreserveUseListOrder*/ true);
+
+    return;
+  }
+
+  SmallVector<llvm::CallBase*, 10> JCalls;
+  for (auto &F : TheModule->functions()) {
+    //    F.dump();
+    for (auto &BB : F)
+      for (auto &I : BB)
+        if (auto CS = dyn_cast<CallBase>(&I)) {
+          if (auto *Callee = CS->getCalledFunction()) {
+            if (auto *FCallee = dyn_cast<llvm::Function>(
+                    Callee->stripPointerCasts()))
+              if (FCallee->getName() == "__clang_jit")
+                JCalls.push_back(CS);
+          } else {
+            //            llvm::errs() << "Callee is null?\n";
+            //            CS->dump();
+          }
+
+        }
+  }
+
+  if (JCalls.empty())
+    return;
+
+  llvm::IRBuilder<> Builder(JCalls[0]->getParent());
+
+  std::string Data;
+  llvm::raw_string_ostream OS(Data);
+  llvm::WriteBitcodeToFile(*TheModule, OS,
+                           /* ShouldPreserveUseListOrder */ true);
+  OS.flush();
+
+  llvm::Value *IRData =
+      Builder.CreateGlobalStringPtr(Data,
+                                    "__clang_jit_bc");
+  llvm::Value *IRDataLen =
+      llvm::ConstantInt::get(JCalls[0]->getArgOperand(5)->getType(),
+                             Data.size());
+
+  // Before we optimized the IR, we collected the addresses of local variables
+  // that might be used when instantiating templates dynamically. If we've
+  // generated debugging information, however, we might have references to
+  // other symbols (from the debugging information) that the runtime loader
+  // will expect to resolve. Collect those now (after optimization).
+  llvm::DebugInfoFinder F;
+  F.processModule(*TheModule);
+
+  std::vector<StringRef> DbgLocalNames;
+  for (auto *DSP : F.subprograms())
+    DbgLocalNames.push_back(DSP->getLinkageName());
+  for (auto *DGVE : F.global_variables())
+    if (auto *DGV = DGVE->getVariable())
+      DbgLocalNames.push_back(DGV->getLinkageName());
+
+  if (!DbgLocalNames.empty()) {
+    DenseSet<StringRef> LocalNames;
+    auto *LocalsGV =
+        cast<GlobalVariable>(TheModule->getNamedValue("__clang_jit_locals"));
+    auto *LocalsInit = LocalsGV->getInitializer();
+    unsigned NumLocals = LocalsInit->getType()->getArrayNumElements();
+    for (unsigned i = 0; i < NumLocals; i += 2) {
+      llvm::Value *AI = LocalsInit->getAggregateElement(i);
+      if (auto *SGV =
+              dyn_cast<GlobalVariable>(AI->stripPointerCasts()))
+        AI = SGV->getInitializer();
+
+      LocalNames.insert(
+          cast<ConstantDataSequential>(AI)->getAsCString());
+    }
+
+    llvm::SetVector<GlobalValue *> DLocals;
+    for (auto &DLocalName : DbgLocalNames) {
+      if (LocalNames.count(DLocalName))
+        continue;
+      auto *GV = TheModule->getNamedValue(DLocalName);
+      if (!GV || (!GV->hasLocalLinkage() && !GV->hasHiddenVisibility()))
+        continue;
+      DLocals.insert(GV);
+    }
+
+    if (!DLocals.empty()) {
+      auto *VoidPtrPtrTy = JCalls[0]->getOperand(8)->getType();
+      auto *VoidPtrTy = VoidPtrPtrTy->getPointerElementType();
+
+      llvm::SmallVector<llvm::Constant *, 32> DLocalPtrs;
+      for (auto &DLocal : DLocals) {
+        llvm::Constant *Name =
+            Builder.CreateGlobalStringPtr(DLocal->getName(), ".cjl.str");
+        DLocalPtrs.push_back(Name);
+        DLocalPtrs.push_back(
+            llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
+                DLocal, VoidPtrTy));
+      }
+
+      auto *DLNAType = llvm::ArrayType::get(VoidPtrTy, DLocalPtrs.size());
+      auto *DLNAValue = ConstantArray::get(DLNAType, DLocalPtrs);
+
+      auto *DPtrsGbl = new llvm::GlobalVariable(
+          *TheModule, DLNAType, true, llvm::GlobalValue::PrivateLinkage,
+          DLNAValue, "__clang_jit_dbg_locals");
+      DPtrsGbl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+
+      llvm::Value *DPtrsCnt =
+          llvm::ConstantInt::get(JCalls[0]->getOperand(9)->getType(),
+                                 DLocalPtrs.size()/2);
+
+      for (auto* JCS : JCalls) {
+        JCS->setArgOperand(8,
+                           llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
+                               DPtrsGbl, VoidPtrPtrTy));
+        JCS->setArgOperand(9, DPtrsCnt);
+      }
+    }
+  }
+
+  auto OldBCFile = llvm::MemoryBuffer::getFile(CodeGenOpts.DeviceJITBCFile);
+  if (OldBCFile) {
+    SMDiagnostic Err;
+    auto OldDevMod = llvm::parseIR(*OldBCFile->get(), Err,
+                                   TheModule->getContext());
+    if (OldDevMod) {
+      OldDevMod->setDataLayout(TheModule->getDataLayout());
+      Linker::linkModules(*TheModule, std::move(OldDevMod));
+    }
+
+    if (auto *DevGV =
+            cast<llvm::GlobalObject>(TheModule->
+                                     getNamedValue("__clang_jit_device"))) {
+      DevGV->setLinkage(llvm::GlobalValue::PrivateLinkage);
+
+      auto *NumDevs =
+          llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(),
+                                 DevGV->getType()->
+                                 getPointerElementType()->
+                                 getArrayNumElements());
+
+      for (auto* JCS : JCalls) {
+        JCS->setArgOperand(10,
+                           llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
+                               DevGV, JCalls[0]->getArgOperand(10)->getType()));
+        JCS->setArgOperand(11, NumDevs);
+      }
+    }
+  }
+
+  // Now that we've serialized the base IR module, add the AST and other
+  // information to it.
+
+  auto &CmdArgs = CodeGenOpts.CmdArgsForJIT;
+  llvm::Value *CmdLineStr =
+      Builder.CreateGlobalStringPtr(std::string(CmdArgs.begin(), CmdArgs.end()),
+                                    "__clang_jit_cmdline");
+  llvm::Value *CmdLineStrLen =
+      llvm::ConstantInt::get(JCalls[0]->getArgOperand(1)->getType(),
+                             CmdArgs.size());
+
+  auto &ASTBuffer = CodeGenOpts.ASTBufferForJIT;
+  llvm::Value *ASTData =
+      Builder.CreateGlobalStringPtr(ASTBuffer, "__clang_jit_ast");
+  llvm::Value *ASTDataLen =
+      llvm::ConstantInt::get(JCalls[0]->getArgOperand(3)->getType(),
+                             ASTBuffer.size());
+
+  for (auto &JCS : JCalls) {
+    JCS->setArgOperand(0, CmdLineStr);
+    JCS->setArgOperand(1, CmdLineStrLen);
+    JCS->setArgOperand(2, ASTData);
+    JCS->setArgOperand(3, ASTDataLen);
+    JCS->setArgOperand(4, IRData);
+    JCS->setArgOperand(5, IRDataLen);
+  }
 }
 
 static std::optional<InstrProfOptions>
@@ -1134,6 +1446,9 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
 
   std::unique_ptr<llvm::ToolOutputFile> ThinLinkOS, DwoOS;
   RunOptimizationPipeline(Action, OS, ThinLinkOS);
+
+  FinalizeForJIT();
+
   RunCodegenPipeline(Action, OS, DwoOS);
 
   if (ThinLinkOS)

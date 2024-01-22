@@ -1827,6 +1827,23 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
     }
   }
 
+  // For the JIT engine, we need to keep command-line arguments. Unlike for
+  // -fembed-bitcode, we keep all options for the JIT.
+  if (Args.hasArg(OPT_fjit)) {
+    for (const auto &A : Args) {
+      ArgStringList ASL;
+      A->render(Args, ASL);
+      for (const auto &arg : ASL) {
+        StringRef ArgStr(arg);
+        Opts.CmdArgsForJIT.insert(Opts.CmdArgsForJIT.end(),
+                                  ArgStr.begin(), ArgStr.end());
+        Opts.CmdArgsForJIT.push_back('\0');
+      }
+    }
+  }
+
+  Opts.DeviceJITBCFile = std::string(Args.getLastArgValue(OPT_fjit_device_ir_file_path));
+
   auto XRayInstrBundles =
       Args.getAllArgValues(OPT_fxray_instrumentation_bundle);
   if (XRayInstrBundles.empty())
@@ -4013,6 +4030,9 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
       }
     }
   }
+
+  if (Args.hasArg(OPT_fjit))
+    Opts.setCPlusPlusJIT(LangOptions::JITMode::JM_Enabled);
 
   // The value can be empty, which indicates the system default should be used.
   StringRef CXXABI = Args.getLastArgValue(OPT_fcxx_abi_EQ);

@@ -4199,3 +4199,17 @@ def AvailableOnlyInDefaultEvalMethod : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def JITFunc : InheritableAttr {
+  let Spellings = [Clang<"jit">];
+  let Subjects = SubjectList<[FunctionTmpl]>;
+  let Documentation = [JITFuncDocs];
+}
+
+def JITFuncInstantiation : Attr {
+  // This attribute has no spellings as it is only ever created implicitly.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Args = [UnsignedArgument<"Id">];
+  let Documentation = [Undocumented];
+}
+

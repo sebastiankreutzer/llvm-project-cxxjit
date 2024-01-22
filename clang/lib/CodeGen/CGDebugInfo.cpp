@@ -3644,6 +3644,7 @@ llvm::DIType *CGDebugInfo::CreateTypeNode(QualType Ty, llvm::DIFile *Unit) {
   case Type::TypeOf:
   case Type::Decltype:
   case Type::UnaryTransform:
+  case Type::JITFromString;
     break;
   }
 

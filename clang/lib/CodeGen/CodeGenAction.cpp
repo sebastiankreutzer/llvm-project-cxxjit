@@ -15,6 +15,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangStandard.h"
@@ -103,6 +104,82 @@ namespace clang {
               << CodeGenOpts.OptRecordFormat;
         });
     }
+
+  class JITLocalCollector : public RecursiveASTVisitor<JITLocalCollector> {
+    llvm::SetVector<llvm::GlobalValue *> &Locals;
+    CodeGen::CodeGenModule &CGM;
+
+    class NameCollector : public RecursiveASTVisitor<NameCollector> {
+      JITLocalCollector &Collector;
+
+    public:
+      explicit NameCollector(JITLocalCollector &C)
+          : Collector(C) { }
+
+      bool shouldVisitTemplateInstantiations() const { return true; }
+
+      bool VisitDeclRefExpr(DeclRefExpr *E) {
+        auto &CGM = Collector.CGM;
+
+        if (auto *ND = dyn_cast<NamedDecl>(E->getDecl())) {
+          if (!ND->hasLinkage())
+            return true;
+        } else {
+          return true;
+        }
+
+        // In theory, we could call getLLVMLinkageVarDefinition to determine
+        // the linkage here. In practice, there are cases where
+        // CodeGenModule::EmitGlobalVarDefinition modifies the linkage before
+        // emission. Thus, we need to check the linkage of the variables at the
+        // IR level. The same technique should work for functions.
+
+        StringRef Name;
+        if (auto *FD = dyn_cast<FunctionDecl>(E->getDecl())) {
+          GlobalDecl GD;
+          if (const auto *D = dyn_cast<CXXConstructorDecl>(FD))
+            GD = GlobalDecl(D, Ctor_Complete);
+          else if (const auto *D = dyn_cast<CXXDestructorDecl>(FD))
+            GD = GlobalDecl(D, Dtor_Complete);
+          else
+            GD = GlobalDecl(FD);
+
+          Name = CGM.getMangledName(GD);
+        } else if (auto *VD = dyn_cast<VarDecl>(E->getDecl())) {
+          Name = CGM.getMangledName(GlobalDecl(VD));
+        }
+
+        if (!Name.empty()) {
+          auto *GV = CGM.getModule().getNamedValue(Name);
+
+          // Symbols with local linkage must be included (symbols with hidden
+          // visibility should be included also because the JIT won't be able
+          // to get those otherwise).
+          if (GV && (GV->hasLocalLinkage() || GV->hasHiddenVisibility()))
+            Collector.Locals.insert(GV);
+        }
+
+        return true;
+      }
+    };
+
+  public:
+    explicit JITLocalCollector(llvm::SetVector<GlobalValue *> &L,
+                               CodeGen::CodeGenModule &CGM)
+        : Locals(L), CGM(CGM) { }
+
+    bool shouldVisitTemplateInstantiations() const { return true; }
+
+    bool VisitFunctionDecl(const FunctionDecl *D) {
+      if (D->hasAttr<JITFuncAttr>()) {
+        if (D->getTemplateSpecializationKind() != TSK_ExplicitSpecialization)
+          NameCollector(*this)
+              .TraverseFunctionDecl(const_cast<FunctionDecl *>(D));
+      }
+
+      return true;
+    }
+  };
 
   class BackendConsumer : public ASTConsumer {
     using LinkModule = CodeGenAction::LinkModule;
@@ -298,6 +375,89 @@ namespace clang {
       return false; // success
     }
 
+    void FinalizeForJIT(ASTContext &C) {
+      if (!LangOpts.isJITEnabled())
+        return;
+
+      // Now that we have access to both objects, move the AST buffer from the
+      // ASTContext to CodeGenOpts (from where it will be accessed later).
+      C.ASTBufferForJIT.swap(CodeGenOpts.ASTBufferForJIT);
+
+      // If we're compiling for a CUDA device, skip the rest (there's no way to
+      // share locals between kernels anyway).
+      if (LangOpts.CUDAIsDevice)
+        return;
+
+      SmallVector<llvm::CallBase*, 10> JCalls;
+      for (auto &F : getModule()->functions())
+        for (auto &BB : F)
+          for (auto &I : BB)
+            if (auto CS = dyn_cast<CallBase>(&I))
+              if (auto *Callee =
+                      dyn_cast<llvm::Function>(
+                          CS->getCalledFunction()->stripPointerCasts()))
+                if (Callee->getName() == "__clang_jit")
+                  JCalls.push_back(CS);
+
+      if (JCalls.empty())
+        return;
+
+      llvm::IRBuilder<> Builder(JCalls[0]->getParent());
+
+      // Collect the local variables and functions here to pass to the JIT.
+      // Sadly, we need to take their addresses here, instead of after
+      // optimization, because otherwise argument promotion, global-variable
+      // mutations, and other transformations might render them incompatible
+      // with JIT-generated modules later.
+
+      llvm::SetVector<GlobalValue *> Locals;
+      JITLocalCollector(Locals, Gen->CGM()).TraverseAST(C);
+
+      // We also need to include local symbols generated internally (e.g.,
+      // __clang_call_terminate).
+      for (auto &GV : getModule()->global_values()) {
+        // Get all of the symbols that start with __clang (except those that
+        // start with __clang_jit).
+        if (!GV.hasName())
+          continue;
+        if (!GV.getName().startswith("__clang") ||
+            GV.getName().startswith("__clang_jit"))
+          continue;
+        if (!GV.hasLocalLinkage() && !GV.hasHiddenVisibility())
+          continue;
+
+        Locals.insert(&GV);
+      }
+
+      llvm::SmallVector<llvm::Constant *, 32> LocalPtrs;
+      for (auto &Local : Locals) {
+        llvm::Constant *Name =
+            Builder.CreateGlobalStringPtr(Local->getName(), ".cjl.str");
+        LocalPtrs.push_back(Name);
+        LocalPtrs.push_back(
+            llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
+                Local, Gen->CGM().VoidPtrTy));
+      }
+
+      auto *LNAType = llvm::ArrayType::get(Gen->CGM().VoidPtrTy, LocalPtrs.size());
+      auto *LNAValue = ConstantArray::get(LNAType, LocalPtrs);
+
+      auto *PtrsGbl = new llvm::GlobalVariable(
+          *getModule(), LNAType, true, llvm::GlobalValue::PrivateLinkage, LNAValue,
+          "__clang_jit_locals");
+      PtrsGbl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+
+      llvm::Value *PtrsCnt =
+          llvm::ConstantInt::get(Gen->CGM().Int32Ty, LocalPtrs.size()/2);
+
+      for (auto* JCS : JCalls) {
+        JCS->setArgOperand(6,
+                           llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
+                               PtrsGbl, Gen->CGM().VoidPtrPtrTy));
+        JCS->setArgOperand(7, PtrsCnt);
+      }
+    }
+
     void HandleTranslationUnit(ASTContext &C) override {
       {
         llvm::TimeTraceScope TimeScope("Frontend");
@@ -382,6 +542,8 @@ namespace clang {
       }
 
       EmbedBitcode(getModule(), CodeGenOpts, llvm::MemoryBufferRef());
+
+      FinalizeForJIT(C);
 
       EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
                         LangOpts, C.getTargetInfo().getDataLayoutString(),

@@ -726,7 +726,13 @@ llvm::Function *CGNVCUDARuntime::makeModuleCtorFunction() {
   // in destructor on exit. Then associate all known kernels with the GPU binary
   // handle so CUDA runtime can figure out what to call on the GPU side.
   std::unique_ptr<llvm::MemoryBuffer> CudaGpuBinary = nullptr;
-  if (!CudaGpuBinaryFileName.empty()) {
+  if (CGM.getLangOpts().isInJIT()) {
+    if (!CGM.getCodeGenOpts().GPUBinForJIT.empty())
+      CudaGpuBinary =
+          llvm::MemoryBuffer::getMemBufferCopy(CGM.getCodeGenOpts().GPUBinForJIT);
+    else
+      return nullptr;
+  } else if (!CudaGpuBinaryFileName.empty()) {
     auto VFS = CGM.getFileSystem();
     auto CudaGpuBinaryOrErr =
         VFS->getBufferForFile(CudaGpuBinaryFileName, -1, false);

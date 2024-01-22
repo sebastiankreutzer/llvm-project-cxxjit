@@ -1607,6 +1607,8 @@ public:
   /// currently being copy-initialized. Can be empty.
   llvm::SmallVector<QualType, 4> CurrentParameterCopyTypes;
 
+  unsigned NextJITFuncId;
+
   void ReadMethodPool(Selector Sel);
   void updateOutOfDateSelector(Selector Sel);
 
@@ -2145,6 +2147,8 @@ public:
   QualType BuildWritePipeType(QualType T,
                          SourceLocation Loc);
   QualType BuildBitIntType(bool IsUnsigned, Expr *BitWidth, SourceLocation Loc);
+
+  QualType BuildJITFromStringType(Expr *E, SourceLocation Loc);
 
   TypeSourceInfo *GetTypeForDeclarator(Declarator &D, Scope *S);
   TypeSourceInfo *GetTypeForDeclaratorCast(Declarator &D, QualType FromTy);
@@ -3707,6 +3711,7 @@ public:
                                     StringRef Name);
   OptimizeNoneAttr *mergeOptimizeNoneAttr(Decl *D,
                                           const AttributeCommonInfo &CI);
+  JITFuncAttr *mergeJITFuncAttr(Decl *D, const AttributeCommonInfo &CI);
   InternalLinkageAttr *mergeInternalLinkageAttr(Decl *D, const ParsedAttr &AL);
   InternalLinkageAttr *mergeInternalLinkageAttr(Decl *D,
                                                 const InternalLinkageAttr &AL);
@@ -8466,14 +8471,16 @@ public:
   bool CheckTemplateTypeArgument(
       TemplateTypeParmDecl *Param, TemplateArgumentLoc &Arg,
       SmallVectorImpl<TemplateArgument> &SugaredConverted,
-      SmallVectorImpl<TemplateArgument> &CanonicalConverted);
+      SmallVectorImpl<TemplateArgument> &CanonicalConverted,
+      bool IsForJIT = false);
 
   bool CheckTemplateArgument(TypeSourceInfo *Arg);
   ExprResult CheckTemplateArgument(NonTypeTemplateParmDecl *Param,
                                    QualType InstantiatedParamType, Expr *Arg,
                                    TemplateArgument &SugaredConverted,
                                    TemplateArgument &CanonicalConverted,
-                                   CheckTemplateArgumentKind CTAK);
+                                   CheckTemplateArgumentKind CTAK,
+                                   bool IsForJIT = false);
   bool CheckTemplateTemplateArgument(TemplateTemplateParmDecl *Param,
                                      TemplateParameterList *Params,
                                      TemplateArgumentLoc &Arg);
@@ -13902,6 +13909,9 @@ public:
   void incrementMSManglingNumber() const {
     return CurScope->incrementMSManglingNumber();
   }
+
+  // Used for JIT.
+  void setCurScope(Scope *S) { CurScope = S; }
 
   IdentifierInfo *getSuperIdentifier() const;
 

@@ -223,6 +223,8 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
   TUScope = nullptr;
   isConstantEvaluatedOverride = false;
 
+  NextJITFuncId = 0;
+
   LoadedExternalKnownNamespaces = false;
   for (unsigned I = 0; I != NSAPI::NumNSNumberLiteralMethods; ++I)
     NSNumberLiteralMethods[I] = nullptr;

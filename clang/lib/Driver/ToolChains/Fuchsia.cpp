@@ -146,6 +146,8 @@ void fuchsia::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
                    options::OPT_r)) {
+    AddJITRunTimeLibs(getToolChain(), D, CmdArgs, Args);
+
     if (Args.hasArg(options::OPT_static))
       CmdArgs.push_back("-Bdynamic");
 
@@ -176,8 +178,7 @@ void fuchsia::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
     AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
 
-    if (Args.hasArg(options::OPT_pthread) ||
-        Args.hasArg(options::OPT_pthreads))
+    if (Args.hasArg(options::OPT_pthread) || Args.hasArg(options::OPT_pthreads))
       CmdArgs.push_back("-lpthread");
 
     if (Args.hasArg(options::OPT_fsplit_stack))
@@ -217,7 +218,7 @@ void fuchsia::StaticLibTool::ConstructJob(Compilation &C, const JobAction &JA,
 
   for (const auto &II : Inputs) {
     if (II.isFilename()) {
-       CmdArgs.push_back(II.getFilename());
+      CmdArgs.push_back(II.getFilename());
     }
   }
 
@@ -333,16 +334,14 @@ std::string Fuchsia::ComputeEffectiveClangTriple(const ArgList &Args,
   return Triple.str();
 }
 
-Tool *Fuchsia::buildLinker() const {
-  return new tools::fuchsia::Linker(*this);
-}
+Tool *Fuchsia::buildLinker() const { return new tools::fuchsia::Linker(*this); }
 
 Tool *Fuchsia::buildStaticLibTool() const {
   return new tools::fuchsia::StaticLibTool(*this);
 }
 
-ToolChain::RuntimeLibType Fuchsia::GetRuntimeLibType(
-    const ArgList &Args) const {
+ToolChain::RuntimeLibType
+Fuchsia::GetRuntimeLibType(const ArgList &Args) const {
   if (Arg *A = Args.getLastArg(clang::driver::options::OPT_rtlib_EQ)) {
     StringRef Value = A->getValue();
     if (Value != "compiler-rt")
@@ -353,13 +352,12 @@ ToolChain::RuntimeLibType Fuchsia::GetRuntimeLibType(
   return ToolChain::RLT_CompilerRT;
 }
 
-ToolChain::CXXStdlibType
-Fuchsia::GetCXXStdlibType(const ArgList &Args) const {
+ToolChain::CXXStdlibType Fuchsia::GetCXXStdlibType(const ArgList &Args) const {
   if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
     StringRef Value = A->getValue();
     if (Value != "libc++")
       getDriver().Diag(diag::err_drv_invalid_stdlib_name)
-        << A->getAsString(Args);
+          << A->getAsString(Args);
   }
 
   return ToolChain::CST_Libcxx;

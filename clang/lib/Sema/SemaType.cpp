@@ -2374,6 +2374,11 @@ QualType Sema::BuildBitIntType(bool IsUnsigned, Expr *BitWidth,
   return Context.getBitIntType(IsUnsigned, NumBits);
 }
 
+/// Build a JIT from-string type.
+QualType Sema::BuildJITFromStringType(Expr *E, SourceLocation Loc) {
+  return Context.getJITFromStringType(E);
+}
+
 /// Check whether the specified array bound can be evaluated using the relevant
 /// language rules. If so, returns the possibly-converted expression and sets
 /// SizeVal to the size. If not, but the expression might be a VLA bound,

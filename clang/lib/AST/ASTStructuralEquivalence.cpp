@@ -1285,6 +1285,13 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
       return false;
     break;
   }
+  case Type::JITFromString: {
+    if (!IsStructurallyEquivalent(
+            Context, cast<JITFromStringType>(T1)->getUnderlyingExpr(),
+            cast<JITFromStringType>(T2)->getUnderlyingExpr()))
+      return false;
+    break;
+  }
   } // end switch
 
   return true;

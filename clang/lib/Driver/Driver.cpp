@@ -510,6 +510,12 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
   if (Args.hasFlag(options::OPT_miamcu, options::OPT_mno_iamcu, false))
     DAL->AddFlagArg(nullptr, Opts.getOption(options::OPT_static));
 
+  // For JIT, always use -rdynamic. This allows the JIT to find external
+  // symbols in objects in the main executable.
+  if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false) &&
+      getFinalPhase(*DAL) == phases::Link)
+    DAL->AddFlagArg(0, Opts.getOption(options::OPT_rdynamic));
+
 // Add a default value of -mlinker-version=, if one was given and the user
 // didn't specify one.
 #if defined(HOST_LINK_VERSION)
@@ -6131,6 +6137,17 @@ std::string Driver::GetTemporaryDirectory(StringRef Prefix) const {
   }
 
   return std::string(Path.str());
+}
+
+std::string Driver::GetDeviceJITBCFile(Compilation &C,
+                                       bool CreateNewName) const {
+  if (!DeviceJITBCFile.empty() || !CreateNewName)
+    return DeviceJITBCFile;
+
+  std::string TmpName = GetTemporaryPath("device-jit", "bc");
+  DeviceJITBCFile = C.addTempFile(C.getArgs().MakeArgString(TmpName));
+
+  return DeviceJITBCFile;
 }
 
 std::string Driver::GetClPchPath(Compilation &C, StringRef BaseName) const {

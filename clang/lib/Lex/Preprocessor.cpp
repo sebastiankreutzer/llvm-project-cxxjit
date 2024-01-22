@@ -227,6 +227,13 @@ void Preprocessor::FinalizeForModelFile() {
   PragmaHandlers = std::move(PragmaHandlersBackup);
 }
 
+void Preprocessor::ResetForJITTypes() {
+  NumEnteredSourceFiles = 0;
+
+  // Reset PredefinesFileID
+  PredefinesFileID = FileID();
+}
+
 void Preprocessor::DumpToken(const Token &Tok, bool DumpFlags) const {
   llvm::errs() << tok::getTokenName(Tok.getKind());
 

@@ -2232,6 +2232,7 @@ static Sema::TemplateDeductionResult DeduceTemplateArgumentsByTypeMatch(
     case Type::DependentTemplateSpecialization:
     case Type::PackExpansion:
     case Type::Pipe:
+    case Type::JITFromString:
       // No template argument deduction for these types
       return Sema::TDK_Success;
     }
@@ -6263,6 +6264,12 @@ MarkUsedTemplateParameters(ASTContext &Ctx, QualType T,
     MarkUsedTemplateParameters(Ctx,
                                cast<DependentBitIntType>(T)->getNumBitsExpr(),
                                OnlyDeduced, Depth, Used);
+    break;
+  case Type::JITFromString:
+    if (!OnlyDeduced)
+      MarkUsedTemplateParameters(Ctx,
+                                 cast<JITFromStringType>(T)->getUnderlyingExpr(),
+                                 OnlyDeduced, Depth, Used);
     break;
 
   // None of these types have any template parameters in them.

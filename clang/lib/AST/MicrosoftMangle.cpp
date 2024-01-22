@@ -3436,6 +3436,11 @@ void MicrosoftCXXNameMangler::mangleType(const PipeType *T, Qualifiers,
   mangleArtificialTagType(TTK_Struct, TemplateMangling, {"__clang"});
 }
 
+void MicrosoftCXXNameMangler::mangleType(const JITFromStringType *T, Qualifiers,
+                                         SourceRange Range) {
+  llvm_unreachable("Cannot mangle JIT from-string type.");
+}
+
 void MicrosoftMangleContextImpl::mangleCXXName(GlobalDecl GD,
                                                raw_ostream &Out) {
   const NamedDecl *D = cast<NamedDecl>(GD.getDecl());
@@ -3839,6 +3844,14 @@ void MicrosoftMangleContextImpl::mangleTypeName(
   MicrosoftCXXNameMangler Mangler(*this, Out);
   Mangler.getStream() << '?';
   Mangler.mangleType(T, SourceRange());
+}
+
+void MicrosoftMangleContextImpl::mangleTemplateArgument(const TemplateDecl *TD,
+                                                        const TemplateArgument &TA,
+                                                        const NamedDecl *Parm,
+                                                        raw_ostream &Out) {
+  MicrosoftCXXNameMangler Mangler(*this, Out);
+  Mangler.mangleTemplateArg(TD, TA, Parm);
 }
 
 void MicrosoftMangleContextImpl::mangleReferenceTemporary(

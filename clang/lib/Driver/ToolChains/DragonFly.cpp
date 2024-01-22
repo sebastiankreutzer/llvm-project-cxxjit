@@ -129,6 +129,8 @@ void dragonfly::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("/usr/lib/gcc80");
     }
 
+    AddJITRunTimeLibs(getToolChain(), D, CmdArgs, Args);
+
     if (D.CCCIsCXX()) {
       if (getToolChain().ShouldLinkCXXStdlib(Args))
         getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);

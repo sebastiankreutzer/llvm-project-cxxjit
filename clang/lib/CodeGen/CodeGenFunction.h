@@ -4065,6 +4065,8 @@ public:
   RValue EmitSimpleCallExpr(const CallExpr *E, ReturnValueSlot ReturnValue);
   CGCallee EmitCallee(const Expr *E);
 
+  llvm::Value *EmitJITStubCall(const FunctionDecl *FD);
+
   void checkTargetFeatures(const CallExpr *E, const FunctionDecl *TargetDecl);
   void checkTargetFeatures(SourceLocation Loc, const FunctionDecl *TargetDecl);
 

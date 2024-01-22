@@ -152,6 +152,7 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
                    options::OPT_r)) {
+    AddJITRunTimeLibs(getToolChain(), getToolChain().getDriver(), CmdArgs, Args);
     if (getToolChain().ShouldLinkCXXStdlib(Args))
       getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
     if (Args.hasArg(options::OPT_fstack_protector) ||

@@ -49,21 +49,25 @@ IdentifierInfo *Parser::getSEHExceptKeyword() {
   return Ident__except;
 }
 
-Parser::Parser(Preprocessor &pp, Sema &actions, bool skipFunctionBodies)
+Parser::Parser(Preprocessor &pp, Sema &actions, bool skipFunctionBodies,
+               bool isParsingTypesForJIT)
     : PP(pp), PreferredType(pp.isCodeCompletionEnabled()), Actions(actions),
       Diags(PP.getDiagnostics()), GreaterThanIsOperator(true),
       ColonIsSacred(false), InMessageExpression(false),
       TemplateParameterDepth(0), ParsingInObjCContainer(false) {
   SkipFunctionBodies = pp.isCodeCompletionEnabled() || skipFunctionBodies;
+  IsParsingTypesForJIT = isParsingTypesForJIT;
   Tok.startToken();
   Tok.setKind(tok::eof);
   Actions.CurScope = nullptr;
   NumCachedScopes = 0;
   CurParsedObjCImpl = nullptr;
 
-  // Add #pragma handlers. These are removed and destroyed in the
-  // destructor.
-  initializePragmaHandlers();
+  if (!IsParsingTypesForJIT) {
+    // Add #pragma handlers. These are removed and destroyed in the
+    // destructor.
+    initializePragmaHandlers();
+  }
 
   CommentSemaHandler.reset(new ActionCommentHandler(actions));
   PP.addCommentHandler(CommentSemaHandler.get());
@@ -454,15 +458,18 @@ Parser::ParseScopeFlags::~ParseScopeFlags() {
 //===----------------------------------------------------------------------===//
 
 Parser::~Parser() {
-  // If we still have scopes active, delete the scope tree.
-  delete getCurScope();
-  Actions.CurScope = nullptr;
+  if (!IsParsingTypesForJIT) {
+    // If we still have scopes active, delete the scope tree.
+    delete getCurScope();
+    Actions.CurScope = nullptr;
+  }
 
   // Free the scope cache.
   for (unsigned i = 0, e = NumCachedScopes; i != e; ++i)
     delete ScopeCache[i];
 
-  resetPragmaHandlers();
+  if (!IsParsingTypesForJIT)
+    resetPragmaHandlers();
 
   PP.removeCommentHandler(CommentSemaHandler.get());
 
@@ -562,7 +569,8 @@ void Parser::Initialize() {
     Ident_module = PP.getIdentifierInfo("module");
   }
 
-  Actions.Initialize();
+  if (!IsParsingTypesForJIT)
+    Actions.Initialize();
 
   // Prime the lexer look-ahead.
   ConsumeToken();

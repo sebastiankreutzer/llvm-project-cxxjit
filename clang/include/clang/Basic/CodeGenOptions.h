@@ -16,6 +16,7 @@
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Basic/XRayInstr.h"
 #include "llvm/ADT/FloatingPointMode.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Frontend/Debug/Options.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Regex.h"
@@ -384,6 +385,22 @@ public:
 
   /// List of backend command-line options for -fembed-bitcode.
   std::vector<uint8_t> CmdArgs;
+
+  /// List of backend command-line options for JIT. This needs to include some
+  /// options specifically excluded from the command-line options saved with
+  /// -fembed-bitcode.
+  std::vector<uint8_t> CmdArgsForJIT;
+
+  /// When needed for JIT, the buffer into which to save the AST.
+  mutable SmallString<128> ASTBufferForJIT;
+
+  /// The name of the file used to store IR created during device compilation
+  /// that is later used during host compilation.
+  std::string DeviceJITBCFile;
+
+  /// When needed for JIT, the buffer into which the GPU binary is stored for
+  /// host compilation.
+  mutable SmallString<128> GPUBinForJIT;
 
   /// A list of all -fno-builtin-* function names (e.g., memset).
   std::vector<std::string> NoBuiltinFuncs;

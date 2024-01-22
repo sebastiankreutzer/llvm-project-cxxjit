@@ -50,10 +50,12 @@
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
@@ -63,6 +65,7 @@
 #include "llvm/Support/YAMLParser.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/TargetParser.h"
+#include <cstring>
 #include <optional>
 
 using namespace clang::driver;
@@ -1847,6 +1850,84 @@ static void AddLibgcc(const ToolChain &TC, const Driver &D,
   if (LGT == LibGccType::SharedLibGcc ||
       (LGT == LibGccType::UnspecifiedLibGcc && D.CCCIsCXX()))
     CmdArgs.push_back("-lgcc");
+}
+
+void tools::AddJITRunTimeLibs(const ToolChain &TC, const Driver &D,
+                              ArgStringList &CmdArgs, const ArgList &Args) {
+
+  // If using JIT extensions, we need to link with Clang and LLVM.
+  if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false)) {
+    SmallString<256> llvmcfgAbsolutePath(D.Dir);
+    llvm::sys::path::append(llvmcfgAbsolutePath, "llvm-config");
+    if (!llvm::sys::fs::exists(llvmcfgAbsolutePath)) {
+      llvmcfgAbsolutePath.clear();
+      if (llvm::ErrorOr<std::string> llvmcfg =
+              llvm::sys::findProgramByName("llvm-config"))
+        llvm::sys::fs::real_path(*llvmcfg, llvmcfgAbsolutePath);
+      else
+        return;
+    }
+
+    auto AddFromLC = [&](StringRef Flag) {
+      SmallString<32> OutputFile;
+      llvm::sys::fs::createTemporaryFile("llvm-config", "", OutputFile);
+      llvm::FileRemover OutputRemover(OutputFile.c_str());
+
+      Optional<StringRef> Redirects[] = {StringRef(""),
+                                         StringRef(OutputFile), StringRef("")};
+      StringRef PArgs[] = {StringRef(llvmcfgAbsolutePath), Flag};
+
+      int RunResult =
+          llvm::sys::ExecuteAndWait(llvmcfgAbsolutePath, PArgs, llvm::None,
+                                    Redirects);
+      if (RunResult != 0)
+        return;
+
+      auto OutputBuf = llvm::MemoryBuffer::getFile(OutputFile.c_str());
+      if (!OutputBuf)
+        return;
+      StringRef Output = OutputBuf.get()->getBuffer();
+
+      SmallVector<const char *, 20> splitArgs;
+      llvm::BumpPtrAllocator A;
+      llvm::StringSaver Saver(A);
+
+      auto CLTokenizer =
+          llvm::Triple(llvm::sys::getProcessTriple()).isOSWindows() ?
+                                                                    llvm::cl::TokenizeWindowsCommandLine :
+                                                                    llvm::cl::TokenizeGNUCommandLine;
+      CLTokenizer(Output, Saver, splitArgs, false);
+
+      for (auto &splitArg : splitArgs) {
+        const char *ldArg = splitArg;
+
+        if (!strncmp(ldArg, "-Wl,", 4))
+          ldArg += 4;
+
+        CmdArgs.push_back(Args.MakeArgString(ldArg));
+      }
+    };
+
+    AddFromLC("--ldflags");
+
+    CmdArgs.push_back("-lclangCodeGen");
+    CmdArgs.push_back("-lclangFrontend");
+    CmdArgs.push_back("-lclangDriver");
+    CmdArgs.push_back("-lclangParse");
+    CmdArgs.push_back("-lclangSema");
+    CmdArgs.push_back("-lclangAnalysis");
+    CmdArgs.push_back("-lclangSerialization");
+    CmdArgs.push_back("-lclangAST");
+    CmdArgs.push_back("-lclangEdit");
+    CmdArgs.push_back("-lclangLex");
+    CmdArgs.push_back("-lclangBasic");
+
+    AddFromLC("--libs");
+    AddFromLC("--system-libs");
+
+    CmdArgs.push_back("-rpath");
+    AddFromLC("--libdir");
+  }
 }
 
 void tools::AddRunTimeLibs(const ToolChain &TC, const Driver &D,

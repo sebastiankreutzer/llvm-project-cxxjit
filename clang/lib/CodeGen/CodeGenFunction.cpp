@@ -233,6 +233,9 @@ TypeEvaluationKind CodeGenFunction::getEvaluationKind(QualType type) {
     case Type::DeducedTemplateSpecialization:
       llvm_unreachable("undeduced type in IR-generation");
 
+    case Type::JITFromString:
+      llvm_unreachable("JIT from-string type in IR-generation");
+
     // Various scalar types.
     case Type::Builtin:
     case Type::Pointer:
@@ -2267,6 +2270,7 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
     case Type::ObjCInterface:
     case Type::ObjCObjectPointer:
     case Type::BitInt:
+    case Type::JITFromString:
       llvm_unreachable("type class is never variably-modified!");
 
     case Type::Elaborated:

@@ -241,6 +241,9 @@ class ASTContext : public RefCountedBase<ASTContext> {
   mutable llvm::FoldingSet<DependentBitIntType> DependentBitIntTypes;
   llvm::FoldingSet<BTFTagAttributedType> BTFTagAttributedTypes;
 
+  mutable llvm::FoldingSet<DependentJITFromStringType>
+      DependentJITFromStringTypes;
+
   mutable llvm::FoldingSet<QualifiedTemplateName> QualifiedTemplateNames;
   mutable llvm::FoldingSet<DependentTemplateName> DependentTemplateNames;
   mutable llvm::FoldingSet<SubstTemplateTemplateParmStorage>
@@ -1180,6 +1183,9 @@ public:
   /// with this AST context, if any.
   ASTMutationListener *getASTMutationListener() const { return Listener; }
 
+  /// When needed for JIT, the buffer into which to save the AST.
+  SmallString<128> ASTBufferForJIT;
+
   void PrintStats() const;
   const SmallVectorImpl<Type *>& getTypes() const { return Types; }
 
@@ -1368,6 +1374,9 @@ public:
   /// Return a dependent bit-precise integer type with the specified signedness
   /// and bit count.
   QualType getDependentBitIntType(bool Unsigned, Expr *BitsExpr) const;
+
+  /// JIT from-string type.
+  QualType getJITFromStringType(Expr *e) const;
 
   /// Gets the struct used to keep track of the extended descriptor for
   /// pointer to blocks.

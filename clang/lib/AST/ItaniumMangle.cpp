@@ -112,6 +112,10 @@ public:
   void mangleCXXRTTI(QualType T, raw_ostream &) override;
   void mangleCXXRTTIName(QualType T, raw_ostream &,
                          bool NormalizeIntegers) override;
+  void mangleTemplateArgument(const TemplateDecl *TD,
+                              const TemplateArgument &TA,
+                              const NamedDecl *Parm,
+                              raw_ostream &Out) override;
   void mangleTypeName(QualType T, raw_ostream &,
                       bool NormalizeIntegers) override;
 
@@ -451,6 +455,7 @@ public:
   void mangleNameOrStandardSubstitution(const NamedDecl *ND);
   void mangleLambdaSig(const CXXRecordDecl *Lambda);
   void mangleModuleNamePrefix(StringRef Name, bool IsPartition = false);
+  void mangleTemplateArg(TemplateArgument A, bool NeedExactType);
 
 private:
 
@@ -590,7 +595,6 @@ private:
                           unsigned NumTemplateArgs);
   void mangleTemplateArgs(TemplateName TN, ArrayRef<TemplateArgument> Args);
   void mangleTemplateArgs(TemplateName TN, const TemplateArgumentList &AL);
-  void mangleTemplateArg(TemplateArgument A, bool NeedExactType);
   void mangleTemplateArgExpr(const Expr *E);
   void mangleValueInTemplateArg(QualType T, const APValue &V, bool TopLevel,
                                 bool NeedExactType = false);
@@ -2326,6 +2330,7 @@ bool CXXNameMangler::mangleUnresolvedTypeOrSimpleId(QualType Ty,
   case Type::MacroQualified:
   case Type::BitInt:
   case Type::DependentBitInt:
+  case Type::JITFromString:
     llvm_unreachable("type is illegal as a nested name specifier");
 
   case Type::SubstTemplateTypeParmPack:
@@ -4239,6 +4244,10 @@ void CXXNameMangler::mangleType(const DependentBitIntType *T) {
   Out << "D" << (T->isUnsigned() ? "U" : "B");
   mangleExpression(T->getNumBitsExpr());
   Out << "_";
+}
+
+void CXXNameMangler::mangleType(const JITFromStringType *T) {
+  llvm_unreachable("Cannot mangle JIT from-string type.");
 }
 
 void CXXNameMangler::mangleIntegerLiteral(QualType T,
@@ -6746,6 +6755,14 @@ void ItaniumMangleContextImpl::mangleModuleInitializer(const Module *M,
         StringRef(&M->Name[Partition + 1], M->Name.size() - Partition - 1),
         /*IsPartition*/ true);
   }
+}
+
+void ItaniumMangleContextImpl::mangleTemplateArgument(const TemplateDecl *TD,
+                                                      const TemplateArgument &TA,
+                                                      const NamedDecl *Parm,
+                                                      raw_ostream &Out) {
+  CXXNameMangler Mangler(*this, Out);
+  Mangler.mangleTemplateArg(TA, false);
 }
 
 ItaniumMangleContext *ItaniumMangleContext::create(ASTContext &Context,

@@ -4,6 +4,7 @@ set(LLVM_LINK_COMPONENTS
   BitReader
   BitWriter
   CodeGenTypes
+  CodeGen
   Core
   Coroutines
   Coverage
@@ -21,14 +22,23 @@ set(LLVM_LINK_COMPONENTS
   MC
   ObjCARCOpts
   Object
+  Option
+  OrcJIT
   Passes
   ProfileData
+  RuntimeDyld
   ScalarOpts
   Support
   Target
   TargetParser
   TransformUtils
+  Vectorize
+  ExecutionEngine
+  Interpreter
+  ${LLVM_TARGETS_TO_BUILD}
   )
+# Note that above we depend on ${LLVM_TARGETS_TO_BUILD} instead of just native
+# because we might need NVPTX, etc.
 
 add_clang_library(clangCodeGen
   ABIInfo.cpp
@@ -115,6 +125,7 @@ add_clang_library(clangCodeGen
   Targets/X86.cpp
   Targets/XCore.cpp
   VarBypassDetector.cpp
+  JIT.cpp
 
   DEPENDS
   intrinsics_gen
@@ -124,7 +135,10 @@ add_clang_library(clangCodeGen
   clangAST
   clangAnalysis
   clangBasic
+  clangDriver
   clangFrontend
   clangLex
+  clangParse
+  clangSema
   clangSerialization
   )

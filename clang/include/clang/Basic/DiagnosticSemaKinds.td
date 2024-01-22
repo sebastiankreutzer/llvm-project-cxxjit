@@ -3675,6 +3675,13 @@ def note_cannot_use_trivial_abi_reason : Note<
   "it has a base of a non-trivial class type|it has a virtual base|"
   "it has a __weak field|it has a field of a non-trivial class type}1">;
 
+def warn_jit_attribute_ignored :
+  Warning<"'jit' attribute ignored; use -fjit to enable the attribute">,
+  InGroup<IgnoredAttributes>;
+def err_template_arg_is_jit_func : Error<
+  "cannot use just-in-time compiled function-template instantiation %0 as "
+  "a template parameter to a non-just-in-time-compiled type">;
+
 // Availability attribute
 def warn_availability_unknown_platform : Warning<
   "unknown platform %0 in availability macro">, InGroup<Availability>;

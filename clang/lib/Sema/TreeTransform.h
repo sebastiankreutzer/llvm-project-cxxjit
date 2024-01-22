@@ -1269,6 +1269,9 @@ public:
   QualType RebuildDependentBitIntType(bool IsUnsigned, Expr *NumBitsExpr,
                                       SourceLocation Loc);
 
+  /// Build a new JIT from-string type.
+  QualType RebuildJITFromStringType(Expr *Underlying, SourceLocation Loc);
+
   /// Build a new template name given a nested name specifier, a flag
   /// indicating whether the "template" keyword was provided, and the template
   /// that the template name refers to.
@@ -6726,6 +6729,30 @@ QualType TreeTransform<Derived>::TransformDependentBitIntType(
     BitIntTypeLoc NewTL = TLB.push<BitIntTypeLoc>(Result);
     NewTL.setNameLoc(TL.getNameLoc());
   }
+  return Result;
+}
+
+template<typename Derived>
+QualType TreeTransform<Derived>::TransformJITFromStringType(TypeLocBuilder &TLB,
+                                                            JITFromStringTypeLoc TL) {
+  const JITFromStringType *T = TL.getTypePtr();
+
+  ExprResult E = getDerived().TransformExpr(T->getUnderlyingExpr());
+  if (E.isInvalid())
+    return QualType();
+
+  QualType Result = TL.getType();
+  if (getDerived().AlwaysRebuild() ||
+      E.get() != T->getUnderlyingExpr()) {
+    Result = getDerived().RebuildJITFromStringType(E.get(), TL.getNameLoc());
+    if (Result.isNull())
+      return QualType();
+  }
+  else E.get();
+
+  JITFromStringTypeLoc NewTL = TLB.push<JITFromStringTypeLoc>(Result);
+  NewTL.setNameLoc(TL.getNameLoc());
+
   return Result;
 }
 
@@ -15119,6 +15146,12 @@ template <typename Derived>
 QualType TreeTransform<Derived>::RebuildDependentBitIntType(
     bool IsUnsigned, Expr *NumBitsExpr, SourceLocation Loc) {
   return SemaRef.BuildBitIntType(IsUnsigned, NumBitsExpr, Loc);
+}
+
+template<typename Derived>
+QualType TreeTransform<Derived>::RebuildJITFromStringType(Expr *E,
+                                                          SourceLocation Loc) {
+  return SemaRef.BuildJITFromStringType(E, Loc);
 }
 
 template<typename Derived>

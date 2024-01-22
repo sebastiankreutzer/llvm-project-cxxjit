@@ -333,6 +333,10 @@ private:
   /// toolchains.
   llvm::DenseMap<const ToolChain *, llvm::DenseSet<llvm::StringRef>> KnownArchs;
 
+  /// The name of the file used to store IR created during device compilation
+  /// that is later used during host compilation.
+  mutable std::string DeviceJITBCFile;
+
 private:
   /// TranslateInputArgs - Create a new derived argument list from the input
   /// arguments, after applying the standard argument translations.
@@ -704,6 +708,13 @@ public:
   LTOKind getLTOMode(bool IsOffload = false) const {
     return IsOffload ? OffloadLTOMode : LTOMode;
   }
+
+  /// Return the name of the file used to store IR used for JIT extensions that
+  /// is generated during device compilation and used during later host
+  /// compilation.
+  std::string GetDeviceJITBCFile(Compilation &C,
+                                 bool CreateNewName = false) const ;
+
 
 private:
 

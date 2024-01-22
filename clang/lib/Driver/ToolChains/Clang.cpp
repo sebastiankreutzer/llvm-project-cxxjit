@@ -5052,6 +5052,19 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     Args.addOptOutFlag(CmdArgs, options::OPT_foptimize_sibling_calls,
                        options::OPT_fno_optimize_sibling_calls);
 
+    if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false)) {
+      CmdArgs.push_back("-fjit");
+
+      if (IsCuda) {
+        std::string BCName =
+            D.GetDeviceJITBCFile(C, JA.isDeviceOffloading(Action::OFK_Cuda));
+        if (!BCName.empty()) {
+          CmdArgs.push_back("-fjit-device-ir-file-path");
+          CmdArgs.push_back(Args.MakeArgString(BCName));
+        }
+      }
+    }
+
     RenderFloatingPointOptions(TC, D, isOptimizationLevelFast(Args), Args,
                                CmdArgs, JA);
 

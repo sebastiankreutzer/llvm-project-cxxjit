@@ -340,7 +340,11 @@ private:
 
   llvm::JITSymbol findMangledSymbol(const std::string &Name) {
 
-    if (auto Sym = ES.lookup({MainLib}, mangle(Name)))  {
+    auto Sym = ES.lookup({MainLib}, mangle(Name));
+    if (auto E = Sym.takeError()) {
+      // Ignore error - symbol might not be JITed
+      llvm::consumeError(std::move(E));
+    } else {
       return llvm::JITSymbol(Sym.get().getAddress().getValue(), llvm::JITSymbolFlags::Exported);
     }
 
@@ -1786,7 +1790,7 @@ struct CompilerData {
     std::unique_ptr<llvm::Module> ToRunMod =
         llvm::CloneModule(*Consumer->getModule());
 
-    CJ->addModule(std::move(ToRunMod));
+    cantFail(CJ->addModule(std::move(ToRunMod)));
 
     // Now that we've generated code for this module, take them optimized code
     // and mark the definitions as available externally. We'll link them into

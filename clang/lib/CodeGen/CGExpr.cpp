@@ -2664,7 +2664,7 @@ llvm::Value *CodeGenFunction::EmitJITStubCall(const FunctionDecl *FD) {
       Expr::EvalResult Eval;
       Eval.Diag = &Notes;
       if (TA.getAsExpr()->EvaluateAsConstantExpr(
-              Eval, Expr::EvaluateForMangling, C) &&
+              Eval, C, ConstantExprKind::NonClassTemplateArgument) &&
           Notes.empty()) {
         DefaultTAMangle(TA, TAIdx);
         return;
@@ -2781,7 +2781,7 @@ llvm::Value *CodeGenFunction::EmitJITStubCall(const FunctionDecl *FD) {
 
   auto *FnTy = llvm::FunctionType::get(RetFTy->getPointerTo(), TypeParams,
                                        /*isVarArg*/ false);
-  auto RTLFn = CGM.CreateRuntimeFunction(FnTy, "__clang_jit", ReadOnlyAttr);
+  auto RTLFn = CGM.CreateRuntimeFunction(FnTy, "__clang_jit");
 
   // TODO: If either the values or type strings are empty, don't emit a
   // zero-length alloca, but instead, pass a null pointer.

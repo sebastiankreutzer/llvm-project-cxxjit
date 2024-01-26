@@ -4031,8 +4031,19 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
     }
   }
 
+  llvm::outs() << "Arguments\n*****\n";
+  for (auto& arg: Args.getArgs()) {
+    llvm::outs() << "Arg: " << arg->getSpelling() << "\n";
+  }
+  llvm::outs() << "Arguments end\n*****\n";
+
+  llvm::outs() << "fjit is enabled: " << Args.hasArg(OPT_fjit) << "\n";
+  llvm::outs() << "fjit is disabled: " << Args.hasArg(OPT_fno_jit) << "\n";
   if (Args.hasArg(OPT_fjit))
     Opts.setCPlusPlusJIT(LangOptions::JITMode::JM_Enabled);
+
+  // FIXME: fjit workaround
+  Opts.setCPlusPlusJIT(LangOptions::JITMode::JM_Enabled);
 
   // The value can be empty, which indicates the system default should be used.
   StringRef CXXABI = Args.getLastArgValue(OPT_fcxx_abi_EQ);

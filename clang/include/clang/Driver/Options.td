@@ -3328,9 +3328,14 @@ def fenable_matrix : Flag<["-"], "fenable-matrix">, Group<f_Group>,
     HelpText<"Enable matrix data type and related builtin functions">,
     MarshallingInfoFlag<LangOpts<"MatrixTypes">>;
 
-def fjit : Flag<["-"], "fjit">, Group<f_Group>,
-  HelpText<"Enable C++ JIT extensions">, Flags<[CC1Option]>;
-def fno_jit : Flag<["-"], "fno-jit">, Group<f_Group>,
+//defm jit : BoolFOption<"jit",
+//   LangOpts<"CPlusPlusJIT">, DefaultFalse,
+//  PosFlag<SetTrue, [CC1Option], "Enable C++ JIT">,
+//   NegFlag<SetFalse>>;
+
+def fjit : Flag<["-"], "fjit">, Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Enable C++ JIT extensions">;
+def fno_jit : Flag<["-"], "fno-jit">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Disable C++ JIT extensions">;
 
 def fzero_call_used_regs_EQ

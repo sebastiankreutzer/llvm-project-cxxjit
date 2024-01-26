@@ -61,7 +61,6 @@
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
-#include "llvm/ExecutionEngine/Orc/LambdaResolver.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
@@ -84,7 +83,7 @@
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Host.h"
+//#include "llvm/Support/Host.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Mutex.h"
@@ -97,6 +96,7 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 
@@ -193,7 +193,7 @@ private:
     //
     // FIXME: We shouldn't need to do this, the target should be immutable once
     // created. This complexity should be lifted elsewhere.
-    Target->adjust(LangOpt);
+    Target->adjust(PP.getDiagnostics(), LangOpt);
 
     // Initialize the preprocessor.
     PP.Initialize(*Target);
@@ -218,101 +218,80 @@ void fatal() {
   report_fatal_error("Clang JIT failed!");
 }
 
-// This is a variant of ORC's LegacyLookupFnResolver with a cutomized
-// getResponsibilitySet behavior allowing us to claim responsibility for weak
-// symbols in the loaded modules that we don't otherwise have.
-// Note: We generally convert all IR level symbols to have strong linkage, but
-// that won't cover everything (and especially doesn't cover the DW.ref.
-// symbols created by the low-level EH logic on some platforms).
-template <typename LegacyLookupFn>
-class ClangLookupFnResolver final : public llvm::orc::SymbolResolver {
+//// This is a variant of ORC's LegacyLookupFnResolver with a cutomized
+//// getResponsibilitySet behavior allowing us to claim responsibility for weak
+//// symbols in the loaded modules that we don't otherwise have.
+//// Note: We generally convert all IR level symbols to have strong linkage, but
+//// that won't cover everything (and especially doesn't cover the DW.ref.
+//// symbols created by the low-level EH logic on some platforms).
+//template <typename LegacyLookupFn>
+//class ClangLookupFnResolver final : public llvm::orc::SymbolResolver {
+//public:
+//  using ErrorReporter = std::function<void(Error)>;
+//
+//  ClangLookupFnResolver(llvm::orc::ExecutionSession &ES,
+//                              LegacyLookupFn LegacyLookup,
+//                              ErrorReporter ReportError)
+//      : ES(ES), LegacyLookup(std::move(LegacyLookup)),
+//        ReportError(std::move(ReportError)) {}
+//
+//  llvm::orc::SymbolNameSet
+//  getResponsibilitySet(const llvm::orc::SymbolNameSet &Symbols) final {
+//    llvm::orc::SymbolNameSet Result;
+//
+//    for (auto &S : Symbols) {
+//      if (JITSymbol Sym = LegacyLookup(std::string(*S))) {
+//        // If the symbol exists elsewhere, and we have only a weak version,
+//        // then we're not responsible.
+//        continue;
+//      } else if (auto Err = Sym.takeError()) {
+//        ReportError(std::move(Err));
+//        return llvm::orc::SymbolNameSet();
+//      } else {
+//        Result.insert(S);
+//      }
+//    }
+//
+//    return Result;
+//  }
+//
+//  llvm::orc::SymbolNameSet
+//  lookup(std::shared_ptr<llvm::orc::AsynchronousSymbolQuery> Query,
+//                         llvm::orc::SymbolNameSet Symbols) final {
+//    return llvm::orc::lookupWithLegacyFn(ES, *Query, Symbols, LegacyLookup);
+//  }
+//
+//private:
+//  llvm::orc::ExecutionSession &ES;
+//  LegacyLookupFn LegacyLookup;
+//  ErrorReporter ReportError;
+//};
+//
+//template <typename LegacyLookupFn>
+//std::shared_ptr<ClangLookupFnResolver<LegacyLookupFn>>
+//createClangLookupResolver(llvm::orc::ExecutionSession &ES,
+//                          LegacyLookupFn LegacyLookup,
+//                          std::function<void(Error)> ErrorReporter) {
+//  return std::make_shared<ClangLookupFnResolver<LegacyLookupFn>>(
+//      ES, std::move(LegacyLookup), std::move(ErrorReporter));
+//}
+
+class ClangJIT2 {
 public:
-  using ErrorReporter = std::function<void(Error)>;
+  using ObjLayerT = llvm::orc::RTDyldObjectLinkingLayer;
+  using CompileLayerT = llvm::orc::IRCompileLayer ;
 
-  ClangLookupFnResolver(llvm::orc::ExecutionSession &ES,
-                              LegacyLookupFn LegacyLookup,
-                              ErrorReporter ReportError)
-      : ES(ES), LegacyLookup(std::move(LegacyLookup)),
-        ReportError(std::move(ReportError)) {}
-
-  llvm::orc::SymbolNameSet
-  getResponsibilitySet(const llvm::orc::SymbolNameSet &Symbols) final {
-    llvm::orc::SymbolNameSet Result;
-
-    for (auto &S : Symbols) {
-      if (JITSymbol Sym = LegacyLookup(std::string(*S))) {
-        // If the symbol exists elsewhere, and we have only a weak version,
-        // then we're not responsible.
-        continue;
-      } else if (auto Err = Sym.takeError()) {
-        ReportError(std::move(Err));
-        return llvm::orc::SymbolNameSet();
-      } else {
-        Result.insert(S);
-      }
-    }
-
-    return Result;
-  }
-
-  llvm::orc::SymbolNameSet
-  lookup(std::shared_ptr<llvm::orc::AsynchronousSymbolQuery> Query,
-                         llvm::orc::SymbolNameSet Symbols) final {
-    return llvm::orc::lookupWithLegacyFn(ES, *Query, Symbols, LegacyLookup);
-  }
-
-private:
-  llvm::orc::ExecutionSession &ES;
-  LegacyLookupFn LegacyLookup;
-  ErrorReporter ReportError;
-};
-
-template <typename LegacyLookupFn>
-std::shared_ptr<ClangLookupFnResolver<LegacyLookupFn>>
-createClangLookupResolver(llvm::orc::ExecutionSession &ES,
-                          LegacyLookupFn LegacyLookup,
-                          std::function<void(Error)> ErrorReporter) {
-  return std::make_shared<ClangLookupFnResolver<LegacyLookupFn>>(
-      ES, std::move(LegacyLookup), std::move(ErrorReporter));
-}
-
-class ClangJIT {
-public:
-  using ObjLayerT = llvm::orc::LegacyRTDyldObjectLinkingLayer;
-  using CompileLayerT = llvm::orc::LegacyIRCompileLayer<ObjLayerT, llvm::orc::SimpleCompiler>;
-
-  ClangJIT(DenseMap<StringRef, const void *> &LocalSymAddrs)
-      : LocalSymAddrs(LocalSymAddrs),
-        Resolver(createClangLookupResolver(
-            ES,
-            [this](llvm::StringRef Name) {
-              return findMangledSymbol(std::string(Name));
-            },
-            [](Error Err) { cantFail(std::move(Err), "lookupFlags failed"); })),
-        TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
-        ObjectLayer(ES,
-                    [this](llvm::orc::VModuleKey) {
-                      return ObjLayerT::Resources{
-                          std::make_shared<SectionMemoryManager>(), Resolver};
-                    }),
-        CompileLayer(ObjectLayer, llvm::orc::SimpleCompiler(*TM)),
-        CXXRuntimeOverrides(
-            [this](const std::string &S) { return mangle(S); }) {
+  ClangJIT2(DenseMap<StringRef, const void *> &LocalSymAddrs) : LocalSymAddrs(LocalSymAddrs),
+                                                                ES(cantFail(llvm::orc::SelfExecutorProcessControl::Create())),
+                TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
+               ObjectLayer(ES, [](){return std::make_unique<SectionMemoryManager>();} ),
+              CompileLayer(ES, ObjectLayer, std::make_unique<llvm::orc::SimpleCompiler>(*TM)),
+              TSC(std::make_unique<LLVMContext>()) {
+    this->MainLib = &cantFail(ES.createJITDylib("cxxjit"));
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
   }
 
-  ~ClangJIT() {
-    // Run any destructors registered with __cxa_atexit.
-    CXXRuntimeOverrides.runDestructors();
-
-    // Run any IR destructors.
-    for (auto &DtorRunner : IRStaticDestructorRunners)
-      cantFail(DtorRunner.runViaLayer(CompileLayer));
-  }
-
-  llvm::TargetMachine &getTargetMachine() { return *TM; }
-
-  llvm::orc::VModuleKey addModule(std::unique_ptr<llvm::Module> M) {
+  Error addModule(std::unique_ptr<llvm::Module> M) {
     // Record the static constructors and destructors. We have to do this before
     // we hand over ownership of the module to the JIT.
     std::vector<std::string> CtorNames, DtorNames;
@@ -323,27 +302,25 @@ public:
       if (Dtor.Func && !Dtor.Func->hasAvailableExternallyLinkage())
         DtorNames.push_back(mangle(std::string(Dtor.Func->getName())));
 
-    auto K = ES.allocateVModule();
-    cantFail(CompileLayer.addModule(K, std::move(M)));
-    ModuleKeys.push_back(K);
+    llvm::orc::ThreadSafeModule TSM(std::move(M), TSC);
+
+    cantFail(CompileLayer.add(*MainLib, std::move(TSM)));
 
     // Run the static constructors, and save the static destructor runner for
     // execution when the JIT is torn down.
-    llvm::orc::LegacyCtorDtorRunner<CompileLayerT>
-      CtorRunner(std::move(CtorNames), K);
-    if (auto Err = CtorRunner.runViaLayer(CompileLayer)) {
+
+    llvm::orc::CtorDtorRunner CtorRunner(*MainLib);
+    // FIXME
+//    CtorRunner.add(CtorNames);
+
+    if (auto Err = CtorRunner.run()) {
       llvm::errs() << Err << "\n";
       fatal();
     }
 
-    IRStaticDestructorRunners.emplace_back(std::move(DtorNames), K);
+    //IRStaticDestructorRunners.emplace_back(std::move(DtorNames), K);
 
-    return K;
-  }
-
-  void removeModule(llvm::orc::VModuleKey K) {
-    ModuleKeys.erase(find(ModuleKeys, K));
-    cantFail(CompileLayer.removeModule(K));
+    return Error::success();
   }
 
   llvm::JITSymbol findSymbol(const std::string Name) {
@@ -351,6 +328,7 @@ public:
   }
 
 private:
+
   std::string mangle(const std::string &Name) {
     std::string MangledName;
     {
@@ -361,13 +339,10 @@ private:
   }
 
   llvm::JITSymbol findMangledSymbol(const std::string &Name) {
-    for (auto H : make_range(ModuleKeys.rbegin(), ModuleKeys.rend()))
-      if (auto Sym = CompileLayer.findSymbolIn(H, Name,
-                                               /*ExportedSymbolsOnly*/ false))
-        return Sym;
 
-    if (auto Sym = CXXRuntimeOverrides.searchOverrides(Name))
-      return Sym;
+    if (auto Sym = ES.lookup({MainLib}, mangle(Name)))  {
+      return llvm::JITSymbol(Sym.get().getAddress().getValue(), llvm::JITSymbolFlags::Exported);
+    }
 
     auto LSAI = LocalSymAddrs.find(Name);
     if (LSAI != LocalSymAddrs.end())
@@ -391,23 +366,152 @@ private:
     return nullptr;
   }
 
-  DenseMap<StringRef, const void *> &LocalSymAddrs; 
+
+  DenseMap<StringRef, const void *> &LocalSymAddrs;
   llvm::orc::ExecutionSession ES;
-  std::shared_ptr<llvm::orc::SymbolResolver> Resolver;
+  //std::shared_ptr<llvm::orc::SymbolResolver> Resolver;
   std::unique_ptr<llvm::TargetMachine> TM;
   const llvm::DataLayout DL;
   ObjLayerT ObjectLayer;
   CompileLayerT CompileLayer;
-  std::vector<llvm::orc::VModuleKey> ModuleKeys;
+  llvm::orc::JITDylib* MainLib;
+  llvm::orc::ThreadSafeContext TSC;
 
-  llvm::orc::LegacyLocalCXXRuntimeOverrides CXXRuntimeOverrides;
-  std::vector<llvm::orc::LegacyCtorDtorRunner<CompileLayerT>>
-    IRStaticDestructorRunners;
 };
+
+//class ClangJIT {
+//public:
+//  using ObjLayerT = llvm::orc::LegacyRTDyldObjectLinkingLayer;
+//  using CompileLayerT = llvm::orc::LegacyIRCompileLayer<ObjLayerT, llvm::orc::SimpleCompiler>;
+//
+//  ClangJIT(DenseMap<StringRef, const void *> &LocalSymAddrs)
+//      : LocalSymAddrs(LocalSymAddrs),
+//        Resolver(createClangLookupResolver(
+//            ES,
+//            [this](llvm::StringRef Name) {
+//              return findMangledSymbol(std::string(Name));
+//            },
+//            [](Error Err) { cantFail(std::move(Err), "lookupFlags failed"); })),
+//        TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
+//        ObjectLayer(ES,
+//                    [this](llvm::orc::VModuleKey) {
+//                      return ObjLayerT::Resources{
+//                          std::make_shared<SectionMemoryManager>(), Resolver};
+//                    }),
+//        CompileLayer(ObjectLayer, llvm::orc::SimpleCompiler(*TM)),
+//        CXXRuntimeOverrides(
+//            [this](const std::string &S) { return mangle(S); }) {
+//    llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
+//  }
+//
+//  ~ClangJIT() {
+//    // Run any destructors registered with __cxa_atexit.
+//    CXXRuntimeOverrides.runDestructors();
+//
+//    // Run any IR destructors.
+//    for (auto &DtorRunner : IRStaticDestructorRunners)
+//      cantFail(DtorRunner.runViaLayer(CompileLayer));
+//  }
+//
+//  llvm::TargetMachine &getTargetMachine() { return *TM; }
+//
+//  llvm::orc::VModuleKey addModule(std::unique_ptr<llvm::Module> M) {
+//    // Record the static constructors and destructors. We have to do this before
+//    // we hand over ownership of the module to the JIT.
+//    std::vector<std::string> CtorNames, DtorNames;
+//    for (auto Ctor : llvm::orc::getConstructors(*M))
+//      if (Ctor.Func && !Ctor.Func->hasAvailableExternallyLinkage())
+//        CtorNames.push_back(mangle(std::string(Ctor.Func->getName())));
+//    for (auto Dtor : llvm::orc::getDestructors(*M))
+//      if (Dtor.Func && !Dtor.Func->hasAvailableExternallyLinkage())
+//        DtorNames.push_back(mangle(std::string(Dtor.Func->getName())));
+//
+//    auto K = ES.allocateVModule();
+//    cantFail(CompileLayer.addModule(K, std::move(M)));
+//    ModuleKeys.push_back(K);
+//
+//    // Run the static constructors, and save the static destructor runner for
+//    // execution when the JIT is torn down.
+//    llvm::orc::LegacyCtorDtorRunner<CompileLayerT>
+//      CtorRunner(std::move(CtorNames), K);
+//    if (auto Err = CtorRunner.runViaLayer(CompileLayer)) {
+//      llvm::errs() << Err << "\n";
+//      fatal();
+//    }
+//
+//    IRStaticDestructorRunners.emplace_back(std::move(DtorNames), K);
+//
+//    return K;
+//  }
+//
+//  void removeModule(llvm::orc::VModuleKey K) {
+//    ModuleKeys.erase(find(ModuleKeys, K));
+//    cantFail(CompileLayer.removeModule(K));
+//  }
+//
+//  llvm::JITSymbol findSymbol(const std::string Name) {
+//    return findMangledSymbol(mangle(Name));
+//  }
+//
+//private:
+//  std::string mangle(const std::string &Name) {
+//    std::string MangledName;
+//    {
+//      llvm::raw_string_ostream MangledNameStream(MangledName);
+//      llvm::Mangler::getNameWithPrefix(MangledNameStream, Name, DL);
+//    }
+//    return MangledName;
+//  }
+//
+//  llvm::JITSymbol findMangledSymbol(const std::string &Name) {
+//    for (auto H : make_range(ModuleKeys.rbegin(), ModuleKeys.rend()))
+//      if (auto Sym = CompileLayer.findSymbolIn(H, Name,
+//                                               /*ExportedSymbolsOnly*/ false))
+//        return Sym;
+//
+//    if (auto Sym = CXXRuntimeOverrides.searchOverrides(Name))
+//      return Sym;
+//
+//    auto LSAI = LocalSymAddrs.find(Name);
+//    if (LSAI != LocalSymAddrs.end())
+//      return llvm::JITSymbol(llvm::pointerToJITTargetAddress(LSAI->second),
+//                             llvm::JITSymbolFlags::Exported);
+//
+//    // If we can't find the symbol in the JIT, try looking in the host process.
+//    if (auto SymAddr = RTDyldMemoryManager::getSymbolAddressInProcess(Name))
+//      return llvm::JITSymbol(SymAddr, llvm::JITSymbolFlags::Exported);
+//
+//#ifdef _WIN32
+//    // For Windows retry without "_" at beginning, as RTDyldMemoryManager uses
+//    // GetProcAddress and standard libraries like msvcrt.dll use names
+//    // with and without "_" (for example "_itoa" but "sin").
+//    if (Name.length() > 2 && Name[0] == '_')
+//      if (auto SymAddr =
+//              RTDyldMemoryManager::getSymbolAddressInProcess(Name.substr(1)))
+//        return llvm::JITSymbol(SymAddr, llvm::JITSymbolFlags::Exported);
+//#endif
+//
+//    return nullptr;
+//  }
+//
+//  DenseMap<StringRef, const void *> &LocalSymAddrs;
+//  llvm::orc::ExecutionSession ES;
+//  std::shared_ptr<llvm::orc::SymbolResolver> Resolver;
+//  std::unique_ptr<llvm::TargetMachine> TM;
+//  const llvm::DataLayout DL;
+//  ObjLayerT ObjectLayer;
+//  CompileLayerT CompileLayer;
+//  std::vector<llvm::orc::VModuleKey> ModuleKeys;
+//
+//  llvm::orc::LegacyLocalCXXRuntimeOverrides CXXRuntimeOverrides;
+//  std::vector<llvm::orc::LegacyCtorDtorRunner<CompileLayerT>>
+//    IRStaticDestructorRunners;
+//};
 
 class BackendConsumer : public ASTConsumer {
   DiagnosticsEngine &Diags;
   BackendAction Action;
+  IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS;
   const HeaderSearchOptions &HeaderSearchOpts;
   const CodeGenOptions &CodeGenOpts;
   const clang::TargetOptions &TargetOpts;
@@ -423,12 +527,13 @@ class BackendConsumer : public ASTConsumer {
   std::unique_ptr<CodeGenerator> Gen;
 
   void replaceGenerator() {
-    Gen.reset(CreateLLVMCodeGen(Diags, InFile, HeaderSearchOpts, PPOpts,
+    Gen.reset(CreateLLVMCodeGen(Diags, InFile, VFS, HeaderSearchOpts, PPOpts,
                                 CodeGenOpts, C, CoverageInfo));
   }
 
 public:
   BackendConsumer(BackendAction Action, DiagnosticsEngine &Diags,
+                  IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS,
                   const HeaderSearchOptions &HeaderSearchOpts,
                   const PreprocessorOptions &PPOpts,
                   const CodeGenOptions &CodeGenOpts,
@@ -438,7 +543,7 @@ public:
                   std::unique_ptr<raw_pwrite_stream> OS, LLVMContext &C,
                   std::vector<std::unique_ptr<llvm::Module>> &DevLinkMods,
                   CoverageSourceInfo *CoverageInfo = nullptr)
-      : Diags(Diags), Action(Action), HeaderSearchOpts(HeaderSearchOpts),
+      : Diags(Diags), Action(Action), VFS(VFS), HeaderSearchOpts(HeaderSearchOpts),
         CodeGenOpts(CodeGenOpts), TargetOpts(TargetOpts), LangOpts(LangOpts),
         AsmOutStream(std::move(OS)), Context(nullptr), InFile(InFile),
         PPOpts(PPOpts), C(C), DevLinkMods(DevLinkMods),
@@ -526,8 +631,8 @@ public:
 
   void EmitOptimized() {
     EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
-                      LangOpts, Context->getTargetInfo().getDataLayout(),
-                      getModule(), Action,
+                      LangOpts, Context->getTargetInfo().getDataLayoutString(),
+                      getModule(), Action, VFS,
                       std::make_unique<llvm::buffer_ostream>(*AsmOutStream));
   }
 };
@@ -582,6 +687,7 @@ public:
 
 unsigned LastUnique = 0;
 std::unique_ptr<llvm::LLVMContext> LCtx;
+std::unique_ptr<llvm::orc::ThreadSafeContext> TLCtx;
 
 bool InitializedDevTarget = false;
 
@@ -628,7 +734,7 @@ struct CompilerData {
 
   DenseMap<StringRef, const void *>       LocalSymAddrs;
   DenseMap<StringRef, ValueDecl *>        NewLocalSymDecls;
-  std::unique_ptr<ClangJIT>               CJ;
+  std::unique_ptr<ClangJIT2>               CJ;
 
   DenseMap<unsigned, FunctionDecl *>      FuncMap;
 
@@ -691,7 +797,7 @@ struct CompilerData {
                                   /*UserFilesAreVolatile*/ false);
     ModuleCache = new InMemoryModuleCache;
     HSOpts = std::make_shared<HeaderSearchOptions>();
-    HSOpts->ModuleFormat = std::string(PCHContainerRdr->getFormat());
+    HSOpts->ModuleFormat = std::string(PCHContainerRdr->getFormats()[0]);
     HeaderInfo.reset(new HeaderSearch(HSOpts,
                                       *SourceMgr,
                                       *Diagnostics,
@@ -714,11 +820,11 @@ struct CompilerData {
 
     Ctx = new ASTContext(*Invocation->getLangOpts(), *SourceMgr,
                          PP->getIdentifierTable(), PP->getSelectorTable(),
-                         PP->getBuiltinInfo());
+                         PP->getBuiltinInfo(), TranslationUnitKind::TU_Incremental);
 
     Reader = new ASTReader(*PP, *ModuleCache, Ctx.get(), *PCHContainerRdr, {},
                            /*isysroot=*/"",
-                           /*DisableValidation=*/ false,
+                           /*DisableValidation=*/ DisableValidationForModuleKind::None,
                            /*AllowPCHWithCompilerErrors*/ false);
 
     Reader->setListener(std::make_unique<ASTInfoCollector>(
@@ -760,7 +866,7 @@ struct CompilerData {
     }
 
     Consumer.reset(new BackendConsumer(
-        BA, *Diagnostics, Invocation->getHeaderSearchOpts(),
+        BA, *Diagnostics, InMemoryFileSystem, Invocation->getHeaderSearchOpts(),
         Invocation->getPreprocessorOpts(), Invocation->getCodeGenOpts(),
         Invocation->getTargetOpts(), *Invocation->getLangOpts(), false, Filename,
         std::move(OS), *LCtx, DevLinkMods));
@@ -814,7 +920,7 @@ struct CompilerData {
     }
 
     if (!IsForDev)
-      CJ = std::make_unique<ClangJIT>(LocalSymAddrs);
+      CJ = std::make_unique<ClangJIT2>(LocalSymAddrs);
 
     if (IsForDev)
       for (unsigned i = 0; i < DeviceData[ForDev].FileDataCnt; ++i) {
@@ -1016,7 +1122,8 @@ struct CompilerData {
         Expr::EvalResult Eval;
         Eval.Diag = &Notes;
         if (TA.getAsExpr()->
-              EvaluateAsConstantExpr(Eval, Expr::EvaluateForMangling, *Ctx)) {
+            EvaluateAsConstantExpr(
+                Eval, *Ctx, ConstantExprKind::NonClassTemplateArgument)) {
           TAIsSaved.push_back(TASK_None);
           return;
         }
@@ -1129,7 +1236,7 @@ struct CompilerData {
         } else {
           assert(FieldTy->isPointerType() || FieldTy->isReferenceType() ||
                  FieldTy->isNullPtrType());
-          if (IntVal.isNullValue()) {
+          if (IntVal.isZero()) {
             Builder.push_back(TemplateArgument(CanonFieldTy, /*isNullPtr*/true));
           } else {
 	  // Note: We always generate a new global for pointer values here.
@@ -1203,7 +1310,7 @@ struct CompilerData {
 
                       // Get the already-processed arguments for potential substitution.
                       auto *NewTAL = TemplateArgumentList::CreateCopy(*Ctx, Builder);
-                      MultiLevelTemplateArgumentList SubstArgs(*NewTAL);
+                      MultiLevelTemplateArgumentList SubstArgs(FTSI->getTemplate(), NewTAL->asArray(), false);
 
                       SmallVector<Expr *, 1> NewSzExprVec;
                       if (!S->SubstExprs(SzExpr, /*IsCall*/ false, SubstArgs, NewSzExprVec)) {
@@ -1297,7 +1404,7 @@ struct CompilerData {
 
     SourceLocation Loc = FTSI->getPointOfInstantiation();
     auto *NewTAL = TemplateArgumentList::CreateCopy(*Ctx, Builder);
-    MultiLevelTemplateArgumentList SubstArgs(*NewTAL);
+    MultiLevelTemplateArgumentList SubstArgs(FTSI->getTemplate(), NewTAL->asArray(), false);
 
     auto *FunctionTemplate = FTSI->getTemplate();
     DeclContext *Owner = FunctionTemplate->getDeclContext();

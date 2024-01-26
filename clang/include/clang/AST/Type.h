@@ -2296,7 +2296,7 @@ public:
   bool isBitIntType() const;                    // Bit-precise integer type
   bool isOpenCLSpecificType() const;            // Any OpenCL specific type
 
-  bool Type::isJITFromStringType() const;       // JIT runtime type
+  bool isJITFromStringType() const;       // JIT runtime type
 
   /// Determines if this type, which must satisfy
   /// isObjCLifetimeType(), is implicitly __unsafe_unretained rather

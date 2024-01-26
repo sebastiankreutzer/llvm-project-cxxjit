@@ -629,6 +629,7 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(OCLQueue);
     TKIND(OCLReserveID);
     TKIND(Atomic);
+    TKIND(JITFromString);
   }
 #undef TKIND
   return cxstring::createRef(s);

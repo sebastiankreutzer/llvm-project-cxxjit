@@ -1856,7 +1856,8 @@ void tools::AddJITRunTimeLibs(const ToolChain &TC, const Driver &D,
                               ArgStringList &CmdArgs, const ArgList &Args) {
 
   // If using JIT extensions, we need to link with Clang and LLVM.
-  if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false)) {
+//  if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false)) {
+  if (true) {
     SmallString<256> llvmcfgAbsolutePath(D.Dir);
     llvm::sys::path::append(llvmcfgAbsolutePath, "llvm-config");
     if (!llvm::sys::fs::exists(llvmcfgAbsolutePath)) {
@@ -1873,12 +1874,12 @@ void tools::AddJITRunTimeLibs(const ToolChain &TC, const Driver &D,
       llvm::sys::fs::createTemporaryFile("llvm-config", "", OutputFile);
       llvm::FileRemover OutputRemover(OutputFile.c_str());
 
-      Optional<StringRef> Redirects[] = {StringRef(""),
+      std::optional<StringRef> Redirects[] = {StringRef(""),
                                          StringRef(OutputFile), StringRef("")};
       StringRef PArgs[] = {StringRef(llvmcfgAbsolutePath), Flag};
 
       int RunResult =
-          llvm::sys::ExecuteAndWait(llvmcfgAbsolutePath, PArgs, llvm::None,
+          llvm::sys::ExecuteAndWait(llvmcfgAbsolutePath, PArgs, std::nullopt,
                                     Redirects);
       if (RunResult != 0)
         return;

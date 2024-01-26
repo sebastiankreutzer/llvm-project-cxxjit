@@ -392,12 +392,14 @@ namespace clang {
       for (auto &F : getModule()->functions())
         for (auto &BB : F)
           for (auto &I : BB)
-            if (auto CS = dyn_cast<CallBase>(&I))
-              if (auto *Callee =
-                      dyn_cast<llvm::Function>(
-                          CS->getCalledFunction()->stripPointerCasts()))
-                if (Callee->getName() == "__clang_jit")
+            if (auto CS = dyn_cast<CallBase>(&I)) {
+              auto *Callee = CS->getCalledFunction();
+              if (Callee) {
+                auto* CalleeFn =  dyn_cast<llvm::Function>(Callee->stripPointerCasts());
+                if (CalleeFn->getName() == "__clang_jit")
                   JCalls.push_back(CS);
+              }
+            }
 
       if (JCalls.empty())
         return;
@@ -410,8 +412,9 @@ namespace clang {
       // mutations, and other transformations might render them incompatible
       // with JIT-generated modules later.
 
+      // FIXME: Disabled because of crash
       llvm::SetVector<GlobalValue *> Locals;
-      JITLocalCollector(Locals, Gen->CGM()).TraverseAST(C);
+      //JITLocalCollector(Locals, Gen->CGM()).TraverseAST(C);
 
       // We also need to include local symbols generated internally (e.g.,
       // __clang_call_terminate).

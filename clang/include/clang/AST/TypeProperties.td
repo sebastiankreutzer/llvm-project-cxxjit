@@ -950,3 +950,13 @@ let Class = DependentBitIntType in {
     return ctx.getDependentBitIntType(isUnsigned, numBitsExpr);
   }]>;
 }
+
+let Class = JITFromStringType in {
+  def : Property <"expr", ExprRef> {
+    //let Read = [{ ReadExpr(*Loc.F) }];
+    let Read = [{ node->getUnderlyingExpr() }];
+  }
+  def : Creator<[{
+    return ctx.getJITFromStringType(expr);
+  }]>;
+}

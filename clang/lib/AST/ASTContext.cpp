@@ -12717,6 +12717,9 @@ static QualType getCommonNonSugarTypeNode(ASTContext &Ctx, const Type *X,
 #define TYPE(Class, Base)
 #include "clang/AST/TypeNodes.inc"
 
+// FIXME: Handle JITFromString correctly
+    UNEXPECTED_TYPE(JITFromString, "JITFromString")
+
 #define SUGAR_FREE_TYPE(Class) UNEXPECTED_TYPE(Class, "sugar-free")
     SUGAR_FREE_TYPE(Builtin)
     SUGAR_FREE_TYPE(Decltype)
@@ -13045,6 +13048,9 @@ static QualType getCommonSugarTypeNode(ASTContext &Ctx, const Type *X,
     CANONICAL_TYPE(VariableArray)
     CANONICAL_TYPE(Vector)
 #undef CANONICAL_TYPE
+
+    // FIXME: Handle JITFromString correctly
+    UNEXPECTED_TYPE(JITFromString, "JITFromString")
 
 #undef UNEXPECTED_TYPE
 

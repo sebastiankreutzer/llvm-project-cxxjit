@@ -196,6 +196,10 @@ public:
   mangleCXXRTTICompleteObjectLocator(const CXXRecordDecl *Derived,
                                      ArrayRef<const CXXRecordDecl *> BasePath,
                                      raw_ostream &Out) override;
+  void mangleTemplateArgument(const TemplateDecl *TD,
+                              const TemplateArgument &TA,
+                              const NamedDecl *Parm,
+                              raw_ostream &Out) override;
   void mangleTypeName(QualType T, raw_ostream &,
                       bool NormalizeIntegers) override;
   void mangleReferenceTemporary(const VarDecl *, unsigned ManglingNumber,
@@ -390,6 +394,8 @@ public:
                           bool ForceThisQuals = false,
                           bool MangleExceptionSpec = true);
   void mangleNestedName(GlobalDecl GD);
+  void mangleTemplateArg(const TemplateDecl *TD, const TemplateArgument &TA,
+                         const NamedDecl *Parm);
 
 private:
   bool isStructorDecl(const NamedDecl *ND) const {
@@ -451,8 +457,6 @@ private:
 
   void mangleTemplateArgs(const TemplateDecl *TD,
                           const TemplateArgumentList &TemplateArgs);
-  void mangleTemplateArg(const TemplateDecl *TD, const TemplateArgument &TA,
-                         const NamedDecl *Parm);
   void mangleTemplateArgValue(QualType T, const APValue &V,
                               bool WithScalarType = false);
 

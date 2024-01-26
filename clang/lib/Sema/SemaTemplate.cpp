@@ -5283,8 +5283,10 @@ bool Sema::CheckTemplateTypeArgument(
         if (MemberRef.isInvalid())
           return false;
 
+
+        MultiExprArg MEA;
         ExprResult CallE =
-            ActOnCallExpr(/*Scope=*/nullptr, MemberRef.get(), Loc, None, Loc,
+            ActOnCallExpr(/*Scope=*/nullptr, MemberRef.get(), Loc, MEA, Loc,
                           nullptr);
         if (CallE.isInvalid())
           return false;
@@ -5677,7 +5679,7 @@ bool Sema::CheckTemplateArgument(
   // Check template type parameters.
   if (TemplateTypeParmDecl *TTP = dyn_cast<TemplateTypeParmDecl>(Param))
     return CheckTemplateTypeArgument(TTP, Arg, SugaredConverted,
-                                     CanonicalConverted), IsForJIT;
+                                     CanonicalConverted, IsForJIT);
 
   // Check non-type template parameters.
   if (NonTypeTemplateParmDecl *NTTP =dyn_cast<NonTypeTemplateParmDecl>(Param)) {
@@ -7364,9 +7366,10 @@ ExprResult Sema::CheckTemplateArgument(NonTypeTemplateParmDecl *Param,
     Expr::EvalResult Eval;
     Eval.Diag = &Notes;
     if (!Arg->
-         EvaluateAsConstantExpr(Eval, Expr::EvaluateForMangling, Context) ||
+         EvaluateAsConstantExpr(Eval, Context, ConstantExprKind::NonClassTemplateArgument) ||
         !Notes.empty()) {
-      Converted = TemplateArgument(Arg);
+      SugaredConverted = TemplateArgument(Arg);
+      CanonicalConverted = TemplateArgument(Context.getCanonicalTemplateArgument(SugaredConverted));
       return Arg;
     }
   }

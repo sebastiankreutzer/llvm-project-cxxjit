@@ -729,7 +729,7 @@ void EmitAssemblyHelper::FinalizeForJIT() {
 
     if (!DLocals.empty()) {
       auto *VoidPtrPtrTy = JCalls[0]->getOperand(8)->getType();
-      auto *VoidPtrTy = VoidPtrPtrTy->getPointerElementType();
+      auto *VoidPtrTy = VoidPtrPtrTy;//VoidPtrPtrTy->getPointerElementType();
 
       llvm::SmallVector<llvm::Constant *, 32> DLocalPtrs;
       for (auto &DLocal : DLocals) {
@@ -777,11 +777,15 @@ void EmitAssemblyHelper::FinalizeForJIT() {
                                      getNamedValue("__clang_jit_device"))) {
       DevGV->setLinkage(llvm::GlobalValue::PrivateLinkage);
 
+      // FIXME: How to get array num elements? To get it to build, replaced with
+      //  0 for now
+//      auto *NumDevs =
+//          llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(),
+//                                 DevGV->getType()->
+//                                 getPointerElementType()->
+//                                 getArrayNumElements());
       auto *NumDevs =
-          llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(),
-                                 DevGV->getType()->
-                                 getPointerElementType()->
-                                 getArrayNumElements());
+          llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(), 0);
 
       for (auto* JCS : JCalls) {
         JCS->setArgOperand(10,

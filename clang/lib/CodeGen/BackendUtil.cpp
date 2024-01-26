@@ -777,15 +777,8 @@ void EmitAssemblyHelper::FinalizeForJIT() {
                                      getNamedValue("__clang_jit_device"))) {
       DevGV->setLinkage(llvm::GlobalValue::PrivateLinkage);
 
-      // FIXME: How to get array num elements? To get it to build, replaced with
-      //  0 for now
-//      auto *NumDevs =
-//          llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(),
-//                                 DevGV->getType()->
-//                                 getPointerElementType()->
-//                                 getArrayNumElements());
-      auto *NumDevs =
-          llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(), 0);
+      auto* NumDevs = llvm::ConstantInt::get(JCalls[0]->getOperand(11)->getType(),
+                                             DevGV->getValueType()->getArrayNumElements());
 
       for (auto* JCS : JCalls) {
         JCS->setArgOperand(10,

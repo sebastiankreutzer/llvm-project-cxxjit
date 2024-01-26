@@ -23,5 +23,5 @@ JIT runtime:
 - Correctly clean up ORC layers during destruction
 
 CUDA support:
-- For JIT device kernels, calls to `__clang_jit` require the number of available devices. This was previously identified using the parameter's pointer type and does not work anymore due to opaque pointers. For now, a placeholder `0` is inserted. (`BackendUtil.cpp:780`:)
+~~- For JIT device kernels, calls to `__clang_jit` require the number of available devices. This was previously identified using the parameter's pointer type and does not work anymore due to opaque pointers. For now, a placeholder `0` is inserted. (`BackendUtil.cpp:780`:)~~
 

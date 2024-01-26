@@ -1856,8 +1856,7 @@ void tools::AddJITRunTimeLibs(const ToolChain &TC, const Driver &D,
                               ArgStringList &CmdArgs, const ArgList &Args) {
 
   // If using JIT extensions, we need to link with Clang and LLVM.
-//  if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false)) {
-  if (true) {
+  if (Args.hasFlag(options::OPT_fjit, options::OPT_fno_jit, false)) {
     SmallString<256> llvmcfgAbsolutePath(D.Dir);
     llvm::sys::path::append(llvmcfgAbsolutePath, "llvm-config");
     if (!llvm::sys::fs::exists(llvmcfgAbsolutePath)) {
@@ -1922,6 +1921,7 @@ void tools::AddJITRunTimeLibs(const ToolChain &TC, const Driver &D,
     CmdArgs.push_back("-lclangEdit");
     CmdArgs.push_back("-lclangLex");
     CmdArgs.push_back("-lclangBasic");
+    CmdArgs.push_back("-lclangSupport");
 
     AddFromLC("--libs");
     AddFromLC("--system-libs");

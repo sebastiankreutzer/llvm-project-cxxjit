@@ -12,7 +12,7 @@ Things that work:
 
 Issues:
 - The`-fjit` option is currently not always passed correctly to the LangOpt parsing. Current workaround is to always operate in JIT mode (see `CompilerInvocation.cpp:4040`).
-- Linking of required Clang libs for JIT runtime fails due to loads of `undefined reference` errors 
+~~- Linking of required Clang libs for JIT runtime fails due to loads of `undefined reference` errors~~ (solved by adding `lclangSupport`) 
 - When finalizing the JIT calls for IR module generation (`CodeGenAction.cpp:378`), local symbols are collected using an AST visitor. Calling this visitor currently results in a crash.  
 
 Current workarounds that need to be replaced:

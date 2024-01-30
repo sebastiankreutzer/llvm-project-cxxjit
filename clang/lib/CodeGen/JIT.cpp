@@ -309,7 +309,9 @@ public:
 
     llvm::orc::ThreadSafeModule TSM(std::move(M), TSC);
 
-    cantFail(CompileLayer.add(*MainLib, std::move(TSM)));
+    if (auto Err = CompileLayer.add(*MainLib, std::move(TSM))) {
+      return Err;
+    }
 
     // Run the static constructors, and save the static destructor runner for
     // execution when the JIT is torn down.
@@ -1795,7 +1797,8 @@ struct CompilerData {
     std::unique_ptr<llvm::Module> ToRunMod =
         llvm::CloneModule(*Consumer->getModule());
 
-    cantFail(CJ->addModule(std::move(ToRunMod)));
+    if (auto Err = CJ->addModule(std::move(ToRunMod)))
+      report_fatal_error(std::move(Err));
 
     // Now that we've generated code for this module, take them optimized code
     // and mark the definitions as available externally. We'll link them into

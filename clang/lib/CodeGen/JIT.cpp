@@ -291,6 +291,11 @@ public:
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
   }
 
+  ~ClangJIT2() {
+    if (auto Err = ES.endSession())
+      ES.reportError(std::move(Err));
+  }
+
   Error addModule(std::unique_ptr<llvm::Module> M) {
     // Record the static constructors and destructors. We have to do this before
     // we hand over ownership of the module to the JIT.

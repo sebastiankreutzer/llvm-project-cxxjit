@@ -20,7 +20,6 @@ This is an attempt at upgrading the original, Clang 9 based [ClangJIT project](h
 JIT runtime:
 - The JIT runtime originally used ORC v1, which has since been replaced by ORC v2. ClangJIT requires a specific symbol resolution scheme that I am not sure how to implement using the v2 API. For now, the standard symbol lookup is used, which may not work properly (see `JIT.cpp`).
 - Static ctor/dtor runnners are not implemented
-- Correctly clean up ORC layers during destruction
 
 CUDA support:
 ~~- For JIT device kernels, calls to `__clang_jit` require the number of available devices. This was previously identified using the parameter's pointer type and does not work anymore due to opaque pointers. For now, a placeholder `0` is inserted. (`BackendUtil.cpp:780`:)~~

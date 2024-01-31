@@ -4031,16 +4031,16 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
     }
   }
 
-  llvm::outs() << "Arguments\n*****\n";
-  for (auto& arg: Args.getArgs()) {
-    llvm::outs() << "Arg: " << arg->getSpelling() << "\n";
-  }
-  llvm::outs() << "Arguments end\n*****\n";
+  // llvm::outs() << "Arguments\n*****\n";
+  // for (auto& arg: Args.getArgs()) {
+  //   llvm::outs() << "Arg: " << arg->getSpelling() << "\n";
+  // }
+  // llvm::outs() << "Arguments end\n*****\n";
 
-  llvm::outs() << "fjit is enabled: " << Args.hasArg(OPT_fjit) << "\n";
-  llvm::outs() << "fjit is disabled: " << Args.hasArg(OPT_fno_jit) << "\n";
-  if (Args.hasArg(OPT_fjit))
-    Opts.setCPlusPlusJIT(LangOptions::JITMode::JM_Enabled);
+  // llvm::outs() << "fjit is enabled: " << Args.hasArg(OPT_fjit) << "\n";
+  // llvm::outs() << "fjit is disabled: " << Args.hasArg(OPT_fno_jit) << "\n";
+  // if (Args.hasArg(OPT_fjit))
+  //   Opts.setCPlusPlusJIT(LangOptions::JITMode::JM_Enabled);
 
   // FIXME: fjit workaround
   Opts.setCPlusPlusJIT(LangOptions::JITMode::JM_Enabled);

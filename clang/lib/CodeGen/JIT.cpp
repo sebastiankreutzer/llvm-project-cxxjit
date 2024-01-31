@@ -288,6 +288,9 @@ public:
               CompileLayer(ES, ObjectLayer, std::make_unique<llvm::orc::SimpleCompiler>(*TM)),
               TSC(std::make_unique<LLVMContext>()) {
     this->MainLib = &cantFail(ES.createJITDylib("cxxjit"));
+    MainLib->addGenerator(cantFail(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(DL.getGlobalPrefix())));
+    Dylibs.push_back(MainLib);
+    //ObjectLayer.setAutoClaimResponsibilityForObjectSymbols(true);
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
   }
 
@@ -307,16 +310,33 @@ public:
       if (Dtor.Func && !Dtor.Func->hasAvailableExternallyLinkage())
         DtorNames.push_back(mangle(std::string(Dtor.Func->getName())));
 
+   // llvm::outs() << "Functions added to JIT:\n";
+   // for (auto& Fn : M->functions()) {
+   //     bool Found = RTDyldMemoryManager::getSymbolAddressInProcess(std::string(Fn.getName()));
+   //     llvm::outs() << Fn.getName() << ": linkage=" << Fn.getLinkage() <<", found in proc=" << Found << "\n";
+   //     if (Fn.getName() == "_ZL4pntsi") {
+   //         Fn.dump();
+   //     }
+   //     
+   // }
+
+
+    //auto DylibName = "cxxjit_" + Dylibs.size();
+    //auto& Dylib = cantFail(ES.createJITDylib(DylibName));
+    //Dylib.addGenerator(cantFail(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(DL.getGlobalPrefix())));
+    //Dylibs.push_back(&Dylib);
+    auto& Dylib = *MainLib;
+
     llvm::orc::ThreadSafeModule TSM(std::move(M), TSC);
 
-    if (auto Err = CompileLayer.add(*MainLib, std::move(TSM))) {
+    if (auto Err = CompileLayer.add(Dylib, std::move(TSM))) {
       return Err;
     }
 
     // Run the static constructors, and save the static destructor runner for
     // execution when the JIT is torn down.
 
-    llvm::orc::CtorDtorRunner CtorRunner(*MainLib);
+    llvm::orc::CtorDtorRunner CtorRunner(Dylib);
     // FIXME
 //    CtorRunner.add(CtorNames);
 
@@ -346,6 +366,16 @@ private:
   }
 
   llvm::JITSymbol findMangledSymbol(const std::string &Name) {
+
+    // for (auto Dylib : make_range(Dylibs.rbegin(), Dylibs.rend())) { 
+    //   auto Sym = ES.lookup({Dylib}, mangle(Name));
+    //   if (auto E = Sym.takeError()) {
+    //     // Ignore error
+    //     llvm::consumeError(std::move(E));
+    //   } else {
+    //     return llvm::JITSymbol(Sym.get().getAddress().getValue(), llvm::JITSymbolFlags::Exported);
+    //   }
+    // }
 
     auto Sym = ES.lookup({MainLib}, mangle(Name));
     if (auto E = Sym.takeError()) {
@@ -380,14 +410,13 @@ private:
 
   DenseMap<StringRef, const void *> &LocalSymAddrs;
   llvm::orc::ExecutionSession ES;
-  //std::shared_ptr<llvm::orc::SymbolResolver> Resolver;
   std::unique_ptr<llvm::TargetMachine> TM;
   const llvm::DataLayout DL;
   ObjLayerT ObjectLayer;
   CompileLayerT CompileLayer;
-  llvm::orc::JITDylib* MainLib;
   llvm::orc::ThreadSafeContext TSC;
-
+  llvm::orc::JITDylib* MainLib;
+  llvm::SmallVector<llvm::orc::JITDylib*, 8> Dylibs; 
 };
 
 //class ClangJIT {
@@ -1670,6 +1699,7 @@ struct CompilerData {
     // to link with the ones generated here.
 
     for (auto &F : Consumer->getModule()->functions()) {
+      // llvm::outs() << "Emitted function: " << F.getName() << " with linkage " << F.getLinkage() << "\n";
       F.setLinkage(llvm::GlobalValue::ExternalLinkage);
       F.setComdat(nullptr);
     }
@@ -1756,8 +1786,11 @@ struct CompilerData {
       F.setName(UniqueName);
     }
 
-    if (Linker::linkModules(*Consumer->getModule(), llvm::CloneModule(*RunningMod),
-                            Linker::Flags::OverrideFromSrc))
+    auto ClonedRunningMod = llvm::CloneModule(*RunningMod);
+
+    // Changed to default flag for ORC2.
+    // This ensure that functions with internal linkage are re-emitted.
+    if (Linker::linkModules(*Consumer->getModule(), std::move(ClonedRunningMod)))
       fatal();
 
     // Aliases are not allowed to point to functions with available_externally linkage.
